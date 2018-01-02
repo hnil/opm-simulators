@@ -14,6 +14,8 @@ COMPARE_ECL_COMMAND="$8"
 EXE_NAME="${9}"
 shift 9
 TEST_ARGS="$@"
+REFERENCE_DIR=opm-simulation-reference/$EXE_NAME
+REFERENCE_DIR=eclipse-simulation
 
 rm -Rf  ${RESULT_PATH}
 mkdir -p ${RESULT_PATH}
@@ -23,27 +25,27 @@ cd ..
 
 ecode=0
 echo "=== Executing comparison for summary file ==="
-${COMPARE_SUMMARY_COMMAND} -r ${RESULT_PATH}/${FILENAME} ${INPUT_DATA_PATH}/opm-simulation-reference/${EXE_NAME}/${FILENAME} ${ABS_TOL} ${REL_TOL}
+${COMPARE_SUMMARY_COMMAND} -r ${RESULT_PATH}/${FILENAME} ${INPUT_DATA_PATH}/${REFERENCE_DIR}/${FILENAME} ${ABS_TOL} ${REL_TOL}
 if [ $? -ne 0 ]
 then
   ecode=1
-  `dirname $0`/analyze_summary_failure.sh ${COMPARE_SUMMARY_COMMAND} -r ${RESULT_PATH}/${FILENAME} ${INPUT_DATA_PATH}/opm-simulation-reference/${EXE_NAME}/${FILENAME} ${ABS_TOL} ${REL_TOL}
+  `dirname $0`/analyze_summary_failure.sh ${COMPARE_SUMMARY_COMMAND} -r ${RESULT_PATH}/${FILENAME} ${INPUT_DATA_PATH}/${REFERENCE_DIR}/${FILENAME} ${ABS_TOL} ${REL_TOL}
 fi
 
 echo "=== Executing comparison for restart file ==="
-${COMPARE_ECL_COMMAND}  ${RESULT_PATH}/${FILENAME} ${INPUT_DATA_PATH}/opm-simulation-reference/${EXE_NAME}/${FILENAME} ${ABS_TOL} ${REL_TOL}
+${COMPARE_ECL_COMMAND}  ${RESULT_PATH}/${FILENAME} ${INPUT_DATA_PATH}/${REFERENCE_DIR}/${FILENAME} ${ABS_TOL} ${REL_TOL}
 if [ $? -ne 0 ]
 then
   ecode=1
-  `dirname $0`/analyze_ecl_failure.sh ${COMPARE_ECL_COMMAND} UNRST ${RESULT_PATH}/${FILENAME} ${INPUT_DATA_PATH}/opm-simulation-reference/${EXE_NAME}/${FILENAME} ${ABS_TOL} ${REL_TOL}
+  `dirname $0`/analyze_ecl_failure.sh ${COMPARE_ECL_COMMAND} UNRST ${RESULT_PATH}/${FILENAME} ${INPUT_DATA_PATH}/${REFERENCE_DIR}/${FILENAME} ${ABS_TOL} ${REL_TOL}
 fi
 
 echo "=== Executing comparison for init file ==="
-${COMPARE_ECL_COMMAND} -t INIT ${RESULT_PATH}/${FILENAME} ${INPUT_DATA_PATH}/opm-simulation-reference/${EXE_NAME}/${FILENAME} ${ABS_TOL} ${REL_TOL}
+${COMPARE_ECL_COMMAND} -t INIT ${RESULT_PATH}/${FILENAME} ${INPUT_DATA_PATH}/${REFERENCE_DIR}/${FILENAME} ${ABS_TOL} ${REL_TOL}
 if [ $? -ne 0 ]
 then
   ecode=1
-  `dirname $0`/analyze_ecl_failure.sh ${COMPARE_ECL_COMMAND} INIT ${RESULT_PATH}/${FILENAME} ${INPUT_DATA_PATH}/opm-simulation-reference/${EXE_NAME}/${FILENAME} ${ABS_TOL} ${REL_TOL}
+  `dirname $0`/analyze_ecl_failure.sh ${COMPARE_ECL_COMMAND} INIT ${RESULT_PATH}/${FILENAME} ${INPUT_DATA_PATH}/${REFERENCE_DIR}/${FILENAME} ${ABS_TOL} ${REL_TOL}
 fi
 
 exit $ecode
