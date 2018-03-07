@@ -478,7 +478,7 @@ namespace Opm {
         /// Number of linear iterations used in last call to solveJacobianSystem().
         int linearIterationsLastSolve() const
         {
-            return istlSolver().iterations();
+            return linear_iters_last_solve_;
         }
 
         /// Solve the Jacobian system Jx = r where J is the Jacobian and
@@ -565,6 +565,7 @@ namespace Opm {
                         x[cell][phase] = sol[np*cell + phase];
                     }
                 }
+                const_cast<int&>(linear_iters_last_solve_) = iters;
                 return;
             }
 
@@ -584,6 +585,7 @@ namespace Opm {
                 Operator opA(ebosJac, actual_mat_for_prec, wellModel());
                 istlSolver().solve( opA, x, ebosResid );
             }
+            const_cast<int&>(linear_iters_last_solve_) = istlSolver().iterations();
         }
 
         //=====================================================================
@@ -1142,6 +1144,7 @@ namespace Opm {
         BVector dx_old_;
 
         std::unique_ptr<Mat> matrix_for_preconditioner_;
+        int linear_iters_last_solve_ = -1;
 
     public:
         /// return the StandardWells object
