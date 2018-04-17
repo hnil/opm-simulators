@@ -48,6 +48,7 @@ namespace Opm
         max_residual_allowed_ = param.getDefault("max_residual_allowed", max_residual_allowed_);
         tolerance_mb_    = param.getDefault("tolerance_mb", tolerance_mb_);
         tolerance_cnv_   = param.getDefault("tolerance_cnv", tolerance_cnv_);
+        tolerance_cnv_relaxed_   = param.getDefault("tolerance_cnv_relaxed", tolerance_cnv_relaxed_);
         tolerance_wells_ = param.getDefault("tolerance_wells", tolerance_wells_ );
         tolerance_well_control_ = param.getDefault("tolerance_well_control", tolerance_well_control_);
         max_welleq_iter_ = param.getDefault("max_welleq_iter", max_welleq_iter_);
@@ -66,6 +67,8 @@ namespace Opm
         use_update_stabilization_ = param.getDefault("use_update_stabilization", use_update_stabilization_);
         deck_file_name_ = param.template get<std::string>("deck_filename");
         do_adjoint_ = param.getDefault("do_adjoint",false);
+        matrix_add_well_contributions_ = param.getDefault("matrix_add_well_contributions", matrix_add_well_contributions_);
+        preconditioner_add_well_contributions_ = param.getDefault("preconditioner_add_well_contributions", preconditioner_add_well_contributions_);
     }
 
 
@@ -82,6 +85,7 @@ namespace Opm
         max_residual_allowed_ = 1e7;
         tolerance_mb_    = 1.0e-5;
         tolerance_cnv_   = 1.0e-2;
+        tolerance_cnv_relaxed_ = 1.0e9;
         tolerance_wells_ = 1.0e-4;
         tolerance_well_control_ = 1.0e-7;
         tolerance_pressure_ms_wells_ = unit::convert::from(0.01, unit::barsa); // 0.01 bar
@@ -95,6 +99,8 @@ namespace Opm
         use_update_stabilization_ = true;
         use_multisegment_well_ = false;
         do_adjoint_=false;
+        matrix_add_well_contributions_ = false;
+        preconditioner_add_well_contributions_ = false;
     }
 
 

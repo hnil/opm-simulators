@@ -179,6 +179,14 @@ public:
 
         WellState wellStateDummy; //not used. Only passed to make the old interfaces happy
 
+        if ( model_param_.matrix_add_well_contributions_ ||
+             model_param_.preconditioner_add_well_contributions_ )
+        {
+            ebosSimulator_.model().clearAuxiliaryModules();
+            auto auxMod = std::make_shared<WellConnectionAuxiliaryModule<TypeTag> >(schedule(), grid());
+            ebosSimulator_.model().addAuxiliaryModule(auxMod);
+        }
+
         // Main simulation loop.
         while (!timer.done()) {
             // Report timestep.
@@ -252,16 +260,9 @@ public:
 
                 if( terminal_output_ )
                 {
-                    //stepReport.briefReport();
-                    std::ostringstream iter_msg;
-                    iter_msg << "Stepsize " << (double)unit::convert::to(timer.currentStepLength(), unit::day);
-                    if (solver->wellIterations() != 0) {
-                        iter_msg << " days well iterations = " << solver->wellIterations() << ", ";
-                    }
-                    iter_msg << "non-linear iterations = " << solver->nonlinearIterations()
-                             << ", total linear iterations = " << solver->linearIterations()
-                             << "\n";
-                    OpmLog::info(iter_msg.str());
+                    std::ostringstream ss;
+                    stepReport.reportStep(ss);
+                    OpmLog::info(ss.str());
                 }
             }
 
@@ -289,7 +290,8 @@ public:
             // write simulation state at the report stage
             Dune::Timer perfTimer;
             perfTimer.start();
-            const double nextstep = adaptiveTimeStepping ? adaptiveTimeStepping->suggestedNextStep() : -1.0;            
+            const double nextstep = adaptiveTimeStepping ? adaptiveTimeStepping->suggestedNextStep() : -1.0;
+
             output_writer_.writeTimeStep( timer, dummy_state, well_model.wellState(), solver->model(), false, nextstep, report);
             report.output_write_time += perfTimer.stop();
 

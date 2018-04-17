@@ -74,11 +74,12 @@ namespace Opm
 
 
 
-    StandardWells::StandardWells(const Wells* wells_arg, WellCollection* well_collection)
+    StandardWells::StandardWells(const Wells* wells_arg, WellCollection* well_collection, const int current_step)
       : wells_active_(wells_arg!=nullptr)
       , wells_(wells_arg)
       , wops_(wells_arg)
       , well_collection_(well_collection)
+      , current_step_(current_step)
       , well_perforation_efficiency_factors_(Vector::Ones(wells_!=nullptr ? wells_->well_connpos[wells_->number_of_wells] : 0))
       , fluid_(nullptr)
       , active_(nullptr)
@@ -1541,6 +1542,15 @@ namespace Opm
     StandardWells::wellPerfEfficiencyFactors() const
     {
         return well_perforation_efficiency_factors_;
+    }
+
+
+
+
+
+    int StandardWells::currentStep() const
+    {
+        return current_step_;
     }
 
 

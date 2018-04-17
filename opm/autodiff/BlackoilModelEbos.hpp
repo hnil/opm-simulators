@@ -29,6 +29,7 @@
 
 #include <opm/autodiff/BlackoilModelParameters.hpp>
 #include <opm/autodiff/BlackoilWellModel.hpp>
+#include <opm/autodiff/WellConnectionAuxiliaryModule.hpp>
 #include <opm/autodiff/BlackoilDetails.hpp>
 #include <opm/autodiff/NewtonIterationBlackoilInterface.hpp>
 
@@ -77,12 +78,19 @@
 namespace Ewoms {
 namespace Properties {
 NEW_TYPE_TAG(EclFlowProblem, INHERITS_FROM(BlackOilModel, EclBaseProblem));
+SET_STRING_PROP(EclFlowProblem, EclOutputDir, "");
 SET_BOOL_PROP(EclFlowProblem, DisableWells, true);
 SET_BOOL_PROP(EclFlowProblem, EnableDebuggingChecks, false);
 SET_BOOL_PROP(EclFlowProblem, ExportGlobalTransmissibility, true);
 // default in flow is to formulate the equations in surface volumes
 SET_BOOL_PROP(EclFlowProblem, BlackoilConserveSurfaceVolume, true);
 SET_BOOL_PROP(EclFlowProblem, UseVolumetricResidual, false);
+
+// disable all extensions supported by black oil model. this should not really be
+// necessary but it makes things a bit more explicit
+SET_BOOL_PROP(EclFlowProblem, EnablePolymer, false);
+SET_BOOL_PROP(EclFlowProblem, EnableSolvent, false);
+SET_BOOL_PROP(EclFlowProblem, EnableEnergy, false);
 }}
 
 namespace Opm {
@@ -182,16 +190,10 @@ namespace Opm {
         {
 
             // update the solution variables in ebos
-
-            // if the last time step failed we need to update the curent solution
-            // and recalculate the Intesive Quantities.
             if ( timer.lastStepFailed() ) {
-                ebosSimulator_.model().solution( 0 /* timeIdx */ ) = ebosSimulator_.model().solution( 1 /* timeIdx */ );
-                ebosSimulator_.model().invalidateIntensiveQuantitiesCache(/*timeIdx=*/0);
+                ebosSimulator_.model().updateFailed();
             } else {
-                // set the initial solution.
-                ebosSimulator_.model().solution( 1 /* timeIdx */ ) = ebosSimulator_.model().solution( 0 /* timeIdx */ );
-                ebosSimulator_.problem().advanceTimeLevel();
+                ebosSimulator_.model().advanceTimeLevel();
             }
             // update simulator form timer
             /*
@@ -577,9 +579,19 @@ namespace Opm {
                 // the reservoir equations as a source term.
                 wellModel().assemble(iterationIdx, false, dt);
             }
-            catch ( const Dune::FMatrixError& e  )
+            catch ( const Dune::FMatrixError& )
             {
                 OPM_THROW(Opm::NumericalIssue,"Error encounted when solving well equations");
+            }
+
+            auto& ebosJac = ebosSimulator_.model().linearizer().matrix();
+            if (param_.matrix_add_well_contributions_) {
+                wellModel().addWellContributions(ebosJac);
+            }
+            if ( param_.preconditioner_add_well_contributions_ &&
+                 ! param_.matrix_add_well_contributions_ ) {
+                matrix_for_preconditioner_ .reset(new Mat(ebosJac));
+                wellModel().addWellContributions(*matrix_for_preconditioner_);
             }
 
             return wellModel().lastReport();
@@ -699,23 +711,35 @@ namespace Opm {
             // set initial guess
             x = 0.0;
 
+            const Mat& actual_mat_for_prec = matrix_for_preconditioner_ ? *matrix_for_preconditioner_.get() : ebosJac;
             // Solve system.
             if( isParallel() )
             {
-                typedef WellModelMatrixAdapter< Mat, BVector, BVector, BlackoilWellModel<TypeTag>, Grid, true > Operator;
-                Operator opA(ebosJac, wellModel(), istlSolver().parallelInformation() );
+	    //<<<<<<< HEAD
+//                typedef WellModelMatrixAdapter< Mat, BVector, BVector, BlackoilWellModel<TypeTag>, Grid, true > Operator;
+//                Operator opA(ebosJac, wellModel(), istlSolver().parallelInformation() );
+//=======
+                typedef WellModelMatrixAdapter< Mat, BVector, BVector, BlackoilWellModel<TypeTag>, true > Operator;
+                Operator opA(ebosJac, actual_mat_for_prec, wellModel(),
+                             istlSolver().parallelInformation() );
+//>>>>>>> master
                 assert( opA.comm() );
                 istlSolver().solve( opA, x, ebosResid, *(opA.comm()) );
             }
             else
             {
+//<<<<<<< HEAD
                 //std::cout.precision(16);
                 //std::cout << x << std::endl;
                 //Dune::writeMatrixMarket(ebosJac, std::cout);
                 //wellModel().printMatrixes();
                 //std::cout << ebosResid << std::endl;
-                typedef WellModelMatrixAdapter< Mat, BVector, BVector, BlackoilWellModel<TypeTag>, Grid, false > Operator;
-                Operator opA(ebosJac, wellModel());
+  //              typedef WellModelMatrixAdapter< Mat, BVector, BVector, BlackoilWellModel<TypeTag>, Grid, false > Operator;
+  //              Operator opA(ebosJac, wellModel());
+//=======
+                typedef WellModelMatrixAdapter< Mat, BVector, BVector, BlackoilWellModel<TypeTag>, false > Operator;
+                Operator opA(ebosJac, actual_mat_for_prec, wellModel());
+//>>>>>>> master
                 istlSolver().solve( opA, x, ebosResid );
             }
         }
@@ -729,6 +753,98 @@ namespace Opm {
 
            Adapts a matrix to the assembled linear operator interface
          */
+//<<<<<<< HEAD
+//=======
+        template<class M, class X, class Y, class WellModel, bool overlapping >
+        class WellModelMatrixAdapter : public Dune::AssembledLinearOperator<M,X,Y>
+        {
+          typedef Dune::AssembledLinearOperator<M,X,Y> BaseType;
+
+        public:
+          typedef M matrix_type;
+          typedef X domain_type;
+          typedef Y range_type;
+          typedef typename X::field_type field_type;
+
+#if HAVE_MPI
+          typedef Dune::OwnerOverlapCopyCommunication<int,int> communication_type;
+#else
+          typedef Dune::CollectiveCommunication< Grid > communication_type;
+#endif
+
+#if DUNE_VERSION_NEWER(DUNE_ISTL, 2, 6)
+          Dune::SolverCategory::Category category() const override
+          {
+            return overlapping ?
+                   Dune::SolverCategory::overlapping : Dune::SolverCategory::sequential;
+          }
+#else
+          enum {
+            //! \brief The solver category.
+            category = overlapping ?
+                Dune::SolverCategory::overlapping :
+                Dune::SolverCategory::sequential
+          };
+#endif
+
+          //! constructor: just store a reference to a matrix
+          WellModelMatrixAdapter (const M& A,
+                                  const M& A_for_precond,
+                                  const WellModel& wellMod,
+                                  const boost::any& parallelInformation = boost::any() )
+              : A_( A ), A_for_precond_(A_for_precond), wellMod_( wellMod ), comm_()
+          {
+#if HAVE_MPI
+            if( parallelInformation.type() == typeid(ParallelISTLInformation) )
+            {
+              const ParallelISTLInformation& info =
+                  boost::any_cast<const ParallelISTLInformation&>( parallelInformation);
+              comm_.reset( new communication_type( info.communicator() ) );
+            }
+#endif
+          }
+
+          virtual void apply( const X& x, Y& y ) const
+          {
+            A_.mv( x, y );
+
+            // add well model modification to y
+            wellMod_.apply(x, y );
+
+#if HAVE_MPI
+            if( comm_ )
+              comm_->project( y );
+#endif
+          }
+
+          // y += \alpha * A * x
+          virtual void applyscaleadd (field_type alpha, const X& x, Y& y) const
+          {
+            A_.usmv(alpha,x,y);
+
+            // add scaled well model modification to y
+            wellMod_.applyScaleAdd( alpha, x, y );
+
+#if HAVE_MPI
+            if( comm_ )
+              comm_->project( y );
+#endif
+          }
+
+          virtual const matrix_type& getmat() const { return A_for_precond_; }
+
+          communication_type* comm()
+          {
+              return comm_.operator->();
+          }
+
+        protected:
+          const matrix_type& A_ ;
+          const matrix_type& A_for_precond_ ;
+          const WellModel& wellMod_;
+          std::unique_ptr< communication_type > comm_;
+        };
+//>>>>>>> master
 
         /// Apply an update to the primary variables, chopped if appropriate.
         /// \param[in]      dx                updates to apply to primary variables
@@ -946,6 +1062,7 @@ namespace Opm {
             const double dt = timer.currentStepLength();
             const double tol_mb    = param_.tolerance_mb_;
             const double tol_cnv   = param_.tolerance_cnv_;
+            const double tol_cnv_relaxed = param_.tolerance_cnv_relaxed_;
 
             const int numComp = numEq;
 
@@ -1032,8 +1149,11 @@ namespace Opm {
             {
                 CNV[compIdx]                    = B_avg[compIdx] * dt * maxCoeff[compIdx];
                 mass_balance_residual[compIdx]  = std::abs(B_avg[compIdx]*R_sum[compIdx]) * dt / pvSum;
-                converged_MB                = converged_MB && (mass_balance_residual[compIdx] < tol_mb);
-                converged_CNV               = converged_CNV && (CNV[compIdx] < tol_cnv);
+                converged_MB                    = converged_MB && (mass_balance_residual[compIdx] < tol_mb);
+                if (iteration < param_.max_strict_iter_)
+                    converged_CNV = converged_CNV && (CNV[compIdx] < tol_cnv);
+                else
+                    converged_CNV = converged_CNV && (CNV[compIdx] < tol_cnv_relaxed);
 
                 residual_norms.push_back(CNV[compIdx]);
             }
@@ -1042,10 +1162,7 @@ namespace Opm {
 
             bool converged = converged_MB && converged_Well;
 
-            // do not care about the cell based residual in the last two Newton
-            // iterations
-            if (iteration < param_.max_strict_iter_)
-                converged = converged && converged_CNV;
+            converged = converged && converged_CNV;
 
             if ( terminal_output_ )
             {
@@ -1241,6 +1358,8 @@ namespace Opm {
         double current_relaxation_;
         BVector dx_old_;
 
+        std::unique_ptr<Mat> matrix_for_preconditioner_;
+
     public:
         /// return the StandardWells object
         BlackoilWellModel<TypeTag>&
@@ -1261,6 +1380,7 @@ namespace Opm {
 
     private:
 
+//<<<<<<< HEAD
 //        void assembleMassBalanceEq(const SimulatorTimerInterface& timer,
 //                                   const int iterationIdx)
 //        {
@@ -1307,6 +1427,8 @@ namespace Opm {
 //            }
 //        }
 
+//=======
+//>>>>>>> master
 
         double dpMaxRel() const { return param_.dp_max_rel_; }
         double dsMax() const { return param_.ds_max_; }

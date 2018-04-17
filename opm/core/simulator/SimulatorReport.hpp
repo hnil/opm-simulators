@@ -46,13 +46,14 @@ namespace Opm
         bool converged;
 
         /// Default constructor initializing all times to 0.0.
-        SimulatorReport(bool verbose=true);
+        explicit SimulatorReport(bool verbose=true);
         /// Copy constructor
         SimulatorReport(const SimulatorReport&) = default;
         /// Increment this report's times by those in sr.
         void operator+=(const SimulatorReport& sr);
         /// Print a report to the given stream.
         void report(std::ostream& os);
+        void reportStep(std::ostringstream& os);
         /// Print a report, leaving out the transport time.
         void reportFullyImplicit(std::ostream& os, const SimulatorReport* failedReport = nullptr);
         void reportParam(std::ostream& os);

@@ -22,6 +22,7 @@
 
 # originally generated with the command:
 # find opm -name '*.c*' -printf '\t%p\n' | sort
+
 if(NOT DEV_BUILD)
     list (APPEND MAIN_SOURCE_FILES
         # place the flow_ebos_*.cpp files on top of the list because they
@@ -32,6 +33,7 @@ if(NOT DEV_BUILD)
         opm/simulators/flow_ebos_oilwater.cpp
         opm/simulators/flow_ebos_polymer.cpp
         opm/simulators/flow_ebos_solvent.cpp
+	opm/simulators/flow_ebos_oilwater_polymer.cpp
         opm/autodiff/Compat.cpp
         opm/autodiff/ExtractParallelGridInformationToISTL.cpp
         opm/autodiff/NewtonIterationBlackoilCPR.cpp
@@ -128,6 +130,7 @@ if(NOT DEV_BUILD)
         )
 
 
+
     if(PETSc_FOUND)
         list(APPEND MAIN_SOURCE_FILES opm/core/linalg/LinearSolverPetsc.cpp)
     endif()
@@ -137,6 +140,7 @@ if(NOT DEV_BUILD)
     list (APPEND TEST_SOURCE_FILES
         tests/test_autodiffhelpers.cpp
         tests/test_autodiffmatrix.cpp
+	tests/test_blackoil_amg.cpp
         tests/test_block.cpp
         tests/test_boprops_ad.cpp
         tests/test_rateconverter.cpp
@@ -147,6 +151,7 @@ if(NOT DEV_BUILD)
         tests/test_welldensitysegmented.cpp
         tests/test_vfpproperties.cpp
         tests/test_singlecellsolves.cpp
+	tests/test_multmatrixtransposed.cpp
         tests/test_multiphaseupwind.cpp
         tests/test_wellmodel.cpp
         #  tests/test_thresholdpressure.cpp
@@ -173,10 +178,55 @@ if(NOT DEV_BUILD)
         tests/test_norne_pvt.cpp
         )
 
+
     if(MPI_FOUND)
         list(APPEND TEST_SOURCE_FILES tests/test_parallel_linearsolver.cpp
             tests/test_parallelistlinformation.cpp)
     endif()
+
+# originally generated with the command:
+# find tests -name '*.cpp' -a ! -wholename '*/not-unit/*' -printf '\t%p\n' | sort
+list (APPEND TEST_SOURCE_FILES
+  tests/test_autodiffhelpers.cpp
+  tests/test_autodiffmatrix.cpp
+  tests/test_blackoil_amg.cpp
+  tests/test_block.cpp
+  tests/test_boprops_ad.cpp
+  tests/test_rateconverter.cpp
+  tests/test_span.cpp
+  tests/test_syntax.cpp
+  tests/test_scalar_mult.cpp
+  tests/test_transmissibilitymultipliers.cpp
+  tests/test_welldensitysegmented.cpp
+  tests/test_vfpproperties.cpp
+  tests/test_singlecellsolves.cpp
+  tests/test_multmatrixtransposed.cpp
+  tests/test_multiphaseupwind.cpp
+  tests/test_wellmodel.cpp
+#  tests/test_thresholdpressure.cpp
+  tests/test_wellswitchlogger.cpp
+  tests/test_timer.cpp
+  tests/test_invert.cpp
+  tests/test_event.cpp
+  tests/test_dgbasis.cpp
+  tests/test_flowdiagnostics.cpp
+  tests/test_wells.cpp
+  tests/test_linearsolver.cpp
+  tests/test_satfunc.cpp
+  tests/test_shadow.cpp
+  tests/test_equil_legacy.cpp
+  tests/test_blackoilstate.cpp
+  tests/test_wellsmanager.cpp
+  tests/test_wellcontrols.cpp
+  tests/test_wellsgroup.cpp
+  tests/test_wellcollection.cpp
+  tests/test_pinchprocessor.cpp
+  tests/test_anisotropiceikonal.cpp
+  tests/test_stoppedwells.cpp
+  tests/test_relpermdiagnostics.cpp
+  tests/test_norne_pvt.cpp
+  )
+
 
     list (APPEND TEST_DATA_FILES
         tests/fluid.data
@@ -253,6 +303,7 @@ if(NOT DEV_BUILD)
         examples/sim_poly2p_comp_reorder.cpp
         examples/sim_poly2p_incomp_reorder.cpp
         )
+
 
 
     # originally generated with the command:
@@ -443,6 +494,7 @@ if(NOT DEV_BUILD)
         opm/simulators/flow_ebos_gasoil.hpp
         opm/simulators/flow_ebos_oilwater.hpp
         opm/simulators/flow_ebos_polymer.hpp
+	opm/simulators/flow_ebos_oilwater_polymer.hpp
         opm/simulators/flow_ebos_solvent.hpp
         opm/simulators/ensureDirectoryExists.hpp
         opm/simulators/ParallelFileMerger.hpp
@@ -520,6 +572,7 @@ else()
         opm/autodiff/AdditionalObjectDeleter.hpp
         opm/autodiff/AutoDiffBlock.hpp
         opm/autodiff/AutoDiffHelpers.hpp
+	opm/autodiff/BlackoilAmg.hpp
         opm/autodiff/AutoDiffMatrix.hpp
         opm/autodiff/AutoDiff.hpp
         opm/autodiff/BlackoilDetails.hpp
@@ -617,3 +670,5 @@ else()
         opm/simulators/timestepping/SimulatorTimerInterface.hpp
         )
 endif()						
+
+

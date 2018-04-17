@@ -25,6 +25,7 @@
 
 namespace Opm
 {
+
     template<typename TypeTag>
     StandardWell<TypeTag>::
     StandardWell(const Well* well, const int time_step, const Wells* wells,
@@ -388,7 +389,7 @@ namespace Opm
             return primary_variables_evaluation_[GFrac];
         }
 
-        if (has_solvent && compIdx == contiSolventEqIdx) {
+        if (has_solvent && compIdx == (unsigned)contiSolventEqIdx) {
             return primary_variables_evaluation_[SFrac];
         }
 
@@ -453,7 +454,8 @@ namespace Opm
     computePerfRate(const IntensiveQuantities& intQuants,
                     const std::vector<EvalWell>& mob_perfcells_dense,
                     const double Tw, const EvalWell& bhp, const double& cdp,
-                    const bool& allow_cf, std::vector<EvalWell>& cq_s) const
+                    const bool& allow_cf, std::vector<EvalWell>& cq_s,
+                    double& perf_dis_gas_rate, double& perf_vap_oil_rate) const
     {
         std::vector<EvalWell> cmix_s(num_components_,0.0);
         for (int componentIdx = 0; componentIdx < num_components_; ++componentIdx) {
@@ -501,8 +503,17 @@ namespace Opm
                 const unsigned gasCompIdx = Indices::canonicalToActiveComponentIndex(FluidSystem::gasCompIdx);
                 const EvalWell cq_sOil = cq_s[oilCompIdx];
                 const EvalWell cq_sGas = cq_s[gasCompIdx];
-                cq_s[gasCompIdx] += rs * cq_sOil;
-                cq_s[oilCompIdx] += rv * cq_sGas;
+                const EvalWell dis_gas = rs * cq_sOil;
+                const EvalWell vap_oil = rv * cq_sGas;
+
+                cq_s[gasCompIdx] += dis_gas;
+                cq_s[oilCompIdx] += vap_oil;
+
+                // recording the perforation solution gas rate and solution oil rates
+                if (well_type_ == PRODUCER) {
+                    perf_dis_gas_rate = dis_gas.value();
+                    perf_vap_oil_rate = vap_oil.value();
+                }
             }
 
         } else {
@@ -699,6 +710,29 @@ namespace Opm
                 objder_adjctrl_[0][0] += resWell_loc.derivative(control_index)*dt;
                 objval_= resWell_loc.value()*dt;
             }
+
+            // calculating the perforation solution gas rate and solution oil rates
+            if (well_type_ == PRODUCER) {
+                if (FluidSystem::phaseIsActive(FluidSystem::oilPhaseIdx) && FluidSystem::phaseIsActive(FluidSystem::gasPhaseIdx)) {
+                    const unsigned oilCompIdx = Indices::canonicalToActiveComponentIndex(FluidSystem::oilCompIdx);
+                    const unsigned gasCompIdx = Indices::canonicalToActiveComponentIndex(FluidSystem::gasCompIdx);
+                    // TODO: the formulations here remain to be tested with cases with strong crossflow through production wells
+                    // s means standard condition, r means reservoir condition
+                    // q_os = q_or * b_o + rv * q_gr * b_g
+                    // q_gs = q_gr * g_g + rs * q_or * b_o
+                    // d = 1.0 - rs * rv
+                    // q_or = 1 / (b_o * d) * (q_os - rv * q_gs)
+                    // q_gr = 1 / (b_g * d) * (q_gs - rs * q_os)
+
+                    const double d = 1.0 - rv.value() * rs.value();
+                    // vaporized oil into gas
+                    // rv * q_gr * b_g = rv * (q_gs - rs * q_os) / d
+                    perf_vap_oil_rate = rv.value() * (cq_s[gasCompIdx].value() - rs.value() * cq_s[oilCompIdx].value()) / d;
+                    // dissolved of gas in oil
+                    // rs * q_or * b_o = rs * (q_os - rv * q_gs) / d
+                    perf_dis_gas_rate = rs.value() * (cq_s[oilCompIdx].value() - rv.value() * cq_s[gasCompIdx].value()) / d;
+                }
+            }
         }
     }
 
@@ -772,6 +806,10 @@ namespace Opm
 
         const EvalWell& bhp = getBhp();
 
+        // the solution gas rate and solution oil rate needs to be reset to be zero for well_state.
+        well_state.wellVaporizedOilRates()[index_of_well_] = 0.;
+        well_state.wellDissolvedGasRates()[index_of_well_] = 0.;
+
         for (int perf = 0; perf < number_of_perforations_; ++perf) {
 
             const int cell_idx = well_cells_[perf];
@@ -779,7 +817,16 @@ namespace Opm
             std::vector<EvalWell> cq_s(num_components_,0.0);
             std::vector<EvalWell> mob(num_components_, 0.0);
             getMobility(ebosSimulator, perf, mob);
-            computePerfRate(intQuants, mob, well_index_[perf], bhp, perf_pressure_diffs_[perf], allow_cf, cq_s);
+            double perf_dis_gas_rate = 0.;
+            double perf_vap_oil_rate = 0.;
+            computePerfRate(intQuants, mob, well_index_[perf], bhp, perf_pressure_diffs_[perf], allow_cf,
+                            cq_s, perf_dis_gas_rate, perf_vap_oil_rate);
+
+            // updating the solution gas rate and solution oil rate
+            if (well_type_ == PRODUCER) {
+                well_state.wellDissolvedGasRates()[index_of_well_] += perf_dis_gas_rate;
+                well_state.wellVaporizedOilRates()[index_of_well_] += perf_vap_oil_rate;
+            }
 
             for (int componentIdx = 0; componentIdx < num_components_; ++componentIdx) {
                 // the cq_s entering mass balance equations need to consider the efficiency factors.
@@ -859,12 +906,18 @@ namespace Opm
         }
 
         // do the local inversion of D.
+
         //invDuneD_.compress();
         //duneD_=DiagMatWell(invDuneD_);// copy for adjoint
         if(numAdjoint>0){
             duneD_= invDuneD_;
         }
-        invDuneD_[0][0].invert();
+        //invDuneD_[0][0].invert();
+        // we do this manually with invertMatrix to always get our
+        // specializations in for 3x3 and 4x4 matrices.
+        auto original = invDuneD_[0][0];
+        Dune::FMatrixHelp::invertMatrix(original, invDuneD_[0][0]);
+
     }
 
 
@@ -1171,15 +1224,40 @@ namespace Opm
                 if (well_controls_iget_type(wc, current) == SURFACE_RATE) {
                     if (well_type_ == PRODUCER) {
 
-                        const double* distr = well_controls_iget_distr(wc, current);
-
                         double F_target = 0.0;
+                        const double* distr = well_controls_iget_distr(wc, current);
                         for (int p = 0; p < np; ++p) {
                             F_target += distr[p] * F[p];
                         }
-                        for (int p = 0; p < np; ++p) {
-                            well_state.wellRates()[np * index_of_well_ + p] = F[p] * target_rate / F_target;
+
+                        if (F_target > 0.) {
+                            for (int p = 0; p < np; ++p) {
+                                well_state.wellRates()[np * index_of_well_ + p] = F[p] * target_rate / F_target;
+                            }
+                        } else {
+                            // F_target == 0., which creates some difficulties in term of handling things perfectly.
+                            // The following are some temporary solution by putting all rates to be zero, while some better
+                            // solution is required to analyze all the rate/bhp limits situation and give a more reasonable
+                            // solution. However, it is still possible the situation is not solvable, which requires some
+                            // test cases to find out good solution for these situation.
+
+                            if (target_rate == 0.) { // zero target rate for producer
+                                const std::string msg = " Setting all rates to be zero for well " + name()
+                                                      + " due to zero target rate for the phase that does not exist in the wellbore."
+                                                      + " however, there is no unique solution for the situation";
+                                OpmLog::warning("NOT_UNIQUE_WELL_SOLUTION", msg);
+                            } else {
+                                const std::string msg = " Setting all rates to be zero for well " + name()
+                                                      + " due to un-solvable situation. There is non-zero target for the phase "
+                                                      + " that does not exist in the wellbore for the situation";
+                                OpmLog::warning("NON_SOLVABLE_WELL_SOLUTION", msg);
+                            }
+
+                            for (int p = 0; p < np; ++p) {
+                                well_state.wellRates()[np * index_of_well_ + p] = 0.;
+                            }
                         }
+
                     } else {
 
                         for (int p = 0; p < np; ++p) {
@@ -1786,6 +1864,11 @@ namespace Opm
     StandardWell<TypeTag>::
     apply(const BVector& x, BVector& Ax) const
     {
+        if ( param_.matrix_add_well_contributions_ )
+        {
+            // Contributions are already in the matrix itself
+            return;
+        }
         assert( Bx_.size() == duneB_.N() );
         assert( invDrw_.size() == invDuneD_.N() );
 
@@ -1929,7 +2012,10 @@ namespace Opm
             std::vector<EvalWell> cq_s(num_components_, 0.0);
             std::vector<EvalWell> mob(num_components_, 0.0);
             getMobility(ebosSimulator, perf, mob);
-            computePerfRate(intQuants, mob, well_index_[perf], bhp, perf_pressure_diffs_[perf], allow_cf, cq_s);
+            double perf_dis_gas_rate = 0.;
+            double perf_vap_oil_rate = 0.;
+            computePerfRate(intQuants, mob, well_index_[perf], bhp, perf_pressure_diffs_[perf], allow_cf,
+                            cq_s, perf_dis_gas_rate, perf_vap_oil_rate);
 
             for(int p = 0; p < np; ++p) {
                 well_flux[ebosCompIdxToFlowCompIdx(p)] += cq_s[p].value();
@@ -2315,7 +2401,10 @@ namespace Opm
             const bool allow_cf = crossFlowAllowed(ebos_simulator);
             const EvalWell& bhp = getBhp();
             std::vector<EvalWell> cq_s(num_components_,0.0);
-            computePerfRate(int_quant, mob, well_index_[perf], bhp, perf_pressure_diffs_[perf], allow_cf, cq_s);
+            double perf_dis_gas_rate = 0.;
+            double perf_vap_oil_rate = 0.;
+            computePerfRate(int_quant, mob, well_index_[perf], bhp, perf_pressure_diffs_[perf], allow_cf,
+                            cq_s, perf_dis_gas_rate, perf_vap_oil_rate);
             // TODO: make area a member
             const double area = 2 * M_PI * perf_rep_radius_[perf] * perf_length_[perf];
             const auto& material_law_manager = ebos_simulator.problem().materialLawManager();
@@ -2339,6 +2428,38 @@ namespace Opm
                                                                 water_velocity);
              // modify the mobility with the shear factor.
             mob[waterCompIdx] /= shear_factor;
+        }
+    }
+
+    template<typename TypeTag>
+    void
+    StandardWell<TypeTag>::addWellContributions(Mat& mat) const
+    {
+        // We need to change matrx A as follows
+        // A -= C^T D^-1 B
+        // D is diagonal
+        // B and C have 1 row, nc colums and nonzero
+        // at (0,j) only if this well has a perforation at cell j.
+
+        for ( auto colC = duneC_[0].begin(), endC = duneC_[0].end(); colC != endC; ++colC )
+        {
+            const auto row_index = colC.index();
+            auto& row = mat[row_index];
+            auto col = row.begin();
+
+            for ( auto colB = duneB_[0].begin(), endB = duneB_[0].end(); colB != endB; ++colB )
+            {
+                const auto col_index = colB.index();
+                // Move col to index col_index
+                while ( col != row.end() && col.index() < col_index ) ++col;
+                assert(col != row.end() && col.index() == col_index);
+
+                Dune::FieldMatrix<Scalar, numWellEq, numEq> tmp;
+                typename Mat::block_type tmp1;
+                Dune::FMatrixHelp::multMatrix(invDuneD_[0][0],  (*colB), tmp);
+                Detail::multMatrixTransposed((*colC), tmp, tmp1);
+                (*col) -= tmp1;
+            }
         }
     }
 }

@@ -34,6 +34,7 @@ namespace Opm {
 
         extractLegacyCellPvtRegionIndex_();
         extractLegacyDepth_();
+        initial_step_ = true;
     }
 
 
@@ -132,10 +133,14 @@ namespace Opm {
             }
         }
 
-        // compute VFP properties
+        // update VFP properties
         vfp_properties_.reset (new VFPProperties (
-                                   eclState.getTableManager().getVFPInjTables(),
-                                   eclState.getTableManager().getVFPProdTables()) );
+                                   schedule().getVFPInjTables(timeStepIdx),
+                                   schedule().getVFPProdTables(timeStepIdx)) );
+
+        for (auto& well : well_container_) {
+            well->setVFPProperties(vfp_properties_.get());
+        }
 
         // update the previous well state. This is used to restart failed steps.
         previous_well_state_ = well_state_;
@@ -185,6 +190,12 @@ namespace Opm {
     void
     BlackoilWellModel<TypeTag>::
     timeStepSucceeded() {
+        // TODO: when necessary
+        rateConverter_->template defineState<ElementContext>(ebosSimulator_);
+        for (const auto& well : well_container_) {
+            well->calculateReservoirRates(well_state_);
+        }
+
         previous_well_state_ = well_state_;
     }
 
@@ -272,6 +283,12 @@ namespace Opm {
         if ( (param_.solve_welleq_initially_ && iterationIdx == 0) || solve_well_equation) {
             // solve the well equations as a pre-processing step
             last_report_ = solveWellEq(dt);
+            if (initial_step_) {
+                // update the explicit quantities to get the initial fluid distribution in the well correct.
+                calculateExplicitQuantities();
+                last_report_ = solveWellEq(dt);
+                initial_step_ = false;
+            }
         }
         assembleWellEq(dt, false);
 
@@ -1294,9 +1311,9 @@ namespace Opm {
                             // observed phase rates translated to
                             // reservoir conditions.  Recall sign
                             // convention: Negative for producers.
-                            const double target =
-                                - std::inner_product(distr.begin(), distr.end(),
-                                                     hrates.begin(), 0.0);
+                            std::vector<double> hrates_resv(np);
+                            rateConverter_->calcReservoirVoidageRates(fipreg, pvtreg, hrates, hrates_resv);
+                            const double target = -std::accumulate(hrates_resv.begin(), hrates_resv.end(), 0.0);
 
                             well_controls_clear(ctrl);
                             well_controls_assert_number_of_phases(ctrl, int(np));
