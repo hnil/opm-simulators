@@ -1,6 +1,3 @@
-# -*- mode: cmake; tab-width: 2; indent-tabs-mode: t; truncate-lines: t; compile-command: "cmake -Wdev" -*-
-# vim: set filetype=cmake autoindent tabstop=2 shiftwidth=2 noexpandtab softtabstop=2 nowrap:
-
 # This file sets up five lists:
 # MAIN_SOURCE_FILES     List of compilation units which will be included in
 #                       the library. If it isn't on this list, it won't be
@@ -26,6 +23,16 @@
 # originally generated with the command:
 # find opm -name '*.c*' -printf '\t%p\n' | sort
 list (APPEND MAIN_SOURCE_FILES
+	# place the flow_ebos_*.cpp files on top of the list because they
+	# take the longest to compile, and compiling them first speeds up
+	# parallel builds because it allows the jobserver to do better scheduling
+  opm/simulators/flow_ebos_blackoil.cpp
+  opm/simulators/flow_ebos_gasoil.cpp
+  opm/simulators/flow_ebos_oilwater.cpp
+  opm/simulators/flow_ebos_polymer.cpp
+  opm/simulators/flow_ebos_solvent.cpp
+  opm/simulators/flow_ebos_oilwater_polymer.cpp
+
   opm/autodiff/Compat.cpp
   opm/autodiff/ExtractParallelGridInformationToISTL.cpp
   opm/autodiff/NewtonIterationBlackoilCPR.cpp
@@ -55,7 +62,6 @@ list (APPEND MAIN_SOURCE_FILES
   opm/core/linalg/LinearSolverFactory.cpp
   opm/core/linalg/LinearSolverInterface.cpp
   opm/core/linalg/LinearSolverIstl.cpp
-  opm/core/linalg/LinearSolverPetsc.cpp
   opm/core/linalg/LinearSolverUmfpack.cpp
   opm/core/linalg/call_umfpack.c
   opm/core/linalg/sparse_sys.c
@@ -113,11 +119,6 @@ list (APPEND MAIN_SOURCE_FILES
   opm/polymer/SimulatorPolymer.cpp
   opm/polymer/TransportSolverTwophaseCompressiblePolymer.cpp
   opm/polymer/TransportSolverTwophasePolymer.cpp
-  opm/simulators/flow_ebos_blackoil.cpp
-  opm/simulators/flow_ebos_gasoil.cpp
-  opm/simulators/flow_ebos_oilwater.cpp
-  opm/simulators/flow_ebos_polymer.cpp
-  opm/simulators/flow_ebos_solvent.cpp
   opm/simulators/ensureDirectoryExists.cpp
   opm/simulators/SimulatorCompressibleTwophase.cpp
   opm/simulators/WellSwitchingLogger.cpp
@@ -127,12 +128,17 @@ list (APPEND MAIN_SOURCE_FILES
   opm/simulators/timestepping/SimulatorTimer.cpp
   )
 
+if(PETSc_FOUND)
+  list(APPEND MAIN_SOURCE_FILES opm/core/linalg/LinearSolverPetsc.cpp)
+endif()
+
 
 # originally generated with the command:
 # find tests -name '*.cpp' -a ! -wholename '*/not-unit/*' -printf '\t%p\n' | sort
 list (APPEND TEST_SOURCE_FILES
   tests/test_autodiffhelpers.cpp
   tests/test_autodiffmatrix.cpp
+  tests/test_blackoil_amg.cpp
   tests/test_block.cpp
   tests/test_boprops_ad.cpp
   tests/test_rateconverter.cpp
@@ -143,6 +149,7 @@ list (APPEND TEST_SOURCE_FILES
   tests/test_welldensitysegmented.cpp
   tests/test_vfpproperties.cpp
   tests/test_singlecellsolves.cpp
+  tests/test_multmatrixtransposed.cpp
   tests/test_multiphaseupwind.cpp
   tests/test_wellmodel.cpp
 #  tests/test_thresholdpressure.cpp
@@ -152,10 +159,8 @@ list (APPEND TEST_SOURCE_FILES
   tests/test_event.cpp
   tests/test_dgbasis.cpp
   tests/test_flowdiagnostics.cpp
-  tests/test_parallelistlinformation.cpp
   tests/test_wells.cpp
   tests/test_linearsolver.cpp
-  tests/test_parallel_linearsolver.cpp
   tests/test_satfunc.cpp
   tests/test_shadow.cpp
   tests/test_equil_legacy.cpp
@@ -170,6 +175,11 @@ list (APPEND TEST_SOURCE_FILES
   tests/test_relpermdiagnostics.cpp
   tests/test_norne_pvt.cpp
   )
+
+if(MPI_FOUND)
+  list(APPEND TEST_SOURCE_FILES tests/test_parallel_linearsolver.cpp
+                                tests/test_parallelistlinformation.cpp)
+endif()
 
 list (APPEND TEST_DATA_FILES
   tests/fluid.data
@@ -225,10 +235,13 @@ list (APPEND EXAMPLE_SOURCE_FILES
   examples/compute_tof_from_files.cpp
   examples/diagnose_relperm.cpp
   tutorials/sim_tutorial1.cpp
-  tutorials/sim_tutorial2.cpp
-  tutorials/sim_tutorial3.cpp
-  tutorials/sim_tutorial4.cpp
   )
+
+if(SuiteSparse_FOUND)
+  list(APPEND EXAMPLE_SOURCE_FILES tutorials/sim_tutorial2.cpp
+                                   tutorials/sim_tutorial3.cpp
+                                   tutorials/sim_tutorial4.cpp)
+endif()
 
 # programs listed here will not only be compiled, but also marked for
 # installation
@@ -247,11 +260,11 @@ list (APPEND PROGRAM_SOURCE_FILES
 # originally generated with the command:
 # find opm -name '*.h*' -a ! -name '*-pch.hpp' -printf '\t%p\n' | sort
 list (APPEND PUBLIC_HEADER_FILES
-  opm/autodiff/AdditionalObjectDeleter.hpp
   opm/autodiff/AutoDiffBlock.hpp
   opm/autodiff/AutoDiffHelpers.hpp
   opm/autodiff/AutoDiffMatrix.hpp
   opm/autodiff/AutoDiff.hpp
+  opm/autodiff/BlackoilAmg.hpp
   opm/autodiff/BlackoilDetails.hpp
   opm/autodiff/BlackoilLegacyDetails.hpp
   opm/autodiff/BlackoilModel.hpp
@@ -274,7 +287,6 @@ list (APPEND PUBLIC_HEADER_FILES
   opm/autodiff/ExtractParallelGridInformationToISTL.hpp
   opm/autodiff/FlowMain.hpp
   opm/autodiff/FlowMainEbos.hpp
-  opm/autodiff/FlowMainPolymer.hpp
   opm/autodiff/FlowMainSequential.hpp
   opm/autodiff/GeoProps.hpp
   opm/autodiff/GridHelpers.hpp
@@ -305,10 +317,12 @@ list (APPEND PUBLIC_HEADER_FILES
   opm/autodiff/SimulatorIncompTwophaseAd.hpp
   opm/autodiff/SimulatorSequentialBlackoil.hpp
   opm/autodiff/TransportSolverTwophaseAd.hpp
+  opm/autodiff/WellConnectionAuxiliaryModule.hpp
   opm/autodiff/WellDensitySegmented.hpp
   opm/autodiff/WellStateFullyImplicitBlackoil.hpp
   opm/autodiff/SimulatorFullyImplicitBlackoilOutput.hpp
   opm/autodiff/BlackoilOutputEbos.hpp
+  opm/autodiff/ThreadHandle.hpp
   opm/autodiff/VFPProperties.hpp
   opm/autodiff/VFPHelpers.hpp
   opm/autodiff/VFPProdProperties.hpp
@@ -326,7 +340,6 @@ list (APPEND PUBLIC_HEADER_FILES
   opm/autodiff/BlackoilWellModel.hpp
   opm/autodiff/BlackoilWellModel_impl.hpp
   opm/autodiff/MissingFeatures.hpp
-  opm/autodiff/ThreadHandle.hpp
   opm/core/flowdiagnostics/AnisotropicEikonal.hpp
   opm/core/flowdiagnostics/DGBasis.hpp
   opm/core/flowdiagnostics/FlowDiagnostics.hpp
@@ -433,6 +446,7 @@ list (APPEND PUBLIC_HEADER_FILES
   opm/simulators/flow_ebos_oilwater.hpp
   opm/simulators/flow_ebos_polymer.hpp
   opm/simulators/flow_ebos_solvent.hpp
+  opm/simulators/flow_ebos_oilwater_polymer.hpp
   opm/simulators/ensureDirectoryExists.hpp
   opm/simulators/ParallelFileMerger.hpp
   opm/simulators/SimulatorCompressibleTwophase.hpp

@@ -29,10 +29,11 @@
 
 #include <opm/autodiff/BlackoilModelParameters.hpp>
 #include <opm/autodiff/BlackoilWellModel.hpp>
+#include <opm/autodiff/WellConnectionAuxiliaryModule.hpp>
 #include <opm/autodiff/BlackoilDetails.hpp>
 #include <opm/autodiff/NewtonIterationBlackoilInterface.hpp>
 
-#include <opm/core/grid.h>
+#include <opm/grid/UnstructuredGrid.h>
 #include <opm/core/simulator/SimulatorReport.hpp>
 #include <opm/core/linalg/LinearSolverInterface.hpp>
 #include <opm/core/linalg/ParallelIstlInformation.hpp>
@@ -68,12 +69,19 @@
 namespace Ewoms {
 namespace Properties {
 NEW_TYPE_TAG(EclFlowProblem, INHERITS_FROM(BlackOilModel, EclBaseProblem));
+SET_STRING_PROP(EclFlowProblem, EclOutputDir, "");
 SET_BOOL_PROP(EclFlowProblem, DisableWells, true);
 SET_BOOL_PROP(EclFlowProblem, EnableDebuggingChecks, false);
 SET_BOOL_PROP(EclFlowProblem, ExportGlobalTransmissibility, true);
 // default in flow is to formulate the equations in surface volumes
 SET_BOOL_PROP(EclFlowProblem, BlackoilConserveSurfaceVolume, true);
 SET_BOOL_PROP(EclFlowProblem, UseVolumetricResidual, false);
+
+// disable all extensions supported by black oil model. this should not really be
+// necessary but it makes things a bit more explicit
+SET_BOOL_PROP(EclFlowProblem, EnablePolymer, false);
+SET_BOOL_PROP(EclFlowProblem, EnableSolvent, false);
+SET_BOOL_PROP(EclFlowProblem, EnableEnergy, false);
 }}
 
 namespace Opm {
@@ -117,8 +125,6 @@ namespace Opm {
         typedef ISTLSolver< MatrixBlockType, VectorBlockType, Indices::pressureSwitchIdx >  ISTLSolverType;
         //typedef typename SolutionVector :: value_type            PrimaryVariables ;
 
-        typedef Opm::FIPData FIPDataType;
-
         // ---------  Public methods  ---------
 
         /// Construct the model. It will retain references to the
@@ -138,7 +144,7 @@ namespace Opm {
                           const bool terminal_output
                           )
         : ebosSimulator_(ebosSimulator)
-        , grid_(ebosSimulator_.gridManager().grid())
+        , grid_(ebosSimulator_.vanguard().grid())
         , istlSolver_( dynamic_cast< const ISTLSolverType* > (&linsolver) )
         , phaseUsage_(phaseUsageFromDeck(eclState()))
         , has_disgas_(FluidSystem::enableDissolvedGas())
@@ -163,7 +169,7 @@ namespace Opm {
         { return  grid_.comm().size() > 1; }
 
         const EclipseState& eclState() const
-        { return ebosSimulator_.gridManager().eclState(); }
+        { return ebosSimulator_.vanguard().eclState(); }
 
         /// Called once before each time step.
         /// \param[in] timer                  simulation timer
@@ -175,16 +181,10 @@ namespace Opm {
         {
 
             // update the solution variables in ebos
-
-            // if the last time step failed we need to update the curent solution
-            // and recalculate the Intesive Quantities.
             if ( timer.lastStepFailed() ) {
-                ebosSimulator_.model().solution( 0 /* timeIdx */ ) = ebosSimulator_.model().solution( 1 /* timeIdx */ );
-                ebosSimulator_.model().invalidateIntensiveQuantitiesCache(/*timeIdx=*/0);
+                ebosSimulator_.model().updateFailed();
             } else {
-                // set the initial solution.
-                ebosSimulator_.model().solution( 1 /* timeIdx */ ) = ebosSimulator_.model().solution( 0 /* timeIdx */ );
-                ebosSimulator_.problem().advanceTimeLevel();
+                ebosSimulator_.model().advanceTimeLevel();
             }
 
             // set the timestep size and index in ebos explicitly
@@ -372,9 +372,19 @@ namespace Opm {
                 // the reservoir equations as a source term.
                 wellModel().assemble(iterationIdx, dt);
             }
-            catch ( const Dune::FMatrixError& e  )
+            catch ( const Dune::FMatrixError& )
             {
-                OPM_THROW(Opm::NumericalProblem,"Error encounted when solving well equations");
+                OPM_THROW(Opm::NumericalIssue,"Error encounted when solving well equations");
+            }
+
+            auto& ebosJac = ebosSimulator_.model().linearizer().matrix();
+            if (param_.matrix_add_well_contributions_) {
+                wellModel().addWellContributions(ebosJac);
+            }
+            if ( param_.preconditioner_add_well_contributions_ &&
+                 ! param_.matrix_add_well_contributions_ ) {
+                matrix_for_preconditioner_ .reset(new Mat(ebosJac));
+                wellModel().addWellContributions(*matrix_for_preconditioner_);
             }
 
             return wellModel().lastReport();
@@ -487,18 +497,20 @@ namespace Opm {
             // set initial guess
             x = 0.0;
 
+            const Mat& actual_mat_for_prec = matrix_for_preconditioner_ ? *matrix_for_preconditioner_.get() : ebosJac;
             // Solve system.
             if( isParallel() )
             {
                 typedef WellModelMatrixAdapter< Mat, BVector, BVector, BlackoilWellModel<TypeTag>, true > Operator;
-                Operator opA(ebosJac, wellModel(), istlSolver().parallelInformation() );
+                Operator opA(ebosJac, actual_mat_for_prec, wellModel(),
+                             istlSolver().parallelInformation() );
                 assert( opA.comm() );
                 istlSolver().solve( opA, x, ebosResid, *(opA.comm()) );
             }
             else
             {
                 typedef WellModelMatrixAdapter< Mat, BVector, BVector, BlackoilWellModel<TypeTag>, false > Operator;
-                Operator opA(ebosJac, wellModel());
+                Operator opA(ebosJac, actual_mat_for_prec, wellModel());
                 istlSolver().solve( opA, x, ebosResid );
             }
         }
@@ -545,8 +557,11 @@ namespace Opm {
 #endif
 
           //! constructor: just store a reference to a matrix
-          WellModelMatrixAdapter (const M& A, const WellModel& wellMod, const boost::any& parallelInformation = boost::any() )
-              : A_( A ), wellMod_( wellMod ), comm_()
+          WellModelMatrixAdapter (const M& A,
+                                  const M& A_for_precond,
+                                  const WellModel& wellMod,
+                                  const boost::any& parallelInformation = boost::any() )
+              : A_( A ), A_for_precond_(A_for_precond), wellMod_( wellMod ), comm_()
           {
 #if HAVE_MPI
             if( parallelInformation.type() == typeid(ParallelISTLInformation) )
@@ -561,6 +576,7 @@ namespace Opm {
           virtual void apply( const X& x, Y& y ) const
           {
             A_.mv( x, y );
+
             // add well model modification to y
             wellMod_.apply(x, y );
 
@@ -574,6 +590,7 @@ namespace Opm {
           virtual void applyscaleadd (field_type alpha, const X& x, Y& y) const
           {
             A_.usmv(alpha,x,y);
+
             // add scaled well model modification to y
             wellMod_.applyScaleAdd( alpha, x, y );
 
@@ -583,7 +600,7 @@ namespace Opm {
 #endif
           }
 
-          virtual const matrix_type& getmat() const { return A_; }
+          virtual const matrix_type& getmat() const { return A_for_precond_; }
 
           communication_type* comm()
           {
@@ -592,6 +609,7 @@ namespace Opm {
 
         protected:
           const matrix_type& A_ ;
+          const matrix_type& A_for_precond_ ;
           const WellModel& wellMod_;
           std::unique_ptr< communication_type > comm_;
         };
@@ -812,6 +830,7 @@ namespace Opm {
             const double dt = timer.currentStepLength();
             const double tol_mb    = param_.tolerance_mb_;
             const double tol_cnv   = param_.tolerance_cnv_;
+            const double tol_cnv_relaxed = param_.tolerance_cnv_relaxed_;
 
             const int numComp = numEq;
 
@@ -898,8 +917,11 @@ namespace Opm {
             {
                 CNV[compIdx]                    = B_avg[compIdx] * dt * maxCoeff[compIdx];
                 mass_balance_residual[compIdx]  = std::abs(B_avg[compIdx]*R_sum[compIdx]) * dt / pvSum;
-                converged_MB                = converged_MB && (mass_balance_residual[compIdx] < tol_mb);
-                converged_CNV               = converged_CNV && (CNV[compIdx] < tol_cnv);
+                converged_MB                    = converged_MB && (mass_balance_residual[compIdx] < tol_mb);
+                if (iteration < param_.max_strict_iter_)
+                    converged_CNV = converged_CNV && (CNV[compIdx] < tol_cnv);
+                else
+                    converged_CNV = converged_CNV && (CNV[compIdx] < tol_cnv_relaxed);
 
                 residual_norms.push_back(CNV[compIdx]);
             }
@@ -908,10 +930,7 @@ namespace Opm {
 
             bool converged = converged_MB && converged_Well;
 
-            // do not care about the cell based residual in the last two Newton
-            // iterations
-            if (iteration < param_.max_strict_iter_)
-                converged = converged && converged_CNV;
+            converged = converged && converged_CNV;
 
             if ( terminal_output_ )
             {
@@ -971,15 +990,15 @@ namespace Opm {
 
                 if (std::isnan(mass_balance_residual[compIdx])
                     || std::isnan(CNV[compIdx])) {
-                    OPM_THROW(Opm::NumericalProblem, "NaN residual for " << compName << " equation");
+                    OPM_THROW(Opm::NumericalIssue, "NaN residual for " << compName << " equation");
                 }
                 if (mass_balance_residual[compIdx] > maxResidualAllowed()
                     || CNV[compIdx] > maxResidualAllowed()) {
-                    OPM_THROW(Opm::NumericalProblem, "Too large residual for " << compName << " equation");
+                    OPM_THROW(Opm::NumericalIssue, "Too large residual for " << compName << " equation");
                 }
                 if (mass_balance_residual[compIdx] < 0
                     || CNV[compIdx] < 0) {
-                    OPM_THROW(Opm::NumericalProblem, "Negative residual for " << compName << " equation");
+                    OPM_THROW(Opm::NumericalIssue, "Negative residual for " << compName << " equation");
                 }
             }
 
@@ -1001,142 +1020,14 @@ namespace Opm {
             return computeFluidInPlace(fipnum);
         }
 
+        /// Should not be called
         std::vector<std::vector<double> >
-        computeFluidInPlace(const std::vector<int>& fipnum) const
-        {
-            const auto& comm = grid_.comm();
-            const auto& gridView = ebosSimulator().gridView();
-            const int nc = gridView.size(/*codim=*/0);
-            int ntFip = *std::max_element(fipnum.begin(), fipnum.end());
-            ntFip = comm.max(ntFip);
-
-            std::vector<double> tpv(ntFip, 0.0);
-            std::vector<double> hcpv(ntFip, 0.0);
-
-            std::vector<std::vector<double> > regionValues(ntFip, std::vector<double>(FIPDataType::fipValues,0.0));
-
-            for (int i = 0; i<FIPDataType::fipValues; i++) {
-                fip_.fip[i].resize(nc,0.0);
-            }
-
-            ElementContext elemCtx(ebosSimulator_);
-            const auto& elemEndIt = gridView.template end</*codim=*/0, Dune::Interior_Partition>();
-            for (auto elemIt = gridView.template begin</*codim=*/0, Dune::Interior_Partition>();
-                 elemIt != elemEndIt;
-                 ++elemIt)
-            {
-                elemCtx.updatePrimaryStencil(*elemIt);
-                elemCtx.updatePrimaryIntensiveQuantities(/*timeIdx=*/0);
-
-                const unsigned cellIdx = elemCtx.globalSpaceIndex(/*spaceIdx=*/0, /*timeIdx=*/0);
-                const auto& intQuants = elemCtx.intensiveQuantities(/*spaceIdx=*/0, /*timeIdx=*/0);
-                const auto& fs = intQuants.fluidState();
-
-                const int regionIdx = fipnum[cellIdx] - 1;
-                if (regionIdx < 0) {
-                    // the given cell is not attributed to any region
-                    continue;
-                }
-
-                // calculate the pore volume of the current cell. Note that the porosity
-                // returned by the intensive quantities is defined as the ratio of pore
-                // space to total cell volume and includes all pressure dependent (->
-                // rock compressibility) and static modifiers (MULTPV, MULTREGP, NTG,
-                // PORV, MINPV and friends). Also note that because of this, the porosity
-                // returned by the intensive quantities can be outside of the physical
-                // range [0, 1] in pathetic cases.
-                const double pv =
-                    ebosSimulator_.model().dofTotalVolume(cellIdx)
-                    * intQuants.porosity().value();
-
-                for (unsigned phase = 0; phase < FluidSystem::numPhases; ++phase) {
-                    if (!FluidSystem::phaseIsActive(phase)) {
-                        continue;
-                    }
-
-                    const double b = fs.invB(phase).value();
-                    const double s = fs.saturation(phase).value();
-                    const unsigned flowCanonicalPhaseIdx = ebosPhaseToFlowCanonicalPhaseIdx(phase);
-
-                    fip_.fip[flowCanonicalPhaseIdx][cellIdx] = b * s * pv;
-                    regionValues[regionIdx][flowCanonicalPhaseIdx] += fip_.fip[flowCanonicalPhaseIdx][cellIdx];
-                }
-
-                if (FluidSystem::phaseIsActive(FluidSystem::oilPhaseIdx) && FluidSystem::phaseIsActive(FluidSystem::gasPhaseIdx)) {
-                    // Account for gas dissolved in oil and vaporized oil
-                    fip_.fip[FIPDataType::FIP_DISSOLVED_GAS][cellIdx] = fs.Rs().value() * fip_.fip[FIPDataType::FIP_LIQUID][cellIdx];
-                    fip_.fip[FIPDataType::FIP_VAPORIZED_OIL][cellIdx] = fs.Rv().value() * fip_.fip[FIPDataType::FIP_VAPOUR][cellIdx];
-
-                    regionValues[regionIdx][FIPData::FIP_DISSOLVED_GAS] += fip_.fip[FIPData::FIP_DISSOLVED_GAS][cellIdx];
-                    regionValues[regionIdx][FIPData::FIP_VAPORIZED_OIL] += fip_.fip[FIPData::FIP_VAPORIZED_OIL][cellIdx];
-                }
-
-                const double hydrocarbon = fs.saturation(FluidSystem::oilPhaseIdx).value() + fs.saturation(FluidSystem::gasPhaseIdx).value();
-
-                tpv[regionIdx] += pv;
-                hcpv[regionIdx] += pv * hydrocarbon;
-            }
-
-            // sum tpv (-> total pore volume of the regions) and hcpv (-> pore volume of the
-            // the regions that is occupied by hydrocarbons)
-            comm.sum(tpv.data(), tpv.size());
-            comm.sum(hcpv.data(), hcpv.size());
-
-            for (auto elemIt = gridView.template begin</*codim=*/0, Dune::Interior_Partition>();
-                 elemIt != elemEndIt;
-                 ++elemIt)
-            {
-                const auto& elem = *elemIt;
-
-                elemCtx.updatePrimaryStencil(elem);
-                elemCtx.updatePrimaryIntensiveQuantities(/*timeIdx=*/0);
-
-                unsigned cellIdx = elemCtx.globalSpaceIndex(/*spaceIdx=*/0, /*timeIdx=*/0);
-                const int regionIdx = fipnum[cellIdx] - 1;
-                if (regionIdx < 0) {
-                    // the cell is not attributed to any region. ignore it!
-                    continue;
-                }
-
-                const auto& intQuants = elemCtx.intensiveQuantities(/*spaceIdx=*/0, /*timeIdx=*/0);
-                const auto& fs = intQuants.fluidState();
-
-                // calculate the pore volume of the current cell. Note that the
-                // porosity returned by the intensive quantities is defined as the
-                // ratio of pore space to total cell volume and includes all pressure
-                // dependent (-> rock compressibility) and static modifiers (MULTPV,
-                // MULTREGP, NTG, PORV, MINPV and friends). Also note that because of
-                // this, the porosity returned by the intensive quantities can be
-                // outside of the physical range [0, 1] in pathetic cases.
-                const double pv =
-                    ebosSimulator_.model().dofTotalVolume(cellIdx)
-                    * intQuants.porosity().value();
-
-                fip_.fip[FIPDataType::FIP_PV][cellIdx] = pv;
-                const double hydrocarbon = fs.saturation(FluidSystem::oilPhaseIdx).value() + fs.saturation(FluidSystem::gasPhaseIdx).value();
-
-                //Compute hydrocarbon pore volume weighted average pressure.
-                //If we have no hydrocarbon in region, use pore volume weighted average pressure instead
-                if (hcpv[regionIdx] > 1e-10) {
-                    fip_.fip[FIPDataType::FIP_WEIGHTED_PRESSURE][cellIdx] = pv * fs.pressure(FluidSystem::oilPhaseIdx).value() * hydrocarbon / hcpv[regionIdx];
-                } else {
-                    fip_.fip[FIPDataType::FIP_WEIGHTED_PRESSURE][cellIdx] = pv * fs.pressure(FluidSystem::oilPhaseIdx).value() / tpv[regionIdx];
-                }
-
-                regionValues[regionIdx][FIPDataType::FIP_PV] += fip_.fip[FIPDataType::FIP_PV][cellIdx];
-                regionValues[regionIdx][FIPDataType::FIP_WEIGHTED_PRESSURE] += fip_.fip[FIPDataType::FIP_WEIGHTED_PRESSURE][cellIdx];
-            }
-
-            // sum the results over all processes
-            for(int regionIdx=0; regionIdx < ntFip; ++regionIdx) {
-                comm.sum(regionValues[regionIdx].data(), regionValues[regionIdx].size());
-            }
-
+        computeFluidInPlace(const std::vector<int>& /*fipnum*/) const
+        {            
+            //assert(true)
+            //return an empty vector
+            std::vector<std::vector<double> > regionValues(0, std::vector<double>(0,0.0));
             return regionValues;
-        }
-
-        const FIPDataType& getFIPData() const {
-            return fip_;
         }
 
         const Simulator& ebosSimulator() const
@@ -1178,7 +1069,8 @@ namespace Opm {
         std::vector<std::vector<double>> residual_norms_history_;
         double current_relaxation_;
         BVector dx_old_;
-        mutable FIPDataType fip_;
+
+        std::unique_ptr<Mat> matrix_for_preconditioner_;
 
     public:
         /// return the StandardWells object
@@ -1187,20 +1079,6 @@ namespace Opm {
 
         const BlackoilWellModel<TypeTag>&
         wellModel() const { return well_model_; }
-
-        int ebosPhaseToFlowCanonicalPhaseIdx( const int phaseIdx ) const
-        {
-            if (FluidSystem::phaseIsActive(FluidSystem::waterPhaseIdx) && FluidSystem::waterPhaseIdx == phaseIdx)
-                return Water;
-            if (FluidSystem::phaseIsActive(FluidSystem::oilPhaseIdx) && FluidSystem::oilPhaseIdx == phaseIdx)
-                return Oil;
-            if (FluidSystem::phaseIsActive(FluidSystem::gasPhaseIdx) && FluidSystem::gasPhaseIdx == phaseIdx)
-                return Gas;
-
-            assert(phaseIdx < 3);
-            // for other phases return the index
-            return phaseIdx;
-        }
 
         void beginReportStep()
         {
@@ -1213,6 +1091,7 @@ namespace Opm {
         }
 
     private:
+
 
         double dpMaxRel() const { return param_.dp_max_rel_; }
         double dsMax() const { return param_.ds_max_; }

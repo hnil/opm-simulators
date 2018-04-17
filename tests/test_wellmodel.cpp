@@ -21,10 +21,6 @@
 
 #include <config.h>
 
-#if HAVE_DYNAMIC_BOOST_TEST
-#define BOOST_TEST_DYN_LINK
-#endif
-
 #define BOOST_TEST_MODULE WellModelTest
 
 #include <opm/common/utility/platform_dependent/disable_warnings.h>
@@ -39,7 +35,7 @@
 #include <opm/parser/eclipse/EclipseState/Schedule/ScheduleEnums.hpp>
 #include <opm/parser/eclipse/EclipseState/Tables/TableManager.hpp>
 
-#include <opm/core/grid.h>
+#include <opm/grid/UnstructuredGrid.h>
 #include <opm/core/props/satfunc/SaturationPropsFromDeck.hpp>
 #include <opm/parser/eclipse/Units/Units.hpp>
 #include <opm/core/wells/WellsManager.hpp>

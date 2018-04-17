@@ -19,7 +19,7 @@
 */
 #ifndef OPM_SIMULATORFULLYIMPLICITBLACKOILOUTPUT_HEADER_INCLUDED
 #define OPM_SIMULATORFULLYIMPLICITBLACKOILOUTPUT_HEADER_INCLUDED
-#include <opm/core/grid.h>
+#include <opm/grid/UnstructuredGrid.h>
 #include <opm/simulators/timestepping/SimulatorTimerInterface.hpp>
 #include <opm/core/simulator/WellState.hpp>
 #include <opm/autodiff/Compat.hpp>
@@ -58,7 +58,7 @@
 #include <boost/filesystem.hpp>
 
 #ifdef HAVE_OPM_GRID
-#include <dune/grid/CpGrid.hpp>
+#include <opm/grid/CpGrid.hpp>
 #endif
 namespace Opm
 {
@@ -317,6 +317,7 @@ namespace Opm
         const SummaryConfig& summaryConfig_;
 
         std::unique_ptr< ThreadHandle > asyncOutput_;
+        const int* globalCellIdxMap_;
     };
 
 
@@ -348,7 +349,8 @@ namespace Opm
         eclipseState_(eclipseState),
         schedule_(schedule),
         summaryConfig_(summaryConfig),
-        asyncOutput_()
+        asyncOutput_(),
+        globalCellIdxMap_(Opm::UgGridHelpers::globalCell(grid))
     {
         // For output.
         if ( output_ )

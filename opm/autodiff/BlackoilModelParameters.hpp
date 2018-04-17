@@ -46,6 +46,8 @@ namespace Opm
         double tolerance_mb_;
         /// Local convergence tolerance (max of local saturation errors).
         double tolerance_cnv_;
+        /// Relaxed local convergence tolerance (used when iter >= max_strict_iter_).
+        double tolerance_cnv_relaxed_;
         /// Well convergence tolerance.
         double tolerance_wells_;
         /// Tolerance for the well control equations
@@ -90,6 +92,12 @@ namespace Opm
 
         /// The file name of the deck
         std::string deck_file_name_;
+
+        // Whether to add influences of wells between cells to the matrix and preconditioner matrix
+        bool matrix_add_well_contributions_;
+
+        // Whether to add influences of wells between cells to the preconditioner matrix only
+        bool preconditioner_add_well_contributions_;
 
         /// Construct from user parameters or defaults.
         explicit BlackoilModelParameters( const ParameterGroup& param );

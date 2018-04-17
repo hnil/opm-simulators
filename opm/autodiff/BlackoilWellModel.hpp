@@ -84,6 +84,15 @@ namespace Opm {
             typedef Dune::FieldVector<Scalar, numEq    > VectorBlockType;
             typedef Dune::BlockVector<VectorBlockType> BVector;
 
+#if  DUNE_VERSION_NEWER_REV(DUNE_ISTL, 2 , 5, 1)
+            // 3x3 matrix block inversion was unstable from at least 2.3 until and
+            // including 2.5.0
+            typedef Dune::FieldMatrix<Scalar, numEq, numEq > MatrixBlockType;
+#else
+            typedef Dune::FieldMatrix<Scalar, numEq, numEq > MatrixBlockType;
+#endif
+            typedef Dune::BCRSMatrix <MatrixBlockType> Mat;
+
             typedef Ewoms::BlackOilPolymerModule<TypeTag> PolymerModule;
 
             // For the conversion between the surface volume rate and resrevoir voidage rate
@@ -143,6 +152,14 @@ namespace Opm {
 
             const SimulatorReport& lastReport() const;
 
+
+            void addWellContributions(Mat& mat)
+            {
+                for ( const auto& well: well_container_ ) {
+                        well->addWellContributions(mat);
+                }
+            }
+
         protected:
 
             Simulator& ebosSimulator_;
@@ -153,9 +170,6 @@ namespace Opm {
 
             using WellInterfacePtr = std::unique_ptr<WellInterface<TypeTag> >;
             // a vector of all the wells.
-            // eventually, the wells_ above should be gone.
-            // the name is just temporary
-            // later, might make share_ptr const later.
             std::vector<WellInterfacePtr > well_container_;
 
             using ConvergenceReport = typename WellInterface<TypeTag>::ConvergenceReport;
@@ -177,6 +191,7 @@ namespace Opm {
             size_t number_of_cells_;
             double gravity_;
             std::vector<double> depth_;
+            bool initial_step_;
 
             DynamicListEconLimited dynamic_list_econ_limited_;
             std::unique_ptr<RateConverterType> rateConverter_;
@@ -190,7 +205,7 @@ namespace Opm {
             const Wells* wells() const { return wells_manager_->c_wells(); }
 
             const Schedule& schedule() const
-            { return ebosSimulator_.gridManager().schedule(); }
+            { return ebosSimulator_.vanguard().schedule(); }
 
             void updateWellControls();
 

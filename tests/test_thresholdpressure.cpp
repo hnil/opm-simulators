@@ -2,9 +2,9 @@
 #include <opm/parser/eclipse/Parser/ParseContext.hpp>
 #include <opm/parser/eclipse/EclipseState/Schedule/Schedule.hpp>
 
-#include <opm/core/grid.h>
+#include <opm/grid/UnstructuredGrid.h>
 #include <opm/core/grid/cornerpoint_grid.h>
-#include <opm/core/grid/GridManager.hpp>
+#include <opm/grid/GridManager.hpp>
 #include <opm/autodiff/GridHelpers.hpp>
 #include <opm/simulators/thresholdPressures.hpp> // Note: the GridHelpers must be included before this (to make overloads available)
 
@@ -48,8 +48,8 @@ BOOST_AUTO_TEST_CASE(CreateSimulationConfig) {
     EclipseState state(*deck, parseContext);
     EclipseGridConstPtr eclipseGrid = state.getInputGrid();
     std::vector<double> porv = eclipseState->getDoubleGridProperty("PORV")->getData();
-    GridManager gridManager( eclipseState->getInputGrid(), porv );
-    const Grid& grid = *(gridManager.c_grid());
+    GridManager vanguard( eclipseState->getInputGrid(), porv );
+    const Grid& grid = *(vanguard.c_grid());
 
     std::vector<double> threshold_pressures = thresholdPressures(parseContext, eclipseState, grid);
     BOOST_CHECK( threshold_pressures.size() > 0 );

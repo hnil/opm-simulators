@@ -21,12 +21,12 @@
 
 #include <opm/polymer/TransportSolverTwophaseCompressiblePolymer.hpp>
 #include <opm/core/props/BlackoilPropertiesInterface.hpp>
-#include <opm/core/grid.h>
+#include <opm/grid/UnstructuredGrid.h>
 #include <opm/core/transport/reorder/reordersequence.h>
 #include <opm/common/utility/numeric/RootFinders.hpp>
 #include <opm/core/utility/miscUtilities.hpp>
 #include <opm/core/utility/miscUtilitiesBlackoil.hpp>
-#include <opm/core/pressure/tpfa/trans_tpfa.h>
+#include <opm/grid/transmissibility/trans_tpfa.h>
 #include <opm/common/ErrorMacros.hpp>
 #include <cmath>
 #include <list>
@@ -306,7 +306,7 @@ namespace Opm
         mutable double s; // Mutable in order to change it with every operator() call to be the last computed s value.
         TransportSolverTwophaseCompressiblePolymer::ResidualEquation& res_eq_;
         explicit ResidualC(TransportSolverTwophaseCompressiblePolymer::ResidualEquation& res_eq)
-            : res_eq_(res_eq)
+            : s(0.0), res_eq_(res_eq)
         {}
 
         void computeBothResiduals(const double s_arg, const double c_arg, double& res_s, double& res_c, double& mc, double& ff) const

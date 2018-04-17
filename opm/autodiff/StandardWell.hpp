@@ -27,6 +27,7 @@
 #include <opm/autodiff/WellInterface.hpp>
 #include <opm/autodiff/ISTLSolver.hpp>
 #include <opm/autodiff/RateConverter.hpp>
+#include <opm/autodiff/ISTLSolver.hpp>
 
 namespace Opm
 {
@@ -88,15 +89,8 @@ namespace Opm
         typedef Dune::FieldVector<Scalar, numWellEq> VectorBlockWellType;
         typedef Dune::BlockVector<VectorBlockWellType> BVectorWell;
 
-#if  DUNE_VERSION_NEWER_REV(DUNE_ISTL, 2 , 5, 1)
-        // 3x3 matrix block inversion was unstable from at least 2.3 until and
-        // including 2.5.0
         // the matrix type for the diagonal matrix D
         typedef Dune::FieldMatrix<Scalar, numWellEq, numWellEq > DiagMatrixBlockWellType;
-#else
-        // the matrix type for the diagonal matrix D
-        typedef Dune::MatrixBlock<Scalar, numWellEq, numWellEq > DiagMatrixBlockWellType;
-#endif
 
         typedef Dune::BCRSMatrix <DiagMatrixBlockWellType> DiagMatWell;
 
@@ -157,6 +151,14 @@ namespace Opm
 
         virtual void calculateExplicitQuantities(const Simulator& ebosSimulator,
                                                  const WellState& well_state); // should be const?
+
+        virtual void  addWellContributions(Mat& mat) const;
+
+        /// \brief Wether the Jacobian will also have well contributions in it.
+        virtual bool jacobianContainsWellContributions() const
+        {
+            return param_.matrix_add_well_contributions_;
+        }
     protected:
 
         // protected functions from the Base class
@@ -281,7 +283,8 @@ namespace Opm
         void computePerfRate(const IntensiveQuantities& intQuants,
                              const std::vector<EvalWell>& mob_perfcells_dense,
                              const double Tw, const EvalWell& bhp, const double& cdp,
-                             const bool& allow_cf, std::vector<EvalWell>& cq_s) const;
+                             const bool& allow_cf, std::vector<EvalWell>& cq_s,
+                             double& perf_dis_gas_rate, double& perf_vap_oil_rate) const;
 
         // TODO: maybe we should provide a light version of computePerfRate, which does not include the
         // calculation of the derivatives

@@ -24,7 +24,7 @@
 
 #include <opm/core/props/BlackoilPhases.hpp>
 #include <opm/core/simulator/BlackoilState.hpp>
-#include <opm/core/utility/RegionMapping.hpp>
+#include <opm/grid/utility/RegionMapping.hpp>
 #include <opm/core/linalg/ParallelIstlInformation.hpp>
 
 #include <dune/grid/common/gridenums.hh>
@@ -470,7 +470,7 @@ namespace Opm {
 
                 // create map from cell to region
                 // and set all attributes to zero
-                const auto& grid = simulator.gridManager().grid();
+                const auto& grid = simulator.vanguard().grid();
                 const unsigned numCells = grid.size(/*codim=*/0);
                 std::vector<int> cell2region(numCells, -1);
                 for (const auto& reg : rmap_.activeRegions()) {
@@ -582,7 +582,13 @@ namespace Opm {
              *
              *
              * \param[out] coeff Surface-to-reservoir conversion
-             * coefficients for all active phases.
+             * coefficients that can be used to compute total reservoir
+             * volumes from surface volumes with the formula
+             *               q_{rT} = \sum_p coeff[p] q_{sp}.
+             * However, individual phase reservoir volumes cannot be calculated from
+             * these coefficients (i.e. q_{rp} is not equal to coeff[p] q_{sp})
+             * since they can depend on more than one surface volume rate when
+             * we have dissolved gas or vaporized oil.
              */
             template <class Coeff>
             void
@@ -607,13 +613,16 @@ namespace Opm {
                     coeff[iw] = 1.0 / bw;
                 }
 
+                // Actual Rs and Rv:
+                double Rs = ra.rs;
+                double Rv = ra.rv;
+
                 // Determinant of 'R' matrix
-                const double detR = 1.0 - (ra.rs * ra.rv);
+                const double detR = 1.0 - (Rs * Rv);
 
                 if (Details::PhaseUsed::oil(pu)) {
                     // q[o]_r = 1/(bo * (1 - rs*rv)) * (q[o]_s - rv*q[g]_s)
 
-                    const double Rs = ra.rs;
                     const double bo = FluidSystem::oilPvt().inverseFormationVolumeFactor(pvtRegionIdx, T, p, Rs);
                     const double den = bo * detR;
 
@@ -627,7 +636,6 @@ namespace Opm {
                 if (Details::PhaseUsed::gas(pu)) {
                     // q[g]_r = 1/(bg * (1 - rs*rv)) * (q[g]_s - rs*q[o]_s)
 
-                    const double Rv = ra.rv;
                     const double bg  = FluidSystem::gasPvt().inverseFormationVolumeFactor(pvtRegionIdx, T, p, Rv);
                     const double den = bg * detR;
 
@@ -636,6 +644,88 @@ namespace Opm {
                     if (Details::PhaseUsed::oil(pu)) {
                         coeff[io] -= ra.rs / den;
                     }
+                }
+            }
+
+
+            /**
+             * Converting surface volume rates to reservoir voidage rates
+             *
+             * \tparam Rates Type representing contiguous collection
+             * of surface-to-reservoir conversion coefficients.  Must
+             * support direct indexing through \code operator[]()
+             * \endcode.
+             *
+             *
+             * \param[in] r Fluid-in-place region of the well
+             * \param[in] pvtRegionIdx PVT region of the well
+             * \param[in] surface_rates surface voluem rates for
+             * all active phases
+             *
+             * \param[out] voidage_rates reservoir volume rates for
+             * all active phases
+             */
+            template <class Rates >
+            void
+            calcReservoirVoidageRates(const RegionId r, const int pvtRegionIdx, const Rates& surface_rates,
+                                      Rates& voidage_rates) const
+            {
+                assert(voidage_rates.size() == surface_rates.size());
+
+                std::fill(voidage_rates.begin(), voidage_rates.end(), 0.0);
+
+                const auto& pu = phaseUsage_;
+                const auto& ra = attr_.attributes(r);
+                const double p = ra.pressure;
+                const double T = ra.temperature;
+
+                const int   iw = Details::PhasePos::water(pu);
+                const int   io = Details::PhasePos::oil  (pu);
+                const int   ig = Details::PhasePos::gas  (pu);
+
+                if (Details::PhaseUsed::water(pu)) {
+                    // q[w]_r = q[w]_s / bw
+
+                    const double bw = FluidSystem::waterPvt().inverseFormationVolumeFactor(pvtRegionIdx, T, p);
+
+                    voidage_rates[iw] = surface_rates[iw] / bw;
+                }
+
+                // Use average Rs and Rv:
+                double Rs = std::min(ra.rs, surface_rates[ig]/(surface_rates[io]+1.0e-15));
+                double Rv = std::min(ra.rv, surface_rates[io]/(surface_rates[ig]+1.0e-15));
+
+                // Determinant of 'R' matrix
+                const double detR = 1.0 - (Rs * Rv);
+
+                if (Details::PhaseUsed::oil(pu)) {
+                    // q[o]_r = 1/(bo * (1 - rs*rv)) * (q[o]_s - rv*q[g]_s)
+
+                    const double bo = FluidSystem::oilPvt().inverseFormationVolumeFactor(pvtRegionIdx, T, p, Rs);
+                    const double den = bo * detR;
+
+                    voidage_rates[io] = surface_rates[io];
+
+                    if (Details::PhaseUsed::gas(pu)) {
+                        voidage_rates[io] -= Rv * surface_rates[ig];
+                    }
+
+                    voidage_rates[io] /= den;
+                }
+
+                if (Details::PhaseUsed::gas(pu)) {
+                    // q[g]_r = 1/(bg * (1 - rs*rv)) * (q[g]_s - rs*q[o]_s)
+
+                    const double bg  = FluidSystem::gasPvt().inverseFormationVolumeFactor(pvtRegionIdx, T, p, Rv);
+                    const double den = bg * detR;
+
+                    voidage_rates[ig] = surface_rates[ig];
+
+                    if (Details::PhaseUsed::oil(pu)) {
+                        voidage_rates[ig] -= Rs * surface_rates[io];
+                    }
+
+                    voidage_rates[ig] /= den;
                 }
             }
 

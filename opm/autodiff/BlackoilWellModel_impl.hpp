@@ -15,7 +15,7 @@ namespace Opm {
         , has_solvent_(GET_PROP_VALUE(TypeTag, EnableSolvent))
         , has_polymer_(GET_PROP_VALUE(TypeTag, EnablePolymer))
     {
-        const auto& eclState = ebosSimulator_.gridManager().eclState();
+        const auto& eclState = ebosSimulator_.vanguard().eclState();
         phase_usage_ = phaseUsageFromDeck(eclState);
 
         const auto& gridView = ebosSimulator_.gridView();
@@ -29,6 +29,7 @@ namespace Opm {
 
         extractLegacyCellPvtRegionIndex_();
         extractLegacyDepth_();
+        initial_step_ = true;
     }
 
 
@@ -38,9 +39,9 @@ namespace Opm {
     BlackoilWellModel<TypeTag>::
     beginReportStep(const int timeStepIdx)
     {
-        const Grid& grid = ebosSimulator_.gridManager().grid();
-        const auto& defunct_well_names = ebosSimulator_.gridManager().defunctWellNames();
-        const auto& eclState = ebosSimulator_.gridManager().eclState();
+        const Grid& grid = ebosSimulator_.vanguard().grid();
+        const auto& defunct_well_names = ebosSimulator_.vanguard().defunctWellNames();
+        const auto& eclState = ebosSimulator_.vanguard().eclState();
         wells_ecl_ = schedule().getWells(timeStepIdx);
 
         // Create wells and well state.
@@ -67,7 +68,7 @@ namespace Opm {
         size_t nc = number_of_cells_;
         std::vector<double> cellPressures(nc, 0.0);
         ElementContext elemCtx(ebosSimulator_);
-        const auto& gridView = ebosSimulator_.gridManager().gridView();
+        const auto& gridView = ebosSimulator_.vanguard().gridView();
         const auto& elemEndIt = gridView.template end</*codim=*/0>();
         for (auto elemIt = gridView.template begin</*codim=*/0>();
              elemIt != elemEndIt;
@@ -127,10 +128,14 @@ namespace Opm {
             }
         }
 
-        // compute VFP properties
+        // update VFP properties
         vfp_properties_.reset (new VFPProperties (
-                                   eclState.getTableManager().getVFPInjTables(),
-                                   eclState.getTableManager().getVFPProdTables()) );
+                                   schedule().getVFPInjTables(timeStepIdx),
+                                   schedule().getVFPProdTables(timeStepIdx)) );
+
+        for (auto& well : well_container_) {
+            well->setVFPProperties(vfp_properties_.get());
+        }
 
         // update the previous well state. This is used to restart failed steps.
         previous_well_state_ = well_state_;
@@ -180,6 +185,12 @@ namespace Opm {
     void
     BlackoilWellModel<TypeTag>::
     timeStepSucceeded() {
+        // TODO: when necessary
+        rateConverter_->template defineState<ElementContext>(ebosSimulator_);
+        for (const auto& well : well_container_) {
+            well->calculateReservoirRates(well_state_);
+        }
+
         previous_well_state_ = well_state_;
     }
 
@@ -267,6 +278,12 @@ namespace Opm {
         if (param_.solve_welleq_initially_ && iterationIdx == 0) {
             // solve the well equations as a pre-processing step
             last_report_ = solveWellEq(dt);
+            if (initial_step_) {
+                // update the explicit quantities to get the initial fluid distribution in the well correct.
+                calculateExplicitQuantities();
+                last_report_ = solveWellEq(dt);
+                initial_step_ = false;
+            }
         }
         assembleWellEq(dt, false);
 
@@ -287,10 +304,6 @@ namespace Opm {
             well_container_[w]->assembleWellEq(ebosSimulator_, dt, well_state_, only_wells);
         }
     }
-
-
-
-
 
     // applying the well residual to reservoir residuals
     // r = r - duneC_^T * invDuneD_ * resWell_
@@ -531,7 +544,7 @@ namespace Opm {
         // checking NaN residuals
         {
             bool nan_residual_found = report.nan_residual_found;
-            const auto& grid = ebosSimulator_.gridManager().grid();
+            const auto& grid = ebosSimulator_.vanguard().grid();
             int value = nan_residual_found ? 1 : 0;
 
             nan_residual_found = grid.comm().max(value);
@@ -540,14 +553,14 @@ namespace Opm {
                 for (const auto& well : report.nan_residual_wells) {
                     OpmLog::debug("NaN residual found with phase " + well.phase_name + " for well " + well.well_name);
                 }
-                OPM_THROW(Opm::NumericalProblem, "NaN residual found!");
+                OPM_THROW(Opm::NumericalIssue, "NaN residual found!");
             }
         }
 
         // checking too large residuals
         {
             bool too_large_residual_found = report.too_large_residual_found;
-            const auto& grid = ebosSimulator_.gridManager().grid();
+            const auto& grid = ebosSimulator_.vanguard().grid();
             int value = too_large_residual_found ? 1 : 0;
 
             too_large_residual_found = grid.comm().max(value);
@@ -555,14 +568,14 @@ namespace Opm {
                 for (const auto& well : report.too_large_residual_wells) {
                     OpmLog::debug("Too large residual found with phase " + well.phase_name + " fow well " + well.well_name);
                 }
-                OPM_THROW(Opm::NumericalProblem, "Too large residual found!");
+                OPM_THROW(Opm::NumericalIssue, "Too large residual found!");
             }
         }
 
         // checking convergence
         bool converged_well = report.converged;
         {
-            const auto& grid = ebosSimulator_.gridManager().grid();
+            const auto& grid = ebosSimulator_.vanguard().grid();
             int value = converged_well ? 1 : 0;
 
             converged_well = grid.comm().min(value);
@@ -979,7 +992,7 @@ namespace Opm {
     BlackoilWellModel<TypeTag>::
     computeAverageFormationFactor(std::vector<double>& B_avg) const
     {
-        const auto& grid = ebosSimulator_.gridManager().grid();
+        const auto& grid = ebosSimulator_.vanguard().grid();
         const auto& gridView = grid.leafGridView();
         ElementContext elemCtx(ebosSimulator_);
         const auto& elemEndIt = gridView.template end</*codim=*/0, Dune::Interior_Partition>();
@@ -1036,7 +1049,7 @@ namespace Opm {
     void
     BlackoilWellModel<TypeTag>::extractLegacyCellPvtRegionIndex_()
     {
-        const auto& grid = ebosSimulator_.gridManager().grid();
+        const auto& grid = ebosSimulator_.vanguard().grid();
         const auto& eclProblem = ebosSimulator_.problem();
         const unsigned numCells = grid.size(/*codim=*/0);
 
@@ -1067,21 +1080,21 @@ namespace Opm {
     int
     BlackoilWellModel<TypeTag>:: numWells() const
     {
-        return wells()->number_of_wells;
+        return wells() ? wells()->number_of_wells : 0;
     }
 
     template<typename TypeTag>
     int
     BlackoilWellModel<TypeTag>:: numPhases() const
     {
-        return wells()->number_of_phases;
+        return wells() ? wells()->number_of_phases : 1;
     }
 
     template<typename TypeTag>
     void
     BlackoilWellModel<TypeTag>::extractLegacyDepth_()
     {
-        const auto& grid = ebosSimulator_.gridManager().grid();
+        const auto& grid = ebosSimulator_.vanguard().grid();
         const unsigned numCells = grid.size(/*codim=*/0);
 
         depth_.resize(numCells);
@@ -1187,9 +1200,9 @@ namespace Opm {
                             // observed phase rates translated to
                             // reservoir conditions.  Recall sign
                             // convention: Negative for producers.
-                            const double target =
-                                - std::inner_product(distr.begin(), distr.end(),
-                                                     hrates.begin(), 0.0);
+                            std::vector<double> hrates_resv(np);
+                            rateConverter_->calcReservoirVoidageRates(fipreg, pvtreg, hrates, hrates_resv);
+                            const double target = -std::accumulate(hrates_resv.begin(), hrates_resv.end(), 0.0);
 
                             well_controls_clear(ctrl);
                             well_controls_assert_number_of_phases(ctrl, int(np));

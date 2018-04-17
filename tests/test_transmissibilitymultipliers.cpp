@@ -18,16 +18,12 @@
 */
 #include <config.h>
 
-#if HAVE_DYNAMIC_BOOST_TEST
-#define BOOST_TEST_DYN_LINK
-#endif
-
 #define BOOST_TEST_MODULE TransmissibilityMultipliers
 
 #include <opm/autodiff/GeoProps.hpp>
 #include <opm/autodiff/BlackoilPropsAdFromDeck.hpp>
 
-#include <opm/core/grid/GridManager.hpp>
+#include <opm/grid/GridManager.hpp>
 #include <opm/common/utility/parameters/ParameterGroup.hpp>
 
 #include <opm/parser/eclipse/Parser/Parser.hpp>
@@ -38,10 +34,10 @@
 #if HAVE_OPM_GRID
 #include <dune/common/version.hh>
 #include <dune/common/parallel/mpihelper.hh>
-#include <dune/grid/CpGrid.hpp>
+#include <opm/grid/CpGrid.hpp>
 #endif
 
-#include <opm/core/grid/GridHelpers.hpp>
+#include <opm/grid/GridHelpers.hpp>
 #include <boost/test/unit_test.hpp>
 
 #include <string>
@@ -81,11 +77,11 @@ std::string deckPostMult =
     "1 1 1e-2\n"
     "100 0.25 2e-2 /\n"
     "PVTO\n"
-    "1e-3 1.0 1.0 1.0\n"
+    "1e-3 1.0 1.05 1.0\n"
     "     100.0 1.0 1.0\n"
     "/\n"
     "1.0 10.0 1.1 0.9\n"
-    "    100.0 1.1 0.9\n"
+    "    100.0 1.05 0.9\n"
     "/\n"
     "/\n"
     "SWOF\n"

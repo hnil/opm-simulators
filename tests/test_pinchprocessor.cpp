@@ -19,10 +19,6 @@
 
 #include <config.h>
 
-#if HAVE_DYNAMIC_BOOST_TEST
-#define BOOST_TEST_DYN_LINK
-#endif
-
 #define NVERBOSE // Suppress own messages when throw()in 
 
 #define BOOST_TEST_MODULE PinchProcessorTest
@@ -32,8 +28,8 @@
 #include <opm/common/utility/platform_dependent/reenable_warnings.h>
 
 #include <vector>
-#include <opm/core/grid.h>
-#include <opm/core/grid/GridManager.hpp>
+#include <opm/grid/UnstructuredGrid.h>
+#include <opm/grid/GridManager.hpp>
 #include <opm/parser/eclipse/Parser/Parser.hpp>
 #include <opm/parser/eclipse/Parser/ParseContext.hpp>
 #include <opm/parser/eclipse/Deck/Deck.hpp>
@@ -42,8 +38,8 @@
 #include <opm/parser/eclipse/EclipseState/Grid/EclipseGrid.hpp>
 #include <opm/parser/eclipse/EclipseState/Grid/GridProperty.hpp>
 #include <opm/parser/eclipse/EclipseState/Grid/TransMult.hpp>
-#include <opm/core/pressure/tpfa/TransTpfa.hpp>
-#include <opm/core/grid/PinchProcessor.hpp>
+#include <opm/grid/transmissibility/TransTpfa.hpp>
+#include <opm/grid/PinchProcessor.hpp>
 #include <opm/core/props/rock/RockFromDeck.hpp>
 
 

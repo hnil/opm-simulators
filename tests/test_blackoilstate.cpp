@@ -1,16 +1,13 @@
 #include <config.h>
 
-#include <opm/core/grid/GridManager.hpp>
-#include <opm/core/grid/GridHelpers.hpp>
+#include <opm/grid/GridManager.hpp>
+#include <opm/grid/GridHelpers.hpp>
 #include <opm/core/props/BlackoilPhases.hpp>
 
 #include <opm/parser/eclipse/Parser/Parser.hpp>
 #include <opm/parser/eclipse/Parser/ParseContext.hpp>
 #include <opm/parser/eclipse/Deck/Deck.hpp>
 
-#if HAVE_DYNAMIC_BOOST_TEST
-#define BOOST_TEST_DYN_LINK
-#endif
 #define NVERBOSE // to suppress our messages when throwing
 #define BOOST_TEST_MODULE BlackoilStateTest
 #define BOOST_TEST_MAIN
@@ -21,7 +18,7 @@
 #include <vector>
 #include <string>
 
-#include "opm/core/grid/GridManager.hpp"
+#include "opm/grid/GridManager.hpp"
 #include "opm/core/simulator/BlackoilState.hpp"
 
 using namespace Opm;
@@ -48,11 +45,11 @@ BOOST_AUTO_TEST_CASE(EqualsDifferentDeckReturnFalse) {
     const auto es2 = Opm::Parser::parse(filename2);
     const auto& eg2 = es2.getInputGrid();
 
-    GridManager gridManager1(eg1);
-    const UnstructuredGrid& grid1 = *gridManager1.c_grid();
+    GridManager vanguard1(eg1);
+    const UnstructuredGrid& grid1 = *vanguard1.c_grid();
 
-    GridManager gridManager2(eg2);
-    const UnstructuredGrid& grid2 = *gridManager2.c_grid();
+    GridManager vanguard2(eg2);
+    const UnstructuredGrid& grid2 = *vanguard2.c_grid();
 
     BlackoilState state1( UgGridHelpers::numCells( grid1 ) , UgGridHelpers::numFaces( grid1 ) , 3);
     BlackoilState state2( UgGridHelpers::numCells( grid2 ) , UgGridHelpers::numFaces( grid2 ) , 3);
@@ -73,8 +70,8 @@ BOOST_AUTO_TEST_CASE(EqualsNumericalDifferenceReturnFalse) {
     std::vector<int> actnum = get_testBlackoilStateActnum();
     eg.resetACTNUM(actnum.data());
 
-    GridManager gridManager(eg);
-    const UnstructuredGrid& grid = *gridManager.c_grid();
+    GridManager vanguard(eg);
+    const UnstructuredGrid& grid = *vanguard.c_grid();
 
     BlackoilState state1( UgGridHelpers::numCells( grid ) , UgGridHelpers::numFaces( grid ) , 3);
     BlackoilState state2( UgGridHelpers::numCells( grid ) , UgGridHelpers::numFaces( grid ) , 3);

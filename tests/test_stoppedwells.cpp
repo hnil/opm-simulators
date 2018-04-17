@@ -19,10 +19,6 @@
 
 #include <config.h>
 
-#if HAVE_DYNAMIC_BOOST_TEST
-#define BOOST_TEST_DYN_LINK
-#endif
-
 #define BOOST_TEST_MODULE StoppedWellsTests
 #include <boost/test/unit_test.hpp>
 
@@ -35,7 +31,7 @@
 #include <opm/core/well_controls.h>
 #include <opm/core/simulator/BlackoilState.hpp>
 #include <opm/core/simulator/WellState.hpp>
-#include <opm/core/grid/GridManager.hpp>
+#include <opm/grid/GridManager.hpp>
 
 
 using namespace Opm;
@@ -47,7 +43,7 @@ BOOST_AUTO_TEST_CASE(TestStoppedWells)
     Opm::Parser parser;
     Opm::Deck deck(parser.parseFile(filename , parseContext));
     Opm::EclipseState eclipseState(deck , parseContext);
-    Opm::GridManager gridManager(eclipseState.getInputGrid());
+    Opm::GridManager vanguard(eclipseState.getInputGrid());
     const auto& grid = eclipseState.getInputGrid();
     const TableManager table ( deck );
     const Eclipse3DProperties eclipseProperties ( deck , table, grid);
@@ -63,7 +59,7 @@ BOOST_AUTO_TEST_CASE(TestStoppedWells)
 
     // Both wells are open in the first schedule step
     {
-    Opm::WellsManager wellsManager(eclipseState , sched, 0, *gridManager.c_grid());
+    Opm::WellsManager wellsManager(eclipseState , sched, 0, *vanguard.c_grid());
     const Wells* wells = wellsManager.c_wells();
     const struct WellControls* ctrls0 = wells->ctrls[0];
     const struct WellControls* ctrls1 = wells->ctrls[1];
@@ -83,7 +79,7 @@ BOOST_AUTO_TEST_CASE(TestStoppedWells)
 
     // The injector is stopped
     {
-    Opm::WellsManager wellsManager(eclipseState, sched, 1 , *gridManager.c_grid());
+    Opm::WellsManager wellsManager(eclipseState, sched, 1 , *vanguard.c_grid());
     const Wells* wells = wellsManager.c_wells();
     const struct WellControls* ctrls0 = wells->ctrls[0];
     const struct WellControls* ctrls1 = wells->ctrls[1];

@@ -19,9 +19,6 @@
 
 #include <config.h>
 
-#if HAVE_DYNAMIC_BOOST_TEST
-#define BOOST_TEST_DYN_LINK
-#endif
 #define NVERBOSE // to suppress our messages when throwing
 
 #define BOOST_TEST_MODULE AnisotropicEikonalTest
@@ -31,8 +28,8 @@
 #include <opm/common/utility/platform_dependent/reenable_warnings.h>
 
 #include <opm/core/flowdiagnostics/AnisotropicEikonal.hpp>
-#include <opm/core/grid/GridManager.hpp>
-#include <opm/core/grid.h>
+#include <opm/grid/GridManager.hpp>
+#include <opm/grid/UnstructuredGrid.h>
 #include <cmath>
 
 using namespace Opm;

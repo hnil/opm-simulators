@@ -1,7 +1,7 @@
 /* Copyright 2011 (c) Jostein R. Natvig <Jostein.R.Natvig at sintef.no> */
 
 #include "config.h"
-#include <opm/core/grid.h>
+#include <opm/grid/UnstructuredGrid.h>
 
 #ifdef MATLAB_MEX_FILE
 #include "reordersequence.h"
@@ -18,7 +18,7 @@
 
 struct SortByAbsFlux
 {
-    SortByAbsFlux(const double* flux)
+    explicit SortByAbsFlux(const double* flux)
         : flux_(flux)
     {}
     bool operator() (int f1, int f2)

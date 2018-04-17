@@ -26,9 +26,7 @@
 
 #include <sys/utsname.h>
 
-
 #include <opm/simulators/ParallelFileMerger.hpp>
-#include <opm/simulators/ensureDirectoryExists.hpp>
 
 #include <opm/autodiff/BlackoilModelEbos.hpp>
 #include <opm/autodiff/NewtonIterationBlackoilSimple.hpp>
@@ -108,9 +106,7 @@ namespace Opm
                 setupOutput();
                 setupLogging();
                 printPRTHeader();
-                extractMessages();
                 runDiagnostics();
-                writeInit();
                 setupOutputWriter();
                 setupLinearSolver();
                 createSimulator();
@@ -257,23 +253,7 @@ namespace Opm
                           << std::endl;
             }
 
-            output_to_files_ = output_cout_ && output_ > OUTPUT_NONE;
-
-            // Setup output directory.
-            auto& ioConfig = eclState().getIOConfig();
-            // Default output directory is the directory where the deck is found.
-            const std::string default_output_dir = ioConfig.getOutputDir();
-            output_dir_ = param_.getDefault("output_dir", default_output_dir);
-            // Override output directory if user specified.
-            ioConfig.setOutputDir(output_dir_);
-
-            // Write parameters used for later reference. (only if rank is zero)
-            if (output_to_files_) {
-                // Create output directory if needed.
-                ensureDirectoryExists(output_dir_);
-                // Write simulation parameters.
-                param_.writeParam(output_dir_ + "/simulation.param");
-            }
+            output_to_files_ = output_cout_ && (output_ != OUTPUT_NONE);
         }
 
         // Setup OpmLog backend with output_dir.
@@ -293,8 +273,9 @@ namespace Opm
                 baseName = path(fpath.filename()).string();
             }
 
-            logFileStream << output_dir_ << "/" << baseName;
-            debugFileStream << output_dir_ << "/" << "." << baseName;
+            const std::string& output_dir = eclState().getIOConfig().getOutputDir();
+            logFileStream << output_dir << "/" << baseName;
+            debugFileStream << output_dir << "/" << "." << baseName;
 
             if ( must_distribute_ && mpi_rank_ != 0 )
             {
@@ -394,13 +375,13 @@ namespace Opm
 
             namespace fs = boost::filesystem;
             fs::path output_path(".");
+            const std::string& output_dir = eclState().getIOConfig().getOutputDir();
             if ( param_.has("output_dir") )
             {
-                output_path = fs::path(output_dir_);
+                output_path = fs::path(output_dir);
             }
 
             fs::path deck_filename(param_.get<std::string>("deck_filename"));
-
             std::for_each(fs::directory_iterator(output_path),
                           fs::directory_iterator(),
                           detail::ParallelFileMerger(output_path, deck_filename.stem().string()));
@@ -413,8 +394,21 @@ namespace Opm
             argv.push_back("flow_ebos");
 
             std::string deckFileParam("--ecl-deck-file-name=");
-            deckFileParam += param_.get<std::string>("deck_filename");
+            const std::string& deckFileName = param_.get<std::string>("deck_filename");
+            deckFileParam += deckFileName;
             argv.push_back(deckFileParam.c_str());
+
+            std::string outputDirParam("--ecl-output-dir=");
+            if (param_.has("output_dir")) {
+                const std::string& output_dir = param_.get<std::string>("output_dir");
+                outputDirParam += output_dir;
+                argv.push_back(outputDirParam.c_str());
+            }
+
+            const bool restart_double_si  = param_.getDefault("restart_double_si", false);
+            std::string outputDoublePrecisionParam("--ecl-output-double-precision=");
+            outputDoublePrecisionParam += restart_double_si ? "true" : "false";
+            argv.push_back(outputDoublePrecisionParam.c_str());
 
 #if defined(_OPENMP)
             std::string numThreadsParam("--threads-per-process=");
@@ -429,10 +423,6 @@ namespace Opm
             EbosThreadManager::init();
             ebosSimulator_.reset(new EbosSimulator(/*verbose=*/false));
             ebosSimulator_->model().applyInitialSolution();
-
-            // Create a grid with a global view.
-            globalGrid_.reset(new Grid(grid()));
-            globalGrid_->switchToGlobalView();
 
             try {
                 if (output_cout_) {
@@ -460,53 +450,20 @@ namespace Opm
         }
 
         const Deck& deck() const
-        { return ebosSimulator_->gridManager().deck(); }
+        { return ebosSimulator_->vanguard().deck(); }
 
         Deck& deck()
-        { return ebosSimulator_->gridManager().deck(); }
+        { return ebosSimulator_->vanguard().deck(); }
 
         const EclipseState& eclState() const
-        { return ebosSimulator_->gridManager().eclState(); }
+        { return ebosSimulator_->vanguard().eclState(); }
 
         EclipseState& eclState()
-        { return ebosSimulator_->gridManager().eclState(); }
+        { return ebosSimulator_->vanguard().eclState(); }
 
         const Schedule& schedule() const
-        { return ebosSimulator_->gridManager().schedule(); }
+        { return ebosSimulator_->vanguard().schedule(); }
 
-        const SummaryConfig& summaryConfig() const
-        { return ebosSimulator_->gridManager().summaryConfig(); }
-  
-        // Extract messages from parser.
-        // Writes to:
-        //    OpmLog singleton.
-        void extractMessages()
-        {
-            if ( !output_cout_ )
-            {
-                return;
-            }
-
-            auto extractMessage = [this](const Message& msg) {
-                auto log_type = this->convertMessageType(msg.mtype);
-                const auto& location = msg.location;
-                if (location) {
-                    OpmLog::addMessage(log_type, Log::fileMessage(location.filename, location.lineno, msg.message));
-                } else {
-                    OpmLog::addMessage(log_type, msg.message);
-                }
-            };
-
-            // Extract messages from Deck.
-            for(const auto& msg : deck().getMessageContainer()) {
-                extractMessage(msg);
-            }
-
-            // Extract messages from EclipseState.
-            for (const auto& msg : eclState().getMessageContainer()) {
-                extractMessage(msg);
-            }
-        }
 
         // Run diagnostics.
         // Writes to:
@@ -521,27 +478,6 @@ namespace Opm
             // Run relperm diagnostics
             RelpermDiagnostics diagnostic;
             diagnostic.diagnosis(eclState(), deck(), this->grid());
-        }
-
-        void writeInit()
-        {
-            bool output      = ( output_ > OUTPUT_LOG_ONLY );
-            bool output_ecl  = param_.getDefault("output_ecl", true);
-            auto int_vectors  = computeCellRanks(output, output_ecl);
-
-            if( output && output_ecl && grid().comm().rank() == 0 )
-            {
-                exportNncStructure_();
-
-                const EclipseGrid& inputGrid = eclState().getInputGrid();
-                eclIO_.reset(new EclipseIO(eclState(),
-                                           UgGridHelpers::createEclipseGrid( this->globalGrid() , inputGrid ),
-                                           schedule(),
-                                           summaryConfig()));
-                eclIO_->writeInitial(computeLegacySimProps_(), int_vectors, nnc_);
-                Problem& problem = ebosProblem();
-                problem.setEclIO(std::move(eclIO_));
-            }
         }
 
         // Setup output writer.
@@ -610,7 +546,14 @@ namespace Opm
         void setupLinearSolver()
         {
             typedef typename BlackoilModelEbos<TypeTag> :: ISTLSolverType ISTLSolverType;
-
+            const std::string cprSolver = "cpr";
+            if (!param_.has("solver_approach") )
+            {
+                if ( eclState().getSimulationConfig().useCPR() )
+                {
+                    param_.insertParameter("solver_approach", cprSolver);
+                }
+            }
             extractParallelGridInformationToISTL(grid(), parallel_information_);
             fis_solver_.reset( new ISTLSolverType( param_, parallel_information_ ) );
         }
@@ -665,255 +608,9 @@ namespace Opm
             return pages * page_size;
         }
 
-        int64_t convertMessageType(const Message::type& mtype)
-        {
-            switch (mtype) {
-            case Message::type::Debug:
-                return Log::MessageType::Debug;
-            case Message::type::Info:
-                return Log::MessageType::Info;
-            case Message::type::Warning:
-                return Log::MessageType::Warning;
-            case Message::type::Error:
-                return Log::MessageType::Error;
-            case Message::type::Problem:
-                return Log::MessageType::Problem;
-            case Message::type::Bug:
-                return Log::MessageType::Bug;
-            case Message::type::Note:
-                return Log::MessageType::Note;
-            }
-            throw std::logic_error("Invalid messages type!\n");
-        }
 
         Grid& grid()
-        { return ebosSimulator_->gridManager().grid(); }
-
-        const Grid& globalGrid()
-        { return *globalGrid_; }
-
-        Problem& ebosProblem()
-        { return ebosSimulator_->problem(); }
-
-        const Problem& ebosProblem() const
-        { return ebosSimulator_->problem(); }
-
-        std::shared_ptr<MaterialLawManager> materialLawManager()
-        { return ebosProblem().materialLawManager(); }
-
-        Scalar gravity() const
-        { return ebosProblem().gravity()[2]; }
-
-        std::map<std::string, std::vector<int> > computeCellRanks(bool output, bool output_ecl)
-        {
-            std::map<std::string, std::vector<int> > integerVectors;
-
-            if(  output && output_ecl && grid().comm().size() > 1 )
-            {
-                typedef typename Grid::LeafGridView GridView;
-#if DUNE_VERSION_NEWER(DUNE_GEOMETRY, 2, 6)
-                using ElementMapper =  Dune::MultipleCodimMultipleGeomTypeMapper<GridView>;
-#else
-                // Get the owner rank number for each cell
-                using ElementMapper =  Dune::MultipleCodimMultipleGeomTypeMapper<GridView, Dune::MCMGElementLayout>;
-#endif
-                using Handle = CellOwnerDataHandle<ElementMapper>;
-                const Grid& globalGrid = this->globalGrid();
-                const auto& globalGridView = globalGrid.leafGridView();
-#if DUNE_VERSION_NEWER(DUNE_GEOMETRY, 2, 6)
-                ElementMapper globalMapper(globalGridView, Dune::mcmgElementLayout());
-#else
-                ElementMapper globalMapper(globalGridView);
-#endif
-                const auto globalSize = globalGrid.size(0);
-                std::vector<int> ranks(globalSize, -1);
-                Handle handle(globalMapper, ranks);
-                this->grid().gatherData(handle);
-                integerVectors.emplace("MPI_RANK", ranks);
-            }
-
-            return integerVectors;
-        }
-
-        data::Solution computeLegacySimProps_()
-        {
-            const int* dims = UgGridHelpers::cartDims(grid());
-            const int globalSize = dims[0]*dims[1]*dims[2];
-
-            data::CellData tranx = {UnitSystem::measure::transmissibility, std::vector<double>( globalSize ), data::TargetType::INIT};
-            data::CellData trany = {UnitSystem::measure::transmissibility, std::vector<double>( globalSize ), data::TargetType::INIT};
-            data::CellData tranz = {UnitSystem::measure::transmissibility, std::vector<double>( globalSize ), data::TargetType::INIT};
-
-            for (size_t i = 0; i < tranx.data.size(); ++i) {
-                tranx.data[0] = 0.0;
-                trany.data[0] = 0.0;
-                tranz.data[0] = 0.0;
-            }
-
-            const Grid& globalGrid = this->globalGrid();
-            const auto& globalGridView = globalGrid.leafGridView();
-            typedef typename Grid::LeafGridView GridView;
-#if DUNE_VERSION_NEWER(DUNE_GEOMETRY, 2, 6)
-            typedef Dune::MultipleCodimMultipleGeomTypeMapper<GridView> ElementMapper;
-            ElementMapper globalElemMapper(globalGridView, Dune::mcmgElementLayout());
-#else
-            typedef Dune::MultipleCodimMultipleGeomTypeMapper<GridView, Dune::MCMGElementLayout> ElementMapper;
-            ElementMapper globalElemMapper(globalGridView);
-#endif
-            const auto& cartesianCellIdx = globalGrid.globalCell();
-
-            const auto* globalTrans = &(ebosSimulator_->gridManager().globalTransmissibility());
-            if (grid().comm().size() < 2) {
-                // in the sequential case we must use the transmissibilites defined by
-                // the problem. (because in the sequential case, the grid manager does
-                // not compute "global" transmissibilities for performance reasons. in
-                // the parallel case, the problem's transmissibilities can't be used
-                // because this object refers to the distributed grid and we need the
-                // sequential version here.)
-                globalTrans = &ebosSimulator_->problem().eclTransmissibilities();
-            }
-
-            auto elemIt = globalGridView.template begin</*codim=*/0>();
-            const auto& elemEndIt = globalGridView.template end</*codim=*/0>();
-            for (; elemIt != elemEndIt; ++ elemIt) {
-                const auto& elem = *elemIt;
-
-                auto isIt = globalGridView.ibegin(elem);
-                const auto& isEndIt = globalGridView.iend(elem);
-                for (; isIt != isEndIt; ++ isIt) {
-                    const auto& is = *isIt;
-
-                    if (!is.neighbor())
-                    {
-                        continue; // intersection is on the domain boundary
-                    }
-
-                    unsigned c1 = globalElemMapper.index(is.inside());
-                    unsigned c2 = globalElemMapper.index(is.outside());
-
-                    if (c1 > c2)
-                    {
-                        continue; // we only need to handle each connection once, thank you.
-                    }
-
-
-                    int gc1 = std::min(cartesianCellIdx[c1], cartesianCellIdx[c2]);
-                    int gc2 = std::max(cartesianCellIdx[c1], cartesianCellIdx[c2]);
-                    if (gc2 - gc1 == 1) {
-                        tranx.data[gc1] = globalTrans->transmissibility(c1, c2);
-                    }
-
-                    if (gc2 - gc1 == dims[0]) {
-                        trany.data[gc1] = globalTrans->transmissibility(c1, c2);
-                    }
-
-                    if (gc2 - gc1 == dims[0]*dims[1]) {
-                        tranz.data[gc1] = globalTrans->transmissibility(c1, c2);
-                    }
-                }
-            }
-
-            return {{"TRANX" , tranx},
-                    {"TRANY" , trany} ,
-                    {"TRANZ" , tranz}};
-        }
-
-        void exportNncStructure_()
-        {
-            nnc_ = eclState().getInputNNC();
-            int nx = eclState().getInputGrid().getNX();
-            int ny = eclState().getInputGrid().getNY();
-            //int nz = eclState().getInputGrid().getNZ()
-
-            const Grid& globalGrid = this->globalGrid();
-            const auto& globalGridView = globalGrid.leafGridView();
-            typedef typename Grid::LeafGridView GridView;
-#if DUNE_VERSION_NEWER(DUNE_GEOMETRY, 2, 6)
-            typedef Dune::MultipleCodimMultipleGeomTypeMapper<GridView> ElementMapper;
-            ElementMapper globalElemMapper(globalGridView, Dune::mcmgElementLayout());
-#else
-            typedef Dune::MultipleCodimMultipleGeomTypeMapper<GridView, Dune::MCMGElementLayout> ElementMapper;
-            ElementMapper globalElemMapper(globalGridView);
-#endif
-
-            const auto* globalTrans = &(ebosSimulator_->gridManager().globalTransmissibility());
-            if (grid().comm().size() < 2) {
-                // in the sequential case we must use the transmissibilites defined by
-                // the problem. (because in the sequential case, the grid manager does
-                // not compute "global" transmissibilities for performance reasons. in
-                // the parallel case, the problem's transmissibilities can't be used
-                // because this object refers to the distributed grid and we need the
-                // sequential version here.)
-                globalTrans = &ebosSimulator_->problem().eclTransmissibilities();
-            }
-
-            auto elemIt = globalGridView.template begin</*codim=*/0>();
-            const auto& elemEndIt = globalGridView.template end</*codim=*/0>();
-            for (; elemIt != elemEndIt; ++ elemIt) {
-                const auto& elem = *elemIt;
-
-                auto isIt = globalGridView.ibegin(elem);
-                const auto& isEndIt = globalGridView.iend(elem);
-                for (; isIt != isEndIt; ++ isIt) {
-                    const auto& is = *isIt;
-
-                    if (!is.neighbor())
-                    {
-                        continue; // intersection is on the domain boundary
-                    }
-
-                    unsigned c1 = globalElemMapper.index(is.inside());
-                    unsigned c2 = globalElemMapper.index(is.outside());
-
-                    if (c1 > c2)
-                    {
-                        continue; // we only need to handle each connection once, thank you.
-                    }
-
-                    // TODO (?): use the cartesian index mapper to make this code work
-                    // with grids other than Dune::CpGrid. The problem is that we need
-                    // the a mapper for the sequential grid, not for the distributed one.
-                    int cc1 = globalGrid.globalCell()[c1];
-                    int cc2 = globalGrid.globalCell()[c2];
-
-                    if (std::abs(cc1 - cc2) != 1 &&
-                        std::abs(cc1 - cc2) != nx &&
-                        std::abs(cc1 - cc2) != nx*ny)
-                    {
-                        nnc_.addNNC(cc1, cc2, globalTrans->transmissibility(c1, c2));
-                    }
-                }
-            }
-        }
-
-        /// Convert saturations from a vector of individual phase saturation vectors
-        /// to an interleaved format where all values for a given cell come before all
-        /// values for the next cell, all in a single vector.
-        template <class FluidSystem>
-        void convertSats(std::vector<double>& sat_interleaved, const std::vector< std::vector<double> >& sat, const PhaseUsage& pu)
-        {
-            assert(sat.size() == 3);
-            const auto nc = sat[0].size();
-            const auto np = sat_interleaved.size() / nc;
-            for (size_t c = 0; c < nc; ++c) {
-                if ( FluidSystem::phaseIsActive(FluidSystem::oilPhaseIdx)) {
-                    const int opos = pu.phase_pos[BlackoilPhases::Liquid];
-                    const std::vector<double>& sat_p = sat[ FluidSystem::oilPhaseIdx];
-                    sat_interleaved[np*c + opos] = sat_p[c];
-                }
-                if ( FluidSystem::phaseIsActive(FluidSystem::waterPhaseIdx)) {
-                    const int wpos = pu.phase_pos[BlackoilPhases::Aqua];
-                    const std::vector<double>& sat_p = sat[ FluidSystem::waterPhaseIdx];
-                    sat_interleaved[np*c + wpos] = sat_p[c];
-                }
-                if ( FluidSystem::phaseIsActive(FluidSystem::gasPhaseIdx)) {
-                    const int gpos = pu.phase_pos[BlackoilPhases::Vapour];
-                    const std::vector<double>& sat_p = sat[ FluidSystem::gasPhaseIdx];
-                    sat_interleaved[np*c + gpos] = sat_p[c];
-                }
-            }
-        }
-
+        { return ebosSimulator_->vanguard().grid(); }
 
         std::unique_ptr<EbosSimulator> ebosSimulator_;
         int  mpi_rank_ = 0;
@@ -922,16 +619,11 @@ namespace Opm
         bool must_distribute_ = false;
         ParameterGroup param_;
         bool output_to_files_ = false;
-        std::string output_dir_ = std::string(".");
-        NNC nnc_;
-        std::unique_ptr<EclipseIO> eclIO_;
         std::unique_ptr<OutputWriter> output_writer_;
         boost::any parallel_information_;
         std::unique_ptr<NewtonIterationBlackoilInterface> fis_solver_;
         std::unique_ptr<Simulator> simulator_;
         std::string logFile_;
-        // Needs to be shared pointer because it gets initialzed before MPI_Init.
-        std::shared_ptr<Grid> globalGrid_;
     };
 } // namespace Opm
 

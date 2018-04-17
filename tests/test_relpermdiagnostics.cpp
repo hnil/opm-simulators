@@ -19,11 +19,6 @@
 
 #include "config.h"
 
-/* --- Boost.Test boilerplate --- */
-#if HAVE_DYNAMIC_BOOST_TEST
-#define BOOST_TEST_DYN_LINK
-#endif
-
 #define NVERBOSE  // Suppress own messages when throw()ing
 
 #define BOOST_TEST_MODULE RelpermDiagnostics
@@ -36,9 +31,9 @@
 #include <opm/common/OpmLog/OpmLog.hpp>
 #include <opm/common/OpmLog/CounterLog.hpp>
 
-#include <opm/core/grid.h>
-#include <opm/core/grid/cart_grid.h>
-#include <opm/core/grid/GridManager.hpp>
+#include <opm/grid/UnstructuredGrid.h>
+#include <opm/grid/cart_grid.h>
+#include <opm/grid/GridManager.hpp>
 
 #include <opm/core/props/satfunc/RelpermDiagnostics.hpp>
 #include <opm/parser/eclipse/Parser/Parser.hpp>
