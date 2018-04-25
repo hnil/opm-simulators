@@ -710,8 +710,12 @@ namespace Opm
                 objder_adjctrl_[0][0] += resWell_loc.derivative(control_index)*dt;
                 objval_= resWell_loc.value()*dt;
             }
-
+            /*
             // calculating the perforation solution gas rate and solution oil rates
+            const auto& fs = intQuants.fluidState();
+            const EvalWell pressure = extendEval(fs.pressure(FluidSystem::oilPhaseIdx));
+            const EvalWell rs = extendEval(fs.Rs());
+            const EvalWell rv = extendEval(fs.Rv());
             if (well_type_ == PRODUCER) {
                 if (FluidSystem::phaseIsActive(FluidSystem::oilPhaseIdx) && FluidSystem::phaseIsActive(FluidSystem::gasPhaseIdx)) {
                     const unsigned oilCompIdx = Indices::canonicalToActiveComponentIndex(FluidSystem::oilCompIdx);
@@ -733,6 +737,7 @@ namespace Opm
                     perf_dis_gas_rate = rs.value() * (cq_s[oilCompIdx].value() - rv.value() * cq_s[gasCompIdx].value()) / d;
                 }
             }
+            */
         }
     }
 

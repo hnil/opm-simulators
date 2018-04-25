@@ -236,7 +236,7 @@ namespace Opm
             Dune::writeMatrixMarket(objder_adjctrl_, std::cout);
             std::cout << "adjont_variables " << std::endl;
             Dune::writeMatrixMarket(adjoint_variables_, std::cout);
-
+        }
 
         virtual void  addWellContributions(Mat& mat) const;
 
