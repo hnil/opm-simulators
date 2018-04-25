@@ -32,10 +32,11 @@
 #include <opm/autodiff/WellConnectionAuxiliaryModule.hpp>
 #include <opm/autodiff/BlackoilDetails.hpp>
 #include <opm/autodiff/NewtonIterationBlackoilInterface.hpp>
+#include <opm/autodiff/LinearSolverAmgcl.hpp>
 
 #include <opm/grid/UnstructuredGrid.h>
 #include <opm/core/simulator/SimulatorReport.hpp>
-#include <opm/core/linalg/LinearSolverInterface.hpp>
+#include <opm/core/linalg/LinearSolverUmfpack.hpp>
 #include <opm/core/linalg/ParallelIstlInformation.hpp>
 #include <opm/core/props/phaseUsageFromDeck.hpp>
 #include <opm/common/ErrorMacros.hpp>
@@ -691,8 +692,105 @@ namespace Opm {
         /// Number of linear iterations used in last call to solveJacobianSystem().
         int linearIterationsLastSolve() const
         {
-            return istlSolver().iterations();
+            return linear_iters_last_solve_;
         }
+
+
+
+        /// A struct to hold the data for a CRS matrix.
+        /// (The name is not CRSMatrix to avoid confusing with the C struct of that name.)
+        struct CRSMatrixHelper
+        {
+            CRSMatrixHelper()
+            {
+            }
+            CRSMatrixHelper(const int sz, const int nnz)
+                : ptr(sz + 1, -1)
+                , col(nnz, -1)
+                , val(nnz, 0.0)
+            {
+            }
+
+            std::vector<int>    ptr;
+            std::vector<int>    col;
+            std::vector<double> val;
+        };
+
+
+        /// Build a CRS matrix (not block-structured) from
+        /// the block structured system matrix.
+        CRSMatrixHelper buildCRSMatrixNoBlocks() const
+        {
+            const auto& ebosJac = ebosSimulator_.model().linearizer().matrix();
+
+#if 1
+            const int n = ebosJac.N();
+            const int np = numPhases();
+            const int sz = n * np;
+            const int nnz = ebosJac.nonzeroes() * np * np;
+            CRSMatrixHelper A(sz, nnz);
+            A.ptr[0] = 0;
+            int index = 0;
+            for (int row_index = 0; row_index < n; ++row_index) {
+                const auto& row = ebosJac[row_index];
+                const auto* dataptr = row.getptr();
+                const auto* indexptr = row.getindexptr();
+                for (int brow = 0; brow < np; ++brow) {
+                    A.ptr[row_index*np + brow + 1] = A.ptr[row_index*np + brow] + row.N() * np;
+                    for (int elem = 0; elem < row.N(); ++elem) {
+                        const int istlcol = indexptr[elem];
+                        const auto& block = dataptr[elem];
+                        for (int bcol = 0; bcol < np; ++bcol) {
+                            A.val[index] = block[brow][bcol];
+                            A.col[index] = np*istlcol + bcol;
+                            ++index;
+                        }
+                    }
+                }
+            }
+            return A;
+#else
+            // This variant builds a matrix A with fewer elements, by ignoring
+            // explicit zeros in the non-zero blocks. Experiment not very
+            // successful: amgcl (CPR) even failed on SPE9 with this.
+            // Also, this code is slow, probably due to the push_back, in spite
+            // of the reserve() calls.
+            //
+            // Code retained for future experimentation.
+            const int n = ebosJac.N();
+            const int np = numPhases();
+            const int sz = n * np;
+            const int nnz_max = ebosJac.nonzeroes() * np * np;
+            CRSMatrixHelper A;
+            A.ptr.resize(sz + 1, -1);
+            A.ptr[0] = 0;
+            A.col.reserve(nnz_max);
+            A.val.reserve(nnz_max);
+            int index = 0;
+            for (int row_index = 0; row_index < n; ++row_index) {
+                const auto& row = ebosJac[row_index];
+                const auto* dataptr = row.getptr();
+                const auto* indexptr = row.getindexptr();
+                for (int brow = 0; brow < np; ++brow) {
+                    for (int elem = 0; elem < row.N(); ++elem) {
+                        const int istlcol = indexptr[elem];
+                        const auto& block = dataptr[elem];
+                        for (int bcol = 0; bcol < np; ++bcol) {
+                            const double val = block[brow][bcol];
+                            if (val != 0.0) {
+                                A.val.push_back(val);
+                                A.col.push_back(np*istlcol + bcol);
+                                ++index;
+                            }
+                        }
+                    }
+                    A.ptr[row_index*np + brow + 1] = index;
+                }
+            }
+            return A;
+#endif
+        }
+
 
         /// Solve the Jacobian system Jx = r where J is the Jacobian and
         /// r is the residual.
@@ -723,6 +821,54 @@ namespace Opm {
             // set initial guess
             x = 0.0;
 
+            if (param_.use_amgcl_ || param_.use_umfpack_) {
+                if (!param_.matrix_add_well_contributions_) {
+                    // This should be handled by combining interacting options into a single one eventually.
+                    OPM_THROW(std::runtime_error, "Cannot run with amgcl or UMFPACK without also using 'matrix_add_well_contributions=true'.");
+                }
+
+                // Create matrix for external linear solvers.
+                CRSMatrixHelper matrix = buildCRSMatrixNoBlocks();
+
+                // Copy right-hand side (blocked structure -> unblocked).
+                const int n = ebosResid.size();
+                const int np = numPhases();
+                const int sz = n * np;
+                std::vector<double> rhs(sz, 0.0);
+                for (int cell = 0; cell < n; ++cell) {
+                    for (int phase = 0; phase < np; ++phase) {
+                        rhs[np*cell + phase] = ebosResid[cell][phase];
+                    }
+                }
+
+                std::vector<double> sol(sz, 0.0);
+                if (param_.use_amgcl_) {
+                    // Call amgcl to solve system
+                    const double tol = 1e-2;
+                    const int maxiter = 150;
+                    int    iters;
+                    double error;
+                    LinearSolverAmgcl::solve(sz, matrix.ptr, matrix.col, matrix.val, rhs, tol, maxiter, sol, iters, error);
+                    const_cast<int&>(linear_iters_last_solve_) = iters;
+                } else if (param_.use_umfpack_) {
+                    // Call UMFPACK to solve system
+                    const int nnz = matrix.ptr[sz];
+                    LinearSolverUmfpack solver;
+                    solver.solve(sz, nnz, matrix.ptr.data(), matrix.col.data(), matrix.val.data(), rhs.data(), sol.data());
+                    const_cast<int&>(linear_iters_last_solve_) = 0;
+                }
+
+                // Extract solution (unblocked structure -> blocked).
+                assert(sol.size() == x.size() * numPhases());
+                for (int cell = 0; cell < n; ++cell) {
+                    for (int phase = 0; phase < np; ++phase) {
+                        x[cell][phase] = sol[np*cell + phase];
+                    }
+                }
+                return;
+            }
+
+            // Use the default ISTLSolver to solve the system.
             const Mat& actual_mat_for_prec = matrix_for_preconditioner_ ? *matrix_for_preconditioner_.get() : ebosJac;
             // Solve system.
             if( isParallel() )
@@ -748,6 +894,7 @@ namespace Opm {
                 Operator opA(ebosJac, actual_mat_for_prec, wellModel());
                 istlSolver().solve( opA, x, ebosResid );
             }
+            const_cast<int&>(linear_iters_last_solve_) = istlSolver().iterations();
         }
 
         //=====================================================================
@@ -1365,6 +1512,7 @@ namespace Opm {
         BVector dx_old_;
 
         std::unique_ptr<Mat> matrix_for_preconditioner_;
+        int linear_iters_last_solve_ = -1;
 
     public:
         /// return the StandardWells object

@@ -69,6 +69,8 @@ namespace Opm
         do_adjoint_ = param.getDefault("do_adjoint",false);
         matrix_add_well_contributions_ = param.getDefault("matrix_add_well_contributions", matrix_add_well_contributions_);
         preconditioner_add_well_contributions_ = param.getDefault("preconditioner_add_well_contributions", preconditioner_add_well_contributions_);
+        use_amgcl_ = param.getDefault("use_amgcl", use_amgcl_);
+        use_umfpack_ = param.getDefault("use_umfpack", use_umfpack_);
     }
 
 
@@ -101,6 +103,8 @@ namespace Opm
         do_adjoint_=false;
         matrix_add_well_contributions_ = false;
         preconditioner_add_well_contributions_ = false;
+        use_amgcl_ = false;
+        use_umfpack_ = false;
     }
 
 
