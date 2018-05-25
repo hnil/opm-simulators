@@ -78,7 +78,8 @@ namespace Opm
 
         // TODO: with flow_ebos，for a 2P deck, // TODO: for the 2p deck, numEq will be 3, a dummy phase is already added from the reservoir side.
         // it will cause problem here without processing the dummy phase.
-        static const int numWellEq = GET_PROP_VALUE(TypeTag, EnablePolymer)? numEq-1 : numEq; // number of wellEq is only numEq - 1 for polymer
+        //static const int numWellEq = GET_PROP_VALUE(TypeTag, EnablePolymer)? numEq-1 : numEq; // number of wellEq is only numEq - 1 for polymer
+        static const int numWellEq =  numEq;
         static const int numAdjoint = GET_PROP_VALUE(TypeTag, numAdjoint);
         static const int control_index=numEq + numWellEq;
         using typename Base::Mat;
