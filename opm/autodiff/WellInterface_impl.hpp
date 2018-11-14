@@ -1065,8 +1065,8 @@ namespace Opm
         }
 
         if (connection.r0() > well_ecl_->getDrainageRadius(current_step_)) {
-            OpmLog::info("PRODUCTIVITY_INDEX_INFO", "The effective radius is larger then the well drainage radius for well " + name() +
-                         " They are set to equal in the well productivity index calculations");
+	  //OpmLog::info("PRODUCTIVITY_INDEX_INFO", "The effective radius is larger then the well drainage radius for well " + name() +
+          //               " They are set to equal in the well productivity index calculations");
             return;
         }
 
