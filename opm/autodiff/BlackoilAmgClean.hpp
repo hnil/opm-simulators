@@ -470,7 +470,7 @@ namespace Opm
    * \tparam P The type of the class describing the parallelization.
    * \tparam COMPONENT_INDEX The index of the component to use for coarsening (usually the pressure).
    */
-  template<typename O, typename S, typename C,
+  template<typename O, typename S, typename SC, typename C,
 	   typename P, std::size_t COMPONENT_INDEX>
   class BlackoilAmgClean
     : public Dune::Preconditioner<typename O::domain_type, typename O::range_type>
@@ -490,7 +490,8 @@ namespace Opm
   protected:
     using Matrix = typename Operator::matrix_type;
     using CoarseOperator = typename Detail::ScalarType<Operator>::value;
-    using CoarseSmoother = typename Detail::ScalarType<Smoother>::value;
+    //using CoarseSmoother = typename Detail::ScalarType<Smoother>::value;
+    using CoarseSmoother = typename Detail::ScalarType<SC>::value;
     using FineCriterion  =
       typename Detail::OneComponentCriterionType<Criterion,COMPONENT_INDEX>::value;
     using CoarseCriterion =  typename Detail::ScalarType<Criterion>::value;

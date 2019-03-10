@@ -85,7 +85,7 @@ SET_TYPE_PROP(FlowIstlSolverParams, LinearSolverBackend, Opm::ISTLSolverEbos<Typ
 SET_BOOL_PROP(FlowIstlSolverParams, PreconditionerAddWellContributions, false);
 SET_STRING_PROP(FlowIstlSolverParams, SystemStrategy, "original");
 SET_BOOL_PROP(FlowIstlSolverParams, ScaleLinearSystem, false);
-SET_BOOL_PROP(FlowIstlSolverParams, CprSolverVerbose, false);
+SET_INT_PROP(FlowIstlSolverParams, CprSolverVerbose, 0);
 SET_BOOL_PROP(FlowIstlSolverParams, CprUseDrs, false);
 SET_INT_PROP(FlowIstlSolverParams, CprMaxIter, 20);
 SET_INT_PROP(FlowIstlSolverParams, CprEllSolvetype, 0);
@@ -113,7 +113,7 @@ namespace Opm
         int cpr_ell_solvetype_;
         bool cpr_use_amg_;
         bool cpr_use_bicgstab_;
-        bool cpr_solver_verbose_;
+        int cpr_solver_verbose_;
         bool cpr_pressure_aggregation_;
         int cpr_reuse_setup_;
         CPRParameter() { reset(); }
@@ -152,7 +152,7 @@ namespace Opm
 	    cpr_max_iter_             = 25;
             cpr_use_amg_              = true;
             cpr_use_bicgstab_         = true;
-            cpr_solver_verbose_       = false;
+            cpr_solver_verbose_       = 0;
             cpr_pressure_aggregation_ = false;
 	    cpr_reuse_setup_          = 0;
         }
@@ -202,7 +202,7 @@ namespace Opm
             use_cpr_ = EWOMS_GET_PARAM(TypeTag, bool, UseCpr);
 	    system_strategy_ = EWOMS_GET_PARAM(TypeTag, std::string, SystemStrategy);
 	    scale_linear_system_ = EWOMS_GET_PARAM(TypeTag, bool, ScaleLinearSystem);
-	    cpr_solver_verbose_  =  EWOMS_GET_PARAM(TypeTag, bool, CprSolverVerbose);
+	    cpr_solver_verbose_  =  EWOMS_GET_PARAM(TypeTag, int, CprSolverVerbose);
 	    cpr_use_drs_  =  EWOMS_GET_PARAM(TypeTag, bool, CprUseDrs);
 	    cpr_max_iter_  =  EWOMS_GET_PARAM(TypeTag, int, CprMaxIter);
 	    cpr_ell_solvetype_  =  EWOMS_GET_PARAM(TypeTag, int, CprEllSolvetype);
@@ -229,7 +229,7 @@ namespace Opm
             EWOMS_REGISTER_PARAM(TypeTag, bool, UseCpr, "Use CPR as the linear solver's preconditioner");
 	    EWOMS_REGISTER_PARAM(TypeTag, std::string, SystemStrategy, "Strategy for reformulating and scale linear system");
 	    EWOMS_REGISTER_PARAM(TypeTag, bool, ScaleLinearSystem, "Scale linear system according to equation scale and primary variable types");
-	    EWOMS_REGISTER_PARAM(TypeTag, bool, CprSolverVerbose, "Verbose for cpr solver");
+	    EWOMS_REGISTER_PARAM(TypeTag, int, CprSolverVerbose, "Verbose for cpr solver");
 	    EWOMS_REGISTER_PARAM(TypeTag, bool, CprUseDrs, "Use dynamic row sum using weighs");
 	    EWOMS_REGISTER_PARAM(TypeTag, int, CprMaxIter, "MaxIterations of the pressure amg solver");
 	    EWOMS_REGISTER_PARAM(TypeTag, int, CprEllSolvetype, "solver type of elliptic solve 0 bicgstab 1 cg other only amg preconditioner");

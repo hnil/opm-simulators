@@ -178,6 +178,14 @@ opm_add_test(flow_blackoil_dunecpr
     flow/flow_blackoil_dunecpr.cpp)
 install(TARGETS flow_blackoil_dunecpr DESTINATION bin)
 
+opm_add_test(flow_blackoil_dunecpr_sm
+  ONLY_COMPILE
+  ALWAYS_ENABLE
+  DEPENDS "opmsimulators"
+  LIBRARIES "opmsimulators"
+  SOURCES
+    flow/flow_blackoil_dunecpr_sm.cpp)
+install(TARGETS flow_blackoil_dunecpr_sm DESTINATION bin)
 
 
 add_test(NAME flow__version

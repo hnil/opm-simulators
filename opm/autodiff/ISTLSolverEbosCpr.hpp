@@ -25,7 +25,8 @@
 #include <utility>
 #include <memory>
 BEGIN_PROPERTIES
-
+NEW_PROP_TAG(CprSmootherFine);
+NEW_PROP_TAG(CprSmootherCoarse);
 END_PROPERTIES
 
 namespace Opm
@@ -55,7 +56,8 @@ namespace Opm
         typedef typename GET_PROP_TYPE(TypeTag, EclWellModel) WellModel;
         typedef typename GET_PROP_TYPE(TypeTag, Simulator) Simulator;
         typedef typename SparseMatrixAdapter::IstlMatrix Matrix;
-
+        typedef typename GET_PROP_TYPE(TypeTag, CprSmootherFine) CprSmootherFine;
+        typedef typename GET_PROP_TYPE(TypeTag, CprSmootherCoarse) CprSmootherCoarse;
       //typedef typename SparseMatrixAdapter::MatrixBlock MatrixBlockType;
       //typedef typename Vector::block_type BlockVector;
       //typedef typename GET_PROP_TYPE(TypeTag, Evaluation) Evaluation;
@@ -79,13 +81,14 @@ namespace Opm
       typedef Dune::ScalarProductChooser<Vector, POrComm, category> ScalarProductChooser;
 #endif
 //Operator MatrixOperator = Dune::MatrixAdapter<Matrix,Vector,Vector>
-      typedef Opm::ParallelOverlappingILU0<Matrix,Vector,Vector, POrComm> Smoother;
+      //typedef Opm::ParallelOverlappingILU0<Matrix,Vector,Vector, POrComm> Smoother;
+      typedef CprSmootherFine Smoother;
       //ParallelInformation = Dune::Amg::SequentialInformation
       //typedef Dune::Amg::AMG<MatrixAdapter,Vector,Smoother,POrComm> DuneAmg;
       using CouplingMetric = Dune::Amg::Diagonal<pressureIndex>;
       using CritBase       = Dune::Amg::SymmetricCriterion<Matrix, CouplingMetric>;
       using Criterion      = Dune::Amg::CoarsenCriterion<CritBase>;      
-      typedef BlackoilAmgClean<MatrixAdapter,Smoother,Criterion, POrComm, pressureIndex> BLACKOILAMG;
+      typedef BlackoilAmgClean<MatrixAdapter,CprSmootherFine, CprSmootherCoarse, Criterion, POrComm, pressureIndex> BLACKOILAMG;
 
 
     public:
@@ -215,12 +218,16 @@ namespace Opm
                                        comm.communicator().rank()==0 ) ? 1 : 0;
 	      
 	      // TODO: revise choice of parameters
-	      int coarsenTarget=1200;
+	      int coarsenTarget=4000;
 	      Criterion criterion(15, coarsenTarget);
-	      criterion.setDebugLevel( verbosity ); // no debug information, 1 for printing hierarchy information
+	      criterion.setDebugLevel( this->parameters_.cpr_solver_verbose_ ); // no debug information, 1 for printing hierarchy information
 	      criterion.setDefaultValuesIsotropic(2);
 	      criterion.setNoPostSmoothSteps( 1 );
 	      criterion.setNoPreSmoothSteps( 1 );
+	      //new guesses by hmbn
+	      //criterion.setAlpha(0.01); // criterion for connection strong 1/3 is default
+	      //criterion.setMaxLevel(2); //
+	      //criterion.setGamma(1); //  //1 V cycle 2 WW
 	      
 	      // Since DUNE 2.2 we also need to pass the smoother args instead of steps directly
 	      typedef typename BLACKOILAMG::Smoother Smoother;
@@ -231,7 +238,8 @@ namespace Opm
 	      smootherArgs.relaxationFactor = relax;
 	      const Opm::CPRParameter& params(this->parameters_); // strange conversion
 	      //ISTLUtility::setILUParameters(smootherArgs, ilu_milu);
-	      ISTLUtility::setILUParameters(smootherArgs, params);
+	      //ISTLUtility::setILUParameters(smootherArgs, params);
+	      //smootherArgs.setN(params.cpr_ilu_n_);                   								   smootherArgs.setMilu(params.cpr_ilu_milu_); 
 	      
 	      MatrixAdapter& opARef = *opA_;
 	      int newton_iteration = this->simulator_.model().newtonMethod().numIterations();
