@@ -55,9 +55,16 @@ namespace Opm
 {
 
 template<typename O, typename S, typename C,
-         typename P, std::size_t COMPONENT_INDEX>
+         typename P, std::size_t COMPONENT_INDEX,std::size_t VARIABLE_INDEX>
 class BlackoilAmg;
 
+  namespace Amg
+  {
+    template<int ROW, int COLUMN>
+    class Element;
+  }
+
+  
 namespace ISTLUtility
 {
 
@@ -183,14 +190,14 @@ createEllipticPreconditionerPointer(const M& Ae, double relax,
     return EllipticPreconditionerPointer(new ParallelPreconditioner(Ae, comm, relax, milu));
 }
 
-template < class C, class Op, class P, class S, std::size_t index,class Vector>
+  template < class C, class Op, class P, class S, std::size_t pressureEqnIndex,std::size_t pressureIndex, class Vector>
 inline void
 createAMGPreconditionerPointer(Op& opA, const double relax, const P& comm,
-                               std::unique_ptr< BlackoilAmg<Op,S,C,P,index> >& amgPtr,
+                               std::unique_ptr< BlackoilAmg<Op,S,C,P,pressureEqnIndex, pressureIndex> >& amgPtr,
                                const CPRParameter& params,
 			       const Vector& weights)
 {
-    using AMG = BlackoilAmg<Op,S,C,P,index>;
+    using AMG = BlackoilAmg<Op,S,C,P, pressureEqnIndex, pressureIndex>;
     const int verbosity    = ( params.cpr_solver_verbose_ &&
                                        comm.communicator().rank()==0 ) ? 1 : 0;
 
@@ -243,7 +250,7 @@ createAMGPreconditionerPointer(Op& opA, const double relax, const MILU_VARIANT m
 /// \param relax   The relaxation parameter for ILU0.
 /// \param comm    The object describing the parallelization information and communication.
 //  \param amgPtr  The unique_ptr to be filled (return)
-template < int pressureIndex=0, class Op, class P, class AMG >
+template < int pressureEqnIndex, int pressureIndex, class Op, class P, class AMG >
 inline void
 createAMGPreconditionerPointer( Op& opA, const double relax, const MILU_VARIANT milu, const P& comm, std::unique_ptr< AMG >& amgPtr )
 {
@@ -251,7 +258,7 @@ createAMGPreconditionerPointer( Op& opA, const double relax, const MILU_VARIANT 
     typedef typename Op::matrix_type  M;
 
     // The coupling metric used in the AMG
-    typedef Dune::Amg::Diagonal<pressureIndex> CouplingMetric;
+    typedef Opm::Amg::Element<pressureEqnIndex, pressureIndex> CouplingMetric;
 
     // The coupling criterion used in the AMG
     typedef Dune::Amg::SymmetricCriterion<M, CouplingMetric> CritBase;

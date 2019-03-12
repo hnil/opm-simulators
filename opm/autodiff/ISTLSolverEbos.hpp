@@ -35,7 +35,7 @@
 #include <ewoms/common/parametersystem.hh>
 #include <ewoms/common/propertysystem.hh>
 //#include <ewoms/linear/matrixmarket_ewoms.hh>
-
+#include <opm/material/fluidsystems/BlackOilDefaultIndexTraits.hpp>
 #include <dune/istl/scalarproducts.hh>
 #include <dune/istl/operators.hh>
 #include <dune/istl/preconditioners.hh>
@@ -187,6 +187,7 @@ protected:
       typedef typename GridView::template Codim<0>::Entity Element;
       typedef typename GET_PROP_TYPE(TypeTag, ElementContext) ElementContext;
         enum { pressureIndex = Indices::pressureSwitchIdx };
+      enum { pressureEqnIndex = BlackOilDefaultIndexTraits:: waterCompIdx};
         static const int numEq = Indices::numEq;
       
     public:
@@ -234,7 +235,7 @@ protected:
 	    weights_ = getSimpleWeights(bvec);
 	  }else if(parameters_.system_strategy_ == "original"){
 	    BlockVector bvec(0.0);
-	    bvec[pressureIndex] = 1;
+	    bvec[pressureEqnIndex] = 1;
 	    weights_ = getSimpleWeights(bvec);
 	  }else{
 	    form_cpr = false;
@@ -413,11 +414,11 @@ protected:
                 if (  parameters_.use_cpr_ )
                 {
                     using Matrix         = typename MatrixOperator::matrix_type;
-                    using CouplingMetric = Dune::Amg::Diagonal<pressureIndex>;
+                    using CouplingMetric = Opm::Amg::Element<pressureEqnIndex, pressureIndex>;
                     using CritBase       = Dune::Amg::SymmetricCriterion<Matrix, CouplingMetric>;
                     using Criterion      = Dune::Amg::CoarsenCriterion<CritBase>;
                     using AMG = typename ISTLUtility
-                        ::BlackoilAmgSelector< Matrix, Vector, Vector,POrComm, Criterion, pressureIndex >::AMG;
+		      ::BlackoilAmgSelector< Matrix, Vector, Vector,POrComm, Criterion, pressureEqnIndex, pressureIndex >::AMG;
 
                     std::unique_ptr< AMG > amg;
                     // Construct preconditioner.
@@ -501,7 +502,7 @@ protected:
         void
         constructAMGPrecond(LinearOperator& /* linearOperator */, const POrComm& comm, std::unique_ptr< AMG >& amg, std::unique_ptr< MatrixOperator >& opA, const double relax, const MILU_VARIANT milu) const
         {
-            ISTLUtility::template createAMGPreconditionerPointer<pressureIndex>( *opA, relax, milu, comm, amg );
+	  ISTLUtility::template createAMGPreconditionerPointer<pressureEqnIndex, pressureIndex>( *opA, relax, milu, comm, amg );
         }
 
 
@@ -704,7 +705,7 @@ protected:
 	    for(int jj=0; jj< numEq; ++jj){
 	      //const auto& vec = storage[ii].derivative(jj);
 	      block[ii][jj] = storage[ii].derivative(jj)/storage_scale;
-	      if(jj==0){
+	      if(jj==pressureIndex){
 		block[ii][jj] *=pressure_scale;
 	      }
 	    }
@@ -823,26 +824,36 @@ protected:
 	    // assume it is something on all rows
 	    // the blew logic depend on pressureIndex=0
 	    Block& block = (*j);
+	    BlockVector neweq(0.0);
 	    for ( std::size_t ii = 0; ii < block.rows; ii++ ){
-	      if ( ii == 0 ){
-		for(std::size_t jj=0; jj < block.cols; jj++){
-		  block[0][jj] *= bweights[ii];//*block[ii][jj];
-		}
-	      } else {
-		for(std::size_t jj=0; jj < block.cols; jj++){
-		  block[0][jj] += bweights[ii]*block[ii][jj];
-		}
+	 
+	      // if ( ii == 0 ){
+	      // 	for(std::size_t jj=0; jj < block.cols; jj++){
+	      // 	  block[0][jj] *= bweights[ii];//*block[ii][jj];
+	      // 	}
+	      // } else {
+	      // 	for(std::size_t jj=0; jj < block.cols; jj++){
+	      // 	  block[0][jj] += bweights[ii]*block[ii][jj];
+	      // 	}
+	      // }
+	      for(std::size_t jj=0; jj < block.cols; jj++){
+		neweq[jj] += bweights[ii]*block[ii][jj];
 	      }
 	    }
-	    
+	    for(std::size_t jj=0; jj < block.cols; jj++){
+	      block[pressureEqnIndex][jj] = neweq[jj];
+	    }	    
 	  }
+	  BlockVector newrhs(0.0);
 	  for(std::size_t ii=0; ii < brhs.size(); ii++){
-	    if ( ii == 0 ){
-	      brhs[0] *= bweights[ii];//*brhs[ii];
-	    }else{
-	      brhs[0] += bweights[ii]*brhs[ii];
-	    }
-	  }	      
+	    // if ( ii == 0 ){
+	    //   brhs[0] *= bweights[ii];//*brhs[ii];
+	    // }else{
+	    //   brhs[0] += bweights[ii]*brhs[ii];
+	    // }
+	    newrhs += bweights[ii]*brhs[ii];
+	  }
+	  brhs = newrhs;
 	}
       }
       

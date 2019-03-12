@@ -41,13 +41,32 @@ template<class M, class Norm>
 class UnSymmetricCriterion;
 }
 }
+namespace Opm {
+  namespace Amg
+  {
+    template<int ROW, int COLUMN>
+    class Element
+    {
+    public:
+      enum { /* @brief We preserve the sign.*/
+	is_sign_preserving = true
+      };
+      
+      template<class M>
+      typename M::field_type operator()(const M& m) const
+      {
+	return m[ROW][COLUMN];
+      }
+    };
+  }
+}
 
 namespace Dune
 {
 
 template <class Scalar, int n, int m>
 class MatrixBlock;
-
+  
 }
 
 namespace Opm
@@ -98,7 +117,7 @@ Dune::OverlappingSchwarzOperator<M,X,Y,T> createOperator(const Dune::Overlapping
 template<class Operator, class Communication,class Vector>
 std::tuple<std::unique_ptr<typename Operator::matrix_type>, Operator>
 scaleMatrixDRS(const Operator& op, const Communication& comm,
-	       std::size_t pressureIndex,const Vector& weights, const Opm::CPRParameter& param)
+	       std::size_t pressureEqnIndex,const Vector& weights, const Opm::CPRParameter& param)
 {
     using Matrix = typename Operator::matrix_type;
     using Block = typename Matrix::block_type;
@@ -120,7 +139,7 @@ scaleMatrixDRS(const Operator& op, const Communication& comm,
 		    //block[pressureIndex][j] += block[i][j];
 		  }		  
 	      }
-	      block[pressureIndex] = bvec; 
+	      block[pressureEqnIndex] = bvec; 
 	    }
 	  }
       }
@@ -135,7 +154,7 @@ scaleMatrixDRS(const Operator& op, const Communication& comm,
 //! \param vector The vector to scale
 //! \param pressureIndex The index of the pressure in the matrix block
 template<class Vector>
-void scaleVectorDRS(Vector& vector, std::size_t pressureIndex, const Opm::CPRParameter& param, const Vector& weights)
+void scaleVectorDRS(Vector& vector, std::size_t pressureEqnIndex, const Opm::CPRParameter& param, const Vector& weights)
 {
     using Block = typename Vector::block_type;
     if(param.cpr_use_drs_){
@@ -147,7 +166,7 @@ void scaleVectorDRS(Vector& vector, std::size_t pressureIndex, const Opm::CPRPar
 	  val += bw[i]*block[i];
 	  //block[pressureIndex] += block[i];
 	}
-	block[pressureIndex] = val;
+	block[pressureEqnIndex] = val;
       }
     }
 }
@@ -284,6 +303,9 @@ struct ScalarType<ParallelOverlappingILU0<M,X,Y,C> >
                                     C> value;
 };
 
+
+
+
 template<class B, class N>
 struct ScalarType<Dune::Amg::CoarsenCriterion<Dune::Amg::SymmetricCriterion<Dune::BCRSMatrix<B>,N> > >
 {
@@ -296,23 +318,23 @@ struct ScalarType<Dune::Amg::CoarsenCriterion<Dune::Amg::UnSymmetricCriterion<Du
     using value = Dune::Amg::CoarsenCriterion<Dune::Amg::UnSymmetricCriterion<Dune::BCRSMatrix<typename ScalarType<B>::value>, Dune::Amg::FirstDiagonal> >;
 };
 
-template<class C, std::size_t COMPONENT_INDEX>
+template<class C, std::size_t COMPONENT_INDEX, std::size_t VARIABLE_INDEX>
 struct OneComponentCriterionType
 {};
 
-template<class B, class N, std::size_t COMPONENT_INDEX>
-struct OneComponentCriterionType<Dune::Amg::CoarsenCriterion<Dune::Amg::SymmetricCriterion<Dune::BCRSMatrix<B>,N> >,COMPONENT_INDEX>
+template<class B, class N, std::size_t COMPONENT_INDEX, std::size_t VARIABLE_INDEX>
+struct OneComponentCriterionType<Dune::Amg::CoarsenCriterion<Dune::Amg::SymmetricCriterion<Dune::BCRSMatrix<B>,N> >,COMPONENT_INDEX, VARIABLE_INDEX>
 {
-    using value = Dune::Amg::CoarsenCriterion<Dune::Amg::SymmetricCriterion<Dune::BCRSMatrix<B>, Dune::Amg::Diagonal<COMPONENT_INDEX> > >;
+  using value = Dune::Amg::CoarsenCriterion<Dune::Amg::SymmetricCriterion<Dune::BCRSMatrix<B>, Opm::Amg::Element<COMPONENT_INDEX, VARIABLE_INDEX> > >;
 };
 
-template<class B, class N, std::size_t COMPONENT_INDEX>
-struct OneComponentCriterionType<Dune::Amg::CoarsenCriterion<Dune::Amg::UnSymmetricCriterion<Dune::BCRSMatrix<B>,N> >,COMPONENT_INDEX>
+template<class B, class N, std::size_t COMPONENT_INDEX,std::size_t VARIABLE_INDEX>
+struct OneComponentCriterionType<Dune::Amg::CoarsenCriterion<Dune::Amg::UnSymmetricCriterion<Dune::BCRSMatrix<B>,N> >,COMPONENT_INDEX,VARIABLE_INDEX>
 {
-    using value = Dune::Amg::CoarsenCriterion<Dune::Amg::UnSymmetricCriterion<Dune::BCRSMatrix<B>, Dune::Amg::Diagonal<COMPONENT_INDEX> > >;
+  using value = Dune::Amg::CoarsenCriterion<Dune::Amg::UnSymmetricCriterion<Dune::BCRSMatrix<B>, Opm::Amg::Element<COMPONENT_INDEX, VARIABLE_INDEX> > >;
 };
 
-template<class Operator, class Criterion, class Communication, std::size_t COMPONENT_INDEX>
+template<class Operator, class Criterion, class Communication, std::size_t COMPONENT_INDEX, std::size_t VARIABLE_INDEX>
 class OneComponentAggregationLevelTransferPolicy;
 
 
@@ -681,7 +703,7 @@ void buildCoarseSparseMatrix(M& coarseMatrix, G& fineGraph, const V& visitedMap,
  * @tparam Criterion The criterion that describes the aggregation procedure.
  * @tparam Communication The class that describes the communication pattern.
  */
-template<class Operator, class Criterion, class Communication, std::size_t COMPONENT_INDEX>
+template<class Operator, class Criterion, class Communication, std::size_t COMPONENT_INDEX, std::size_t VARIABLE_INDEX>
 class OneComponentAggregationLevelTransferPolicy
     : public Dune::Amg::LevelTransferPolicy<Operator, typename Detail::ScalarType<Operator>::value>
 {
@@ -792,7 +814,7 @@ public:
                 for ( auto col = row.begin(), cend = row.end(); col != cend; ++col, ++coarseCol )
                 {
                     assert( col.index() == coarseCol.index() );
-                    *coarseCol = (*col)[COMPONENT_INDEX][COMPONENT_INDEX];
+                    *coarseCol = (*col)[COMPONENT_INDEX][VARIABLE_INDEX];
                 }
                 ++coarseRow;
             }
@@ -822,7 +844,7 @@ public:
                     const auto& j = (*aggregatesMap_)[entry.index()];
                     if ( j != AggregatesMap::ISOLATED )
                     {
-                        (*coarseLevelMatrix_)[i][j] += (*entry)[COMPONENT_INDEX][COMPONENT_INDEX];
+                        (*coarseLevelMatrix_)[i][j] += (*entry)[COMPONENT_INDEX][VARIABLE_INDEX];
                     }
                 }
             }
@@ -920,7 +942,7 @@ private:
  * \tparam COMPONENT_INDEX The index of the component to use for coarsening (usually the pressure).
  */
 template<typename O, typename S, typename C,
-         typename P, std::size_t COMPONENT_INDEX>
+         typename P, std::size_t COMPONENT_INDEX,std::size_t VARIABLE_INDEX>
 class BlackoilAmg
     : public Dune::Preconditioner<typename O::domain_type, typename O::range_type>
 {
@@ -941,13 +963,14 @@ protected:
     using CoarseOperator = typename Detail::ScalarType<Operator>::value;
     using CoarseSmoother = typename Detail::ScalarType<Smoother>::value;
     using FineCriterion  =
-        typename Detail::OneComponentCriterionType<Criterion,COMPONENT_INDEX>::value;
+      typename Detail::OneComponentCriterionType<Criterion,COMPONENT_INDEX, VARIABLE_INDEX>::value;
     using CoarseCriterion =  typename Detail::ScalarType<Criterion>::value;
     using LevelTransferPolicy =
         OneComponentAggregationLevelTransferPolicy<Operator,
                                                    FineCriterion,
                                                    Communication,
-                                                   COMPONENT_INDEX>;
+                                                   COMPONENT_INDEX,
+						   VARIABLE_INDEX>;
     using CoarseSolverPolicy   =
         Detail::OneStepAMGCoarseSolverPolicy<CoarseOperator,
                                              CoarseSmoother,
@@ -1037,7 +1060,7 @@ namespace ISTLUtility
 /// \tparam C The type of the coarsening criterion to use.
 /// \tparam index The pressure index.
 ////
-template<class M, class X, class Y, class P, class C, std::size_t index>
+  template<class M, class X, class Y, class P, class C, std::size_t pressureEqnIndex, std::size_t pressureIndex>
 struct BlackoilAmgSelector
 {
     using Criterion = C;
@@ -1045,7 +1068,7 @@ struct BlackoilAmgSelector
     using ParallelInformation = typename Selector::ParallelInformation;
     using Operator = typename Selector::Operator;
     using Smoother = typename Selector::EllipticPreconditioner;
-    using AMG = BlackoilAmg<Operator,Smoother,Criterion,ParallelInformation,index>;
+  using AMG = BlackoilAmg<Operator,Smoother,Criterion,ParallelInformation, pressureEqnIndex, pressureIndex>;
 };
 } // end namespace ISTLUtility
 } // end namespace Opm
