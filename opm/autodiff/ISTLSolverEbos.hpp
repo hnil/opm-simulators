@@ -69,11 +69,11 @@ namespace Opm
 
    Adapts a matrix to the assembled linear operator interface
  */
-  template<class M, class X, class Y, class WellModel, bool overlapping,class TypeTag >
+template<class M, class X, class Y, class WellModel, bool overlapping >
 class WellModelMatrixAdapter : public Dune::AssembledLinearOperator<M,X,Y>
 {
   typedef Dune::AssembledLinearOperator<M,X,Y> BaseType;
-  typedef typename GET_PROP_TYPE(TypeTag, Grid)   Grid;
+
 public:
   typedef M matrix_type;
   typedef X domain_type;
@@ -83,7 +83,7 @@ public:
 #if HAVE_MPI
   typedef Dune::OwnerOverlapCopyCommunication<int,int> communication_type;
 #else
-  typedef Dune::CollectiveCommunication< Grid > communication_type;
+  typedef Dune::CollectiveCommunication< int > communication_type;
 #endif
 
 #if DUNE_VERSION_NEWER(DUNE_ISTL, 2, 6)
@@ -186,9 +186,6 @@ protected:
       typedef typename GET_PROP_TYPE(TypeTag, ThreadManager) ThreadManager;
       typedef typename GridView::template Codim<0>::Entity Element;
       typedef typename GET_PROP_TYPE(TypeTag, ElementContext) ElementContext;
-
-
-      
         enum { pressureIndex = Indices::pressureSwitchIdx };
         static const int numEq = Indices::numEq;
      typedef WellModelMatrixAdapter< Matrix, Vector, Vector, WellModel, false, TypeTag > OperatorSerial;
@@ -218,6 +215,7 @@ protected:
         void eraseMatrix() {
             matrix_for_preconditioner_.reset();
         }
+        //void prepare(const SparseMatrixAdapter& M, const Vector& b) {
 
       void prepare(const Matrix& M, Vector& b) {
 	matrix_.reset(new Matrix(M));
@@ -272,17 +270,31 @@ protected:
 	    this->scaleEquationsAndVariables(weights_);
 	  }
 	}
-
       }
       
+ 
+        
+
+        void setResidual(Vector& b) {
+            //rhs_ = &b;
+        }
+
+        void getResidual(Vector& b) const {
+            b = *rhs_;
+        }
+
+        void setMatrix(const SparseMatrixAdapter& M) {
+            //matrix_ = &M.istlMatrix();
+        }
+
         bool solve(Vector& x) {
             // Solve system.
-	  const WellModel& wellModel = simulator_.problem().wellModel();
-            
+
+            const WellModel& wellModel = simulator_.problem().wellModel();
 
             if( isParallel() )
             {
-	      typedef WellModelMatrixAdapter< Matrix, Vector, Vector, WellModel, true ,TypeTag> Operator;
+                typedef WellModelMatrixAdapter< Matrix, Vector, Vector, WellModel, true > Operator;
 
                 auto ebosJacIgnoreOverlap = Matrix(*matrix_);
                 //remove ghost rows in local matrix
@@ -296,10 +308,11 @@ protected:
                 solve( opA, x, *rhs_, *(opA.comm()) );
             }
             else
+
 	      {
-		const WellModel& wellModel = simulator_.problem().wellModel();
-		//typedef WellModelMatrixAdapter< Matrix, Vector, Vector, WellModel, false ,TypeTag> OperatorSerial;
-                OperatorSerial opA(*matrix_, *matrix_, wellModel);
+		const WellModel& wellModel = simulator_.problem().wellModel();		
+		typedef WellModelMatrixAdapter< Matrix, Vector, Vector, WellModel, false > Operator;
+		Operator opA(*matrix_, *matrix_, wellModel);
                 solve( opA, x, *rhs_ );
 		
 		if((parameters_.linear_solver_verbosity_ > 5) &&
@@ -339,6 +352,7 @@ protected:
 	      scaleSolution(x);
 	    }
 	    
+
             return converged_;
 
         }
@@ -383,7 +397,7 @@ protected:
             // Communicate if parallel.
             parallelInformation_arg.copyOwnerToAll(istlb, istlb);
 
-	    //#if FLOW_SUPPORT_AMG // activate AMG if either flow_ebos is used or UMFPack is not available
+#if FLOW_SUPPORT_AMG // activate AMG if either flow_ebos is used or UMFPack is not available
             if( parameters_.linear_solver_use_amg_ || parameters_.use_cpr_)
             {
                 typedef ISTLUtility::CPRSelector< Matrix, Vector, Vector, POrComm>  CPRSelectorType;
@@ -429,7 +443,7 @@ protected:
                 }
             }
             else
-	      //#endif
+#endif
             {
                 // Construct preconditioner.
                 auto precond = constructPrecond(linearOperator, parallelInformation_arg);
@@ -623,18 +637,18 @@ protected:
             // Check for failure of linear solver.
             if (!parameters_.ignoreConvergenceFailure_ && !result.converged) {
                 const std::string msg("Convergence failure for linear solver.");
-                OPM_THROW_NOLOG(LinearSolverProblem, msg);
+                OPM_THROW_NOLOG(NumericalIssue, msg);
             }
         }
     protected:
 
         bool isParallel() const {
-#ifdef HAVE_MPI	  
+
+#if HAVE_MPI
             return parallelInformation_.type() == typeid(ParallelISTLInformation);
 #else
-	    return false;
+            return false;
 #endif
-	    
         }
 
         /// Zero out off-diagonal blocks on rows corresponding to overlap cells
@@ -663,6 +677,7 @@ protected:
                 }
             }
         }
+
        // weights to make approxiate pressure equations
       Vector getStorageWeights(){
 	Vector weights(rhs_->size()); 
@@ -863,11 +878,15 @@ protected:
 	multBlocksInMatrix(M_cp, leftTrans, true);
 	multBlocksVector(b_cp, leftTrans);
       }
+
+
+
         const Simulator& simulator_;
         mutable int iterations_;
         mutable bool converged_;
         boost::any parallelInformation_;
         bool isIORank_;
+
         std::unique_ptr<Matrix> matrix_;
         Vector *rhs_;
         std::unique_ptr<Matrix> matrix_for_preconditioner_;
@@ -876,7 +895,6 @@ protected:
         FlowLinearSolverParameters parameters_;
         Vector weights_;
 	bool scale_variables_;
-      std::shared_ptr<OperatorSerial> opA_serial_;
     }; // end ISTLSolver
 
 } // namespace Opm

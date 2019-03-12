@@ -156,6 +156,7 @@ namespace Opm
     struct Reorderer
     {
         virtual std::size_t operator[](std::size_t i) const = 0;
+        virtual ~Reorderer() {}
     };
 
     struct NoReorderer : public Reorderer
@@ -306,8 +307,6 @@ namespace Opm
             for(const auto& entry: sum_dropped)
             {
                 auto& bdiag = (*a_ik)[index][index];
-                if(entry<0)
-                    std::cout << entry << std::endl;
                 bdiag += signFunctor(bdiag) * entry;
                 ++index;
             }
@@ -936,7 +935,7 @@ protected:
                 milun_decomposition( A, iluIteration, milu, *ILU, *reorderer, *inverseReorderer );
             }
         }
-        catch ( const Dune::MatrixBlockError& error )
+        catch (const Dune::MatrixBlockError& error)
         {
             message = error.what();
             std::cerr<<"Exception occured on process " << rank << " during " <<

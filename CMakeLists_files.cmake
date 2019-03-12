@@ -39,23 +39,19 @@ list (APPEND MAIN_SOURCE_FILES
   opm/core/wells/WellsManager.cpp
   opm/core/wells/well_controls.c
   opm/core/wells/wells.c
-  opm/simulators/WellSwitchingLogger.cpp
   opm/simulators/DeferredLogger.cpp
   opm/simulators/timestepping/TimeStepControl.cpp
   opm/simulators/timestepping/AdaptiveSimulatorTimer.cpp
   opm/simulators/timestepping/SimulatorTimer.cpp
   opm/simulators/timestepping/gatherConvergenceReport.cpp
-  opm/core/linalg/LinearSolverInterface.cpp
-  opm/core/linalg/LinearSolverUmfpack.cpp
-  opm/core/linalg/LinearSolverAmgcl.cpp
-  opm/core/linalg/call_umfpack.c
-  opm/core/linalg/sparse_sys.c
-  opm/autodiff/twolevelmethodcpr.hh
+  opm/simulators/gatherDeferredLogger.cpp
   )
 
 # originally generated with the command:
 # find tests -name '*.cpp' -a ! -wholename '*/not-unit/*' -printf '\t%p\n' | sort
 list (APPEND TEST_SOURCE_FILES
+  tests/test_equil.cc
+  tests/test_ecl_output.cc
   tests/test_blackoil_amg.cpp
   tests/test_convergencereport.cpp
   tests/test_graphcoloring.cpp
@@ -63,7 +59,6 @@ list (APPEND TEST_SOURCE_FILES
   tests/test_milu.cpp
   tests/test_multmatrixtransposed.cpp
   tests/test_wellmodel.cpp
-  tests/test_wellswitchlogger.cpp
   tests/test_deferredlogger.cpp
   tests/test_timer.cpp
   tests/test_invert.cpp
@@ -82,6 +77,13 @@ if(MPI_FOUND)
 endif()
 
 list (APPEND TEST_DATA_FILES
+  tests/SUMMARY_DECK_NON_CONSTANT_POROSITY.DATA
+  tests/equil_base.DATA
+  tests/equil_capillary.DATA
+  tests/equil_capillary_overlap.DATA
+  tests/equil_capillary_swatinit.DATA
+  tests/equil_deadfluids.DATA
+  tests/equil_pbvd_and_pdvd.DATA
   tests/VFPPROD1
   tests/VFPPROD2
   tests/msw.data
@@ -104,13 +106,16 @@ list (APPEND TEST_DATA_FILES
   tests/wells_stopped.data
   tests/relpermDiagnostics.DATA
   tests/norne_pvt.data
+  tests/wells_no_perforation.data
   )
 
 
 # originally generated with the command:
 # find opm -name '*.h*' -a ! -name '*-pch.hpp' -printf '\t%p\n' | sort
 list (APPEND PUBLIC_HEADER_FILES
+  opm/autodiff/AquiferInterface.hpp
   opm/autodiff/AquiferCarterTracy.hpp
+  opm/autodiff/AquiferFetkovich.hpp
   opm/autodiff/BlackoilAmg.hpp
   opm/autodiff/BlackoilAmgClean.hpp
   opm/autodiff/BlackoilDetails.hpp
@@ -171,7 +176,6 @@ list (APPEND PUBLIC_HEADER_FILES
   opm/core/wells/WellsManager.hpp
   opm/core/wells/WellsManager_impl.hpp
   opm/simulators/ParallelFileMerger.hpp
-  opm/simulators/WellSwitchingLogger.hpp
   opm/simulators/DeferredLogger.hpp
   opm/simulators/timestepping/AdaptiveSimulatorTimer.hpp
   opm/simulators/timestepping/AdaptiveTimeSteppingEbos.hpp
@@ -181,14 +185,5 @@ list (APPEND PUBLIC_HEADER_FILES
   opm/simulators/timestepping/SimulatorTimer.hpp
   opm/simulators/timestepping/SimulatorTimerInterface.hpp
   opm/simulators/timestepping/gatherConvergenceReport.hpp
-  opm/linearsolvers/crssolverbackend.hh
-  opm/linearsolvers/amgclsolverbackend.hh
-  opm/linearsolvers/amgclsolverbackendcpr.hh
-  opm/core/linalg/LinearSolverInterface.hpp
-  opm/core/linalg/LinearSolverUmfpack.hpp
-  opm/core/linalg/LinearSolverAmgcl.hpp
-  opm/core/linalg/LinearSolverAmgclCpr.hpp
-  opm/core/linalg/sparse_sys.h
-  opm/core/linalg/call_umfpack.h
-  flow/flow_tag.hpp
+  opm/simulators/gatherDeferredLogger.hpp
   )

@@ -57,10 +57,10 @@ NEW_PROP_TAG(LinearSolverRequireFullSparsityPattern);
 NEW_PROP_TAG(LinearSolverIgnoreConvergenceFailure);
 NEW_PROP_TAG(UseAmg);
 NEW_PROP_TAG(UseCpr);
-NEW_PROP_TAG(SystemStrategy);
-NEW_PROP_TAG(ScaleLinearSystem);
 NEW_PROP_TAG(LinearSolverBackend);
 NEW_PROP_TAG(PreconditionerAddWellContributions);
+NEW_PROP_TAG(SystemStrategy);
+NEW_PROP_TAG(ScaleLinearSystem);
 NEW_PROP_TAG(CprSolverVerbose);
 NEW_PROP_TAG(CprUseDrs);
 NEW_PROP_TAG(CprMaxIter);
@@ -90,6 +90,8 @@ SET_BOOL_PROP(FlowIstlSolverParams, CprUseDrs, false);
 SET_INT_PROP(FlowIstlSolverParams, CprMaxIter, 20);
 SET_INT_PROP(FlowIstlSolverParams, CprEllSolvetype, 0);
 SET_INT_PROP(FlowIstlSolverParams, CprReuseSetup, 0);
+
+
 
 END_PROPERTIES
 
@@ -234,6 +236,7 @@ namespace Opm
 	    EWOMS_REGISTER_PARAM(TypeTag, int, CprMaxIter, "MaxIterations of the pressure amg solver");
 	    EWOMS_REGISTER_PARAM(TypeTag, int, CprEllSolvetype, "solver type of elliptic solve 0 bicgstab 1 cg other only amg preconditioner");
 	    EWOMS_REGISTER_PARAM(TypeTag, int, CprReuseSetup, "Reuse Amg Setup");
+
         }
 
         FlowLinearSolverParameters() { reset(); }

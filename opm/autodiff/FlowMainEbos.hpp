@@ -59,12 +59,14 @@ NEW_PROP_TAG(OutputMode);
 NEW_PROP_TAG(EnableDryRun);
 NEW_PROP_TAG(OutputInterval);
 NEW_PROP_TAG(UseAmg);
+NEW_PROP_TAG(EnableLoggingFalloutWarning);
 
 SET_STRING_PROP(EclFlowProblem, OutputMode, "all");
 
 // TODO: enumeration parameters. we use strings for now.
 SET_STRING_PROP(EclFlowProblem, EnableDryRun, "auto");
-
+// Do not merge parallel output files or warn about them
+SET_BOOL_PROP(EclFlowProblem, EnableLoggingFalloutWarning, false);
 SET_INT_PROP(EclFlowProblem, OutputInterval, 1);
 
 END_PROPERTIES
@@ -106,8 +108,10 @@ namespace Opm
                                  "Specify if the simulation ought to be actually run, or just pretended to be");
             EWOMS_REGISTER_PARAM(TypeTag, int, OutputInterval,
                                  "Specify the number of report steps between two consecutive writes of restart data");
-            Simulator::registerParameters();
+            EWOMS_REGISTER_PARAM(TypeTag, bool, EnableLoggingFalloutWarning,
+                                 "Developer option to see whether logging was on non-root processors. In that case it will be appended to the *.DBG or *.PRT files");
 
+            Simulator::registerParameters();
             // register the parameters inherited from ebos
             Ewoms::registerAllParameters_<TypeTag>(/*finalizeRegistration=*/false);
 
@@ -127,20 +131,30 @@ namespace Opm
             // in flow only the deck file determines the end time of the simulation
             EWOMS_HIDE_PARAM(TypeTag, EndTime);
 
-            // time stepping is not (yet) done by the eWoms code in flow
+            // time stepping is not done by the eWoms code in flow
             EWOMS_HIDE_PARAM(TypeTag, InitialTimeStepSize);
             EWOMS_HIDE_PARAM(TypeTag, MaxTimeStepDivisions);
             EWOMS_HIDE_PARAM(TypeTag, MaxTimeStepSize);
             EWOMS_HIDE_PARAM(TypeTag, MinTimeStepSize);
             EWOMS_HIDE_PARAM(TypeTag, PredeterminedTimeStepsFile);
 
+            EWOMS_HIDE_PARAM(TypeTag, EclMaxTimeStepSizeAfterWellEvent);
+            EWOMS_HIDE_PARAM(TypeTag, EclRestartShrinkFactor);
+            EWOMS_HIDE_PARAM(TypeTag, EclMaxFails);
+            EWOMS_HIDE_PARAM(TypeTag, EclEnableTuning);
+
             // flow also does not use the eWoms Newton method
             EWOMS_HIDE_PARAM(TypeTag, NewtonMaxError);
             EWOMS_HIDE_PARAM(TypeTag, NewtonMaxIterations);
-            EWOMS_HIDE_PARAM(TypeTag, NewtonRawTolerance);
+            EWOMS_HIDE_PARAM(TypeTag, NewtonTolerance);
             EWOMS_HIDE_PARAM(TypeTag, NewtonTargetIterations);
             EWOMS_HIDE_PARAM(TypeTag, NewtonVerbose);
             EWOMS_HIDE_PARAM(TypeTag, NewtonWriteConvergence);
+            EWOMS_HIDE_PARAM(TypeTag, EclNewtonSumTolerance);
+            EWOMS_HIDE_PARAM(TypeTag, EclNewtonSumToleranceExponent);
+            EWOMS_HIDE_PARAM(TypeTag, EclNewtonStrictIterations);
+            EWOMS_HIDE_PARAM(TypeTag, EclNewtonRelaxedVolumeFraction);
+            EWOMS_HIDE_PARAM(TypeTag, EclNewtonRelaxedTolerance);
 
             // the default eWoms checkpoint/restart mechanism does not work with flow
             EWOMS_HIDE_PARAM(TypeTag, RestartTime);
@@ -310,10 +324,15 @@ namespace Opm
             std::ostringstream debugFileStream;
             std::ostringstream logFileStream;
 
-            if (boost::to_upper_copy(path(fpath.extension()).string()) == ".DATA") {
-                baseName = path(fpath.stem()).string();
-            } else {
-                baseName = path(fpath.filename()).string();
+            // Strip extension "." or ".DATA"
+            std::string extension = boost::to_upper_copy(fpath.extension().string());
+            if ( extension == ".DATA" || extension == "." )
+            {
+                baseName = boost::to_upper_copy(fpath.stem().string());
+            }
+            else
+            {
+                baseName = boost::to_upper_copy(fpath.filename().string());
             }
 
             const std::string& output_dir = eclState().getIOConfig().getOutputDir();
@@ -414,9 +433,21 @@ namespace Opm
             const std::string& output_dir = eclState().getIOConfig().getOutputDir();
             fs::path output_path(output_dir);
             fs::path deck_filename(EWOMS_GET_PARAM(TypeTag, std::string, EclDeckFileName));
+            std::string basename;
+            // Strip extension "." and ".DATA"
+            std::string extension = boost::to_upper_copy(deck_filename.extension().string());
+            if ( extension == ".DATA" || extension == "." )
+            {
+                basename = boost::to_upper_copy(deck_filename.stem().string());
+            }
+            else
+            {
+                basename = boost::to_upper_copy(deck_filename.filename().string());
+            }
             std::for_each(fs::directory_iterator(output_path),
                           fs::directory_iterator(),
-                          detail::ParallelFileMerger(output_path, deck_filename.stem().string()));
+                          detail::ParallelFileMerger(output_path, basename,
+                                                     EWOMS_GET_PARAM(TypeTag, bool, EnableLoggingFalloutWarning)));
         }
 
         void setupEbosSimulator()
@@ -572,9 +603,6 @@ namespace Opm
                 }
 
             }
-	    
-	    
-		  
         }
 
         /// This is the main function of Flow.
