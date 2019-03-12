@@ -21,6 +21,7 @@
 #include "config.h"
 #include "flow/flow_tag.hpp"
 //#include <opm/linearsolvers/amgclsolverbackend.hh>
+#include <dune/istl/preconditioners.hh>
 #include  <opm/autodiff/ISTLSolverEbosCpr.hpp>
 //#include <ewoms/linear/superlubackend.hh>
 
@@ -58,7 +59,7 @@ SET_PROP(EclFlowProblemSimple, CprSmootherFine)
       
     public:
       //typedef Opm::ParallelOverlappingILU0<Matrix,Vector,Vector, POrComm> type;
-      typedef Dune::SeqILU0<Matrix,Vector,Vector, POrComm> type;
+      typedef Dune::SeqILU0<Matrix,Vector,Vector> type;
 };
 
 SET_PROP(EclFlowProblemSimple, CprSmootherCoarse)
@@ -72,7 +73,8 @@ SET_PROP(EclFlowProblemSimple, CprSmootherCoarse)
       
     public:
       //typedef Opm::ParallelOverlappingILU0<Matrix,Vector,Vector, POrComm> type;
-      typedef Dune::SeqILU0<Matrix,Vector,Vector, POrComm> type;
+      //typedef Dune::SeqILU0<Matrix,Vector,Vector> type;
+      typedef Dune::SeqILU0<Matrix,Vector,Vector> type;
 };
 
 SET_BOOL_PROP(EclFlowProblemSimple,MatrixAddWellContributions,true);

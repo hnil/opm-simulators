@@ -218,7 +218,8 @@ namespace Opm
                                        comm.communicator().rank()==0 ) ? 1 : 0;
 	      
 	      // TODO: revise choice of parameters
-	      int coarsenTarget=4000;
+	      //int coarsenTarget=4000;
+	      int coarsenTarget=1200;
 	      Criterion criterion(15, coarsenTarget);
 	      criterion.setDebugLevel( this->parameters_.cpr_solver_verbose_ ); // no debug information, 1 for printing hierarchy information
 	      criterion.setDefaultValuesIsotropic(2);
@@ -237,7 +238,7 @@ namespace Opm
 	      smootherArgs.iterations = 1;
 	      smootherArgs.relaxationFactor = relax;
 	      const Opm::CPRParameter& params(this->parameters_); // strange conversion
-	      //ISTLUtility::setILUParameters(smootherArgs, ilu_milu);
+	      ISTLUtility::setILUParameters(smootherArgs, ilu_milu);
 	      //ISTLUtility::setILUParameters(smootherArgs, params);
 	      //smootherArgs.setN(params.cpr_ilu_n_);                   								   smootherArgs.setMilu(params.cpr_ilu_milu_); 
 	      
