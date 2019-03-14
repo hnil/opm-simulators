@@ -188,7 +188,7 @@ protected:
       typedef typename GET_PROP_TYPE(TypeTag, ElementContext) ElementContext;
         enum { pressureIndex = Indices::pressureSwitchIdx };
         static const int numEq = Indices::numEq;
-      
+
     public:
         typedef Dune::AssembledLinearOperator< Matrix, Vector, Vector > AssembledLinearOperatorType;
 
@@ -221,7 +221,7 @@ protected:
       }
       void scaleSystem(){
 	bool matrix_cont_added = EWOMS_GET_PARAM(TypeTag, bool, MatrixAddWellContributions);
-	    
+
 	if(matrix_cont_added){
 	  //Vector weights;
 	  bool form_cpr = true;
@@ -255,12 +255,12 @@ protected:
 	  if(form_cpr && not(parameters_.cpr_use_drs_)){
 	    scaleMatrixAndRhs(weights_);
 	  }
-	      
+
 	  if(weights_.size() == 0){
 	    // if weights are not set cpr_use_drs_=false;
 	    parameters_.cpr_use_drs_ = false;
 	  }
-	      
+
         }else{
 	  if(parameters_.scale_linear_system_){
 	    // also scale weights
@@ -268,9 +268,9 @@ protected:
 	  }
 	}
       }
-      
- 
-        
+
+
+
 
         void setResidual(Vector& b) {
             //rhs_ = &b;
@@ -307,13 +307,13 @@ protected:
             else
 
 	      {
-		const WellModel& wellModel = simulator_.problem().wellModel();		
+		const WellModel& wellModel = simulator_.problem().wellModel();
 		typedef WellModelMatrixAdapter< Matrix, Vector, Vector, WellModel, false > Operator;
 		Operator opA(*matrix_, *matrix_, wellModel);
                 solve( opA, x, *rhs_ );
-		
+
 		// if((parameters_.linear_solver_verbosity_ > 5) &&
-		//    (iterations_ > parameters_.linear_solver_verbosity_)) {		
+		//    (iterations_ > parameters_.linear_solver_verbosity_)) {
 		//   std::string dir = simulator_.problem().outputDir();
 		//   if (dir == ".")
 		//     dir = "";
@@ -348,7 +348,7 @@ protected:
 	    if(parameters_.scale_linear_system_){
 	      scaleSolution(x);
 	    }
-	    
+
 
             return converged_;
 
@@ -677,7 +677,7 @@ protected:
 
        // weights to make approxiate pressure equations
       Vector getStorageWeights(){
-	Vector weights(rhs_->size()); 
+	Vector weights(rhs_->size());
 	BlockVector rhs(0.0);
 	rhs[pressureIndex] = 1.0;
 	int index = 0;
@@ -698,7 +698,6 @@ protected:
 	    elemCtx.stencil(/*timeIdx=*/0).subControlVolume(0).volume() * extrusionFactor;
 	  Scalar storage_scale = scvVolume / elemCtx.simulator().timeStepSize();
 	  MatrixBlockType block;
-	  int offset = 0;
 	  double pressure_scale = 50e5;
 	  for(int ii=0; ii< numEq; ++ii){
 	    for(int jj=0; jj< numEq; ++jj){
@@ -721,17 +720,14 @@ protected:
 
       void scaleEquationsAndVariables(Vector& weights){
 	// loop over primary variables
-	const auto& sol = simulator_.model().solution(0);
 	const auto endi = matrix_->end();
-	int index = 0;
 	for (auto i=matrix_->begin(); i!=endi; ++i){
 	  const auto endj = (*i).end();
 	  BlockVector& brhs = (*rhs_)[i.index()];
-	  
+
 	  for (auto j=(*i).begin(); j!=endj; ++j){
         MatrixBlockType& block = *j;
-	    const auto& priVars = sol[i.index()];
-	    for ( std::size_t ii = 0; ii < block.rows; ii++ ){	        
+	    for ( std::size_t ii = 0; ii < block.rows; ii++ ){
 	      for(std::size_t jj=0; jj < block.cols; jj++){
 		//double var_scale = getVarscale(jj, priVars.primaryVarsMeaning))
 		double var_scale = simulator_.model().primaryVarWeight(i.index(),jj);
@@ -752,37 +748,34 @@ protected:
 	      *std::max_element(bw.begin(), bw.end(), [](double a, double b){ return std::abs(a) < std::abs(b); } );
 	    bw /= abs_max;
 	  }
-	  
-	}                        
+
+	}
       }
       void scaleSolution(Vector& x){
-	const auto& sol = simulator_.model().solution(0);
 	for(std::size_t i=0; i < x.size(); ++i){
-	  const auto& primVar = sol[i];
 	  auto& bx = x[i];
 	  for(std::size_t jj=0; jj < bx.size(); jj++){
 	    double var_scale = simulator_.model().primaryVarWeight(i,jj);
             bx[jj] /= var_scale;
-	  }	  
+	  }
 	}
       }
-      
+
       Vector getQuasiImpesWeights(){
 	Matrix& A = *matrix_;
 	Vector weights(rhs_->size());
 	BlockVector rhs(0.0);
 	rhs[pressureIndex] = 1;
 	const auto endi = A.end();
-	int index = 0;
 	for (auto i=A.begin(); i!=endi; ++i){
-	  const auto endj = (*i).end();                                        
+	  const auto endj = (*i).end();
 	  MatrixBlockType diag_block(0.0);
 	  for (auto j=(*i).begin(); j!=endj; ++j){
 	    if(i.index() == j.index()){
 	      diag_block = (*j);
 	      break;
-	    }                        
-	  }                    
+	    }
+	  }
 	  BlockVector bweights;
 	  auto diag_block_transpose = diag_block.transpose();
 	  diag_block_transpose.solve(bweights, rhs);
@@ -793,7 +786,7 @@ protected:
 	}
 	return weights;
       }
-      
+
       Vector getSimpleWeights(const BlockVector& rhs){
 	Vector weights(rhs_->size(),0);
 	for(auto& bw: weights){
@@ -812,14 +805,14 @@ protected:
 	//for ( auto& row : *matrix_ ){
 	const auto endi = matrix_->end();
 	for (auto i=matrix_->begin(); i!=endi; ++i){
-	  
+
 	  //const auto& bweights = weights[row.index()];
 	  const BlockVector& bweights = weights[i.index()];
 	  BlockVector& brhs = (*rhs_)[i.index()];
 	  //++index;
 	  //for ( auto& block : row ){
-	  const auto endj = (*i).end();                                        
-	  for (auto j=(*i).begin(); j!=endj; ++j){    
+	  const auto endj = (*i).end();
+	  for (auto j=(*i).begin(); j!=endj; ++j){
 	    // assume it is something on all rows
 	    // the blew logic depend on pressureIndex=0
 	    Block& block = (*j);
@@ -834,7 +827,7 @@ protected:
 		}
 	      }
 	    }
-	    
+
 	  }
 	  for(std::size_t ii=0; ii < brhs.size(); ii++){
 	    if ( ii == 0 ){
@@ -842,10 +835,10 @@ protected:
 	    }else{
 	      brhs[0] += bweights[ii]*brhs[ii];
 	    }
-	  }	      
+	  }
 	}
       }
-      
+
       static void multBlocksInMatrix(Matrix& ebosJac,const MatrixBlockType& trans,bool left=true){
 	const int n = ebosJac.N();
 	//const int np = FluidSystem::numPhases;
@@ -862,8 +855,8 @@ protected:
 	    }
 	  }
 	}
-      }      
-      
+      }
+
       static void multBlocksVector(Vector& ebosResid_cp,const MatrixBlockType& leftTrans){
 	for( auto& bvec: ebosResid_cp){
 	  auto bvec_new=bvec;

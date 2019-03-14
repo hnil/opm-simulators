@@ -209,7 +209,7 @@ namespace Opm
 	    cpr_max_iter_  =  EWOMS_GET_PARAM(TypeTag, int, CprMaxIter);
 	    cpr_ell_solvetype_  =  EWOMS_GET_PARAM(TypeTag, int, CprEllSolvetype);
 	    cpr_reuse_setup_  =  EWOMS_GET_PARAM(TypeTag, int, CprReuseSetup);
-	    
+
         }
 
         template <class TypeTag>

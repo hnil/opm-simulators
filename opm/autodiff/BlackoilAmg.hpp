@@ -72,7 +72,7 @@ template<class M, class X, class Y, class T>
 std::unique_ptr< Dune::MatrixAdapter<M,X,Y> > createOperatorPtr(const Dune::MatrixAdapter<M,X,Y>&, const M& matrix, const T&)
 {
   return std::make_unique< Dune::MatrixAdapter<M,X,Y> >(matrix);
-}  
+}
 /**
  * \brief Creates an OverlappingSchwarzOperator as an operator.
  *
@@ -109,7 +109,7 @@ scaleMatrixDRS(const Operator& op, const Communication& comm,
       for (auto i=matrix->begin(); i!=endi; ++i){
 	const BlockVector& bw = weights[i.index()];
 	const auto endj = (*i).end();
-	  for (auto j=(*i).begin(); j!=endj; ++j){  
+	  for (auto j=(*i).begin(); j!=endj; ++j){
 	    {
 	      BlockVector bvec(0.0);
 	      Block& block = *j;
@@ -118,9 +118,9 @@ scaleMatrixDRS(const Operator& op, const Communication& comm,
 		    // should introduce limmits which also change the weights
 		    bvec[jj] += bw[ii]*block[ii][jj];
 		    //block[pressureIndex][j] += block[i][j];
-		  }		  
+		  }
 	      }
-	      block[pressureIndex] = bvec; 
+	      block[pressureIndex] = bvec;
 	    }
 	  }
       }
@@ -471,7 +471,7 @@ private:
                 Dune::LoopSolver<X> solver(const_cast<typename AMGType::Operator&>(op_), *sp, *prec,
                                          tolerance, maxit, verbosity);
                 solver.apply(x,b,res);
-#else	      
+#else
                 if ( !amg_ )
                 {
                   Dune::LoopSolver<X> solver(const_cast<typename AMGType::Operator&>(op_), *sp,
@@ -486,8 +486,8 @@ private:
                                                    tolerance, maxit, verbosity);
                     solver.apply(x,b,res);
                 }
-		
-#endif		
+
+#endif
 	    }
 
 #if ! DUNE_VERSION_NEWER(DUNE_ISTL, 2, 6)
