@@ -60,6 +60,7 @@ NEW_PROP_TAG(EnableDryRun);
 NEW_PROP_TAG(OutputInterval);
 NEW_PROP_TAG(UseAmg);
 NEW_PROP_TAG(EnableLoggingFalloutWarning);
+NEW_PROP_TAG(UseAdjoint);
 
 SET_STRING_PROP(EclFlowProblem, OutputMode, "all");
 
@@ -68,6 +69,9 @@ SET_STRING_PROP(EclFlowProblem, EnableDryRun, "auto");
 // Do not merge parallel output files or warn about them
 SET_BOOL_PROP(EclFlowProblem, EnableLoggingFalloutWarning, false);
 SET_INT_PROP(EclFlowProblem, OutputInterval, 1);
+
+
+SET_BOOL_PROP(EclFlowProblem, UseAdjoint, false);
 
 END_PROPERTIES
 
@@ -551,7 +555,16 @@ namespace Opm
 
                 SimulatorReport successReport = simulator_->run(simtimer);
                 SimulatorReport failureReport = simulator_->failureReport();
-
+                if (EWOMS_GET_PARAM(TypeTag, bool, UseAdjoint)) {
+		    std::string msg("\n\n================ Starting adjoint loop ===============\n");
+                    OpmLog::info(msg);
+		    //SimulatorTimer simtimer_adjoint;
+                    //simtimer_adjoint.init(successReport.time_steps, successReport.report_stepindx);
+                    //int end_step = int(successReport.time_steps.size());// at end of last time step
+                    //simtimer_adjoint.setCurrentStepNum(end_step);
+		    SimulatorTimer& simtimer_adjoint = simtimer;
+                    SimulatorReport successReport_adjoint = simulator_->runAdjoint(simtimer_adjoint);//, *state_);
+                }
                 if (output_cout_) {
                     std::ostringstream ss;
                     ss << "\n\n================    End of simulation     ===============\n\n";

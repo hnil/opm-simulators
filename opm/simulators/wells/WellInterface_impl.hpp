@@ -21,6 +21,7 @@
 
 #include <opm/simulators/utils/DeferredLoggingErrorHelpers.hpp>
 
+#include "WellInterface.hpp"
 namespace Opm
 {
 

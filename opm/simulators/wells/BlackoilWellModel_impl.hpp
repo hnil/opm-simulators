@@ -383,6 +383,20 @@ namespace Opm {
         }
     }
 
+
+    // only use this for restart.
+    template<typename TypeTag>
+    void
+    BlackoilWellModel<TypeTag>::
+    setRestartWellState(const WellState& well_state) { previous_well_state_ = well_state; }
+
+    //only used for adjoint
+    template<typename TypeTag>
+    void
+    BlackoilWellModel<TypeTag>::
+    setWellState(const WellState& well_state) { well_state_ = well_state; }
+
+
     // called at the end of a report step
     template<typename TypeTag>
     void
@@ -663,7 +677,7 @@ namespace Opm {
     template<typename TypeTag>
     void
     BlackoilWellModel<TypeTag>::
-    assemble(const int iterationIdx,
+    assemble(const int iterationIdx, const bool solve_well_equation,
              const double dt)
     {
 
@@ -691,7 +705,7 @@ namespace Opm {
             std::vector< Scalar > B_avg(numComponents(), Scalar() );
             computeAverageFormationFactor(B_avg);
 
-            if (param_.solve_welleq_initially_ && iterationIdx == 0) {
+            if ((param_.solve_welleq_initially_ && iterationIdx == 0) && solve_well_equation) {
                 // solve the well equations as a pre-processing step
                 last_report_ = solveWellEq(B_avg, dt, local_deferredLogger);
 
@@ -727,7 +741,23 @@ namespace Opm {
             well->assembleWellEq(ebosSimulator_, B_avg, dt, well_state_, deferred_logger);
         }
     }
+    template<typename TypeTag>
+    void
+    BlackoilWellModel<TypeTag>::
+    printMatrixes() const
+    {
+        if ( ! localWellsActive() ) {
+            return;
+        }
 
+        for (auto& well : well_container_) {
+            std::cout << "********************************* " << std::endl;
+            std::cout << "Print matrixes for " << well->name() << std::endl;
+            well->printMatrixes();
+        }
+    }
+
+    
     template<typename TypeTag>
     void
     BlackoilWellModel<TypeTag>::
@@ -739,6 +769,38 @@ namespace Opm {
 
         for (auto& well : well_container_) {
             well->apply(r);
+        }
+    }
+
+    // applying the well residual to reservoir residuals
+    // r = r - duneBt_^T * invDuneDt_ * adjWell_
+    template<typename TypeTag>
+    void
+    BlackoilWellModel<TypeTag>::
+    applyt( BVector& r) const
+    {
+        if ( ! localWellsActive() ) {
+            return;
+        }
+
+        for (auto& well : well_container_) {
+            well->applyt(r);
+        }
+    }
+
+    // Atx = At x - Bt Dt^-1 Ct x
+    template<typename TypeTag>
+    void
+    BlackoilWellModel<TypeTag>::
+    applyt(const BVector& x, BVector& Atx) const
+    {
+        // TODO: do we still need localWellsActive()?
+        if ( ! localWellsActive() ) {
+            return;
+        }
+
+        for (auto& well : well_container_) {
+            well->applyt(x, Atx);
         }
     }
 
@@ -759,9 +821,57 @@ namespace Opm {
         }
     }
 
+    template<typename TypeTag>
+    void
+    BlackoilWellModel<TypeTag>::
+    computeObj(double dt)    {
+        if ( ! localWellsActive() ) {
+            return;
+        }
+        for (auto& well : well_container_) {
+            well->computeObj(ebosSimulator_, dt);
+        }
+    }
 
+    template<typename TypeTag>
+    void
+    BlackoilWellModel<TypeTag>::
+    rhsAdjointRes(BVector& rhs)
+    {
+        if ( ! localWellsActive() ) {
+            return;
+        }
+        for (auto& well : well_container_) {
+            well->rhsAdjointRes(rhs);
+            well->rhsAdjointWell();
+        }
+    }
 
-
+    template<typename TypeTag>
+    void
+    BlackoilWellModel<TypeTag>::
+    printObjective(std::ostream& os) const{
+        if ( ! localWellsActive() ) {
+            return;
+        }
+        for (auto& well : well_container_) {
+            well->printObjective(os);
+        }
+    }
+    template<typename TypeTag>
+    AdjointResults
+    BlackoilWellModel<TypeTag>::
+    adjointResults() const{
+        AdjointResults adjres;
+        if ( ! localWellsActive() ) {
+            return adjres;
+        }
+        for (auto& well : well_container_) {
+            well->addAdjointResult(adjres);
+        }
+        adjres.schedule_step = ebosSimulator_.episodeIndex();
+        return adjres;
+    }
 
     // Ax = Ax - alpha * C D^-1 B x
     template<typename TypeTag>
@@ -784,7 +894,18 @@ namespace Opm {
         Ax.axpy( alpha, scaleAddRes_ );
     }
 
+    template<typename TypeTag>
+    void
+    BlackoilWellModel<TypeTag>::
+    recoverWellAdjointAndUpdateWellAdjoint(const BVector& x)
+    {
+        if (!localWellsActive())
+            return;
 
+        for (auto& well : well_container_) {
+            well->recoverWellAdjointAndUpdateAdjointState(x, well_state_);
+        }
+    }
 
 
 
