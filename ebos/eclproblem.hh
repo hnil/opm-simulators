@@ -363,6 +363,10 @@ SET_SCALAR_PROP(EclBaseProblem, EclRestartShrinkFactor, 3);
 SET_INT_PROP(EclBaseProblem, EclMaxFails, 10);
 SET_BOOL_PROP(EclBaseProblem, EclEnableTuning, false);
 
+NEW_PROP_TAG(NumAdjoint);
+SET_INT_PROP(EclBaseProblem, NumAdjoint, 0);
+SET_BOOL_PROP(EclBaseProblem, SimulatorManageTimeStep, false);
+
 END_PROPERTIES
 
 namespace Ewoms {
@@ -721,16 +725,20 @@ public:
      * \param res The deserializer object
      */
     template <class Restarter>
-    void deserialize(Restarter& res)
+        void deserialize(Restarter& res,bool isOnRestart = true)
     {
         // reload the current episode/report step from the deck
-        beginEpisode(/*isOnRestart=*/true);
+        if(isOnRestart){
+            beginEpisode(/*isOnRestart=*/true);
+        }
 
+        // serialization of wells not implemented
+        // calls conflict with adjoint boost::serialize
         // deserialize the wells
-        wellModel_.deserialize(res);
+        //wellModel_.deserialize(res);
 
         // deserialize the aquifer
-        aquiferModel_.deserialize(res);
+        //aquiferModel_.deserialize(res);
     }
 
     /*!
@@ -742,8 +750,8 @@ public:
     template <class Restarter>
     void serialize(Restarter& res)
     {
-        wellModel_.serialize(res);
-        aquiferModel_.serialize(res);
+        //wellModel_.serialize(res);
+        //aquiferModel_.serialize(res);
     }
 
     /*!

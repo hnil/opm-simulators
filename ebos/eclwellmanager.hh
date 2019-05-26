@@ -587,10 +587,10 @@ public:
      * It is the inverse of the serialize() method.
      */
     template <class Restarter>
-    void deserialize(Restarter& res OPM_UNUSED)
+    void deserialize(Restarter& res OPM_UNUSED, bool wasRestarted = true)
     {
         // initialize the wells for the current episode
-        beginEpisode(/*wasRestarted=*/true);
+        beginEpisode(wasRestarted);
     }
 
     /*!
