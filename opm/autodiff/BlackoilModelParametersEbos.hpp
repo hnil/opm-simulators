@@ -48,7 +48,7 @@ NEW_PROP_TAG(SolveWelleqInitially);
 NEW_PROP_TAG(UpdateEquationsScaling);
 NEW_PROP_TAG(UseUpdateStabilization);
 NEW_PROP_TAG(MatrixAddWellContributions);
-
+NEW_PROP_TAG(UseAdjoint);
 // parameters for multisegment wells
 NEW_PROP_TAG(TolerancePressureMsWells);
 NEW_PROP_TAG(MaxPressureChangeMsWells);
@@ -75,7 +75,7 @@ SET_SCALAR_PROP(FlowModelParameters, TolerancePressureMsWells, 0.01 *1e5);
 SET_SCALAR_PROP(FlowModelParameters, MaxPressureChangeMsWells, 2.0 *1e5);
 SET_BOOL_PROP(FlowModelParameters, UseInnerIterationsMsWells, true);
 SET_INT_PROP(FlowModelParameters, MaxInnerIterMsWells, 100);
-
+SET_BOOL_PROP(FlowModelParameters, UseAdjoint, false);
 // if openMP is available, determine the number threads per process automatically.
 #if _OPENMP
 SET_INT_PROP(FlowModelParameters, ThreadsPerProcess, -1);
@@ -152,7 +152,8 @@ namespace Opm
 
         // Whether to add influences of wells between cells to the matrix and preconditioner matrix
         bool matrix_add_well_contributions_;
-
+	// use adjoint
+	bool use_adjoint_;
         /// Construct from user parameters or defaults.
         BlackoilModelParametersEbos()
         {
@@ -176,7 +177,7 @@ namespace Opm
             update_equations_scaling_ = EWOMS_GET_PARAM(TypeTag, bool, UpdateEquationsScaling);
             use_update_stabilization_ = EWOMS_GET_PARAM(TypeTag, bool, UseUpdateStabilization);
             matrix_add_well_contributions_ = EWOMS_GET_PARAM(TypeTag, bool, MatrixAddWellContributions);
-
+	    use_adjoint_ = EWOMS_GET_PARAM(TypeTag, bool, UseAdjoint);
             deck_file_name_ = EWOMS_GET_PARAM(TypeTag, std::string, EclDeckFileName);
         }
 

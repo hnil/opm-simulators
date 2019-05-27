@@ -23,6 +23,12 @@
 #ifndef OPM_STANDARDWELL_HEADER_INCLUDED
 #define OPM_STANDARDWELL_HEADER_INCLUDED
 
+BEGIN_PROPERTIES
+
+NEW_PROP_TAG(NumWellAdjoint);
+
+END_PROPERTIES
+
 
 #include <opm/simulators/wells/WellInterface.hpp>
 #include <opm/simulators/linalg/ISTLSolverEbos.hpp>
@@ -119,6 +125,10 @@ namespace Opm
         typedef Dune::FieldVector<Scalar, numWellEq> VectorBlockWellType;
         typedef Dune::BlockVector<VectorBlockWellType> BVectorWell;
 
+	typedef Dune::FieldVector<Scalar, 1> VectorBlockWellCtrlType;
+	typedef Dune::BlockVector<VectorBlockWellCtrlType> BVectorWellCtrl;
+	
+	
         // the matrix type for the diagonal matrix D l
         typedef Dune::FieldMatrix<Scalar, numWellEq, numWellEq > DiagMatrixBlockWellType;
         typedef Dune::FieldMatrix<Scalar, numWellEq, 1 > DiagMatrixBlockWellAdjointType;
@@ -326,6 +336,9 @@ namespace Opm
         // adjoint rhs of the well equations
         BVectorWell adjWell_;
 
+
+
+	
         // two off-diagonal matrices
         OffDiagMatWell duneB_;
         OffDiagMatWell duneC_;
@@ -412,6 +425,9 @@ namespace Opm
         void updateWellState(const BVectorWell& dwells,
                              WellState& well_state,
                              Opm::DeferredLogger& deferred_logger) const;
+
+	// updating the well_state based on well solution dwells
+        void updateAdjointState(const BVectorWell& dwells, WellState& well_state) const;
 
         // calculate the properties for the well connections
         // to calulate the pressure difference between well connections.
@@ -570,6 +586,15 @@ namespace Opm
 
         void checkConvergenceControlEq(ConvergenceReport& report,
                                        DeferredLogger& deferred_logger) const;
+
+	void setControlDerivative(double&) const
+        {
+        }
+        void setControlDerivative(EvalWell& x) const
+        {
+            x.setDerivative(controlIndex, 1.0);
+        }
+
 
     };
 

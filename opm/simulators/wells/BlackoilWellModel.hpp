@@ -245,7 +245,6 @@ namespace Opm {
             // using the solution x to recover the solution xw for wells and applying
             // xw to update Well State
             void recoverWellAdjointAndUpdateWellAdjoint(const BVector& x);
-            void recoverWellSolutionAndUpdateWellState(const BVector& x);
 
             // Check if well equations is converged.
             ConvergenceReport getWellConvergence(const std::vector<Scalar>& B_avg) const;

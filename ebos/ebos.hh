@@ -44,7 +44,7 @@ class EbosProblem;
 BEGIN_PROPERTIES
 
 NEW_TYPE_TAG(EbosTypeTag, INHERITS_FROM(BlackOilModel, EclBaseProblem, FlowModelParameters));
-
+NEW_PROP_TAG(NumWellAdjoint);
 // Set the problem class
 SET_TYPE_PROP(EbosTypeTag, Problem, Ewoms::EbosProblem<TypeTag>);
 
@@ -98,6 +98,10 @@ SET_INT_PROP(EbosTypeTag, EclNewtonStrictIterations, 100);
 // set the maximum number of Newton iterations to 8 so that we fail quickly (albeit
 // relatively often)
 SET_INT_PROP(EbosTypeTag, NewtonMaxIterations, 8);
+
+// Default: not use adjoint
+SET_INT_PROP(EbosTypeTag, NumWellAdjoint, 0);
+
 
 END_PROPERTIES
 

@@ -2719,7 +2719,7 @@ namespace Opm
     ValueType
     StandardWell<TypeTag>::
     calculateBhpFromThp(const std::vector<ValueType>& rates,
-                        const int control_index,
+                        const int thp_control_index,
                         Opm::DeferredLogger& deferred_logger) const
     {
         // TODO: when well is under THP control, the BHP is dependent on the rates,

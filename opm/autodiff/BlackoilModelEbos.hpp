@@ -253,28 +253,24 @@ namespace Opm {
             // only to update inensive quantity cache1020
             ebosSimulator_.problem().beginTimeStep();
 	    //deserialize_well(true);
-            ebosSimulator_.model().newtonMethod().setIterationIndex(0);
-            //ebosSimulator_.problem().beginIteration(); //fails at this point
-            {
-              //bool solve_well_equation = true;
-              //wellModel().beginIteration(solve_well_equation);// well equation assembly
-              //deserialize_well();
-              wellModel().updatePerforationIntensiveQuantities();
-              wellModel().prepareTimeStep();
-              wellModel().initPrimaryVariablesEvaluation();
-              wellModel().assembleWellEq(ebosSimulator_.timeStepSize());
+	    //NB NEW coode
+	    this->assembleReservoir(timer, 0);
+	    ebosSimulator_.model().newtonMethod().setIterationIndex(0);
+            ebosSimulator_.problem().beginIteration();
+            ebosSimulator_.model().linearizer().linearizeDomain(/*focustimeindex=*/ 0);
+            ebosSimulator_.problem().endIteration();
+	    wellModel().linearize(ebosSimulator().model().linearizer().jacobian(),
+                                      ebosSimulator().model().linearizer().residual());
 
-              //ebosSimulator_problem().beginIteration();// well equation assembly
-            }
-            ebosSimulator_.model().linearizer().linearize(/*focustimeindex=*/ 0);// should not be important since the
-	                                                                         //linarization should not be used
+
+//linarization should not be used
             ebosSimulator_.problem().endIteration();//needed ??
 
             this->prepareStep(timer);// set correct time ??
             wellModel().beginTimeStep();
             //deserialize_well(true);
-            wellModel().calculateExplicitQuantities();
-            wellModel().prepareTimeStep();
+            //wellModel().calculateExplicitQuantities();
+            //wellModel().prepareTimeStep();
             //this->prepareStep(timer);// set correct time ??
             this->deserializeReservoir( timer.simulationTimeElapsed(),only_reservoir );
             // seralizing may owerwrite prevois step since it was intended for restart ??
@@ -288,24 +284,14 @@ namespace Opm {
             //wellModel().prepareTimeStep();
             assert( abs(dt- ebosSimulator_.timeStepSize()) < 1e-2);
             ebosSimulator_.model().newtonMethod().setIterationIndex(/*iterationIdx*/ 1);
-            {
-              //bool solve_well_equation = true;
-              //wellModel().beginIteration(solve_well_equation);// well equation assembly
-              deserialize_well();
-              wellModel().updatePerforationIntensiveQuantities();
-              //wellModel().calculateExplicitQuantities();
-              wellModel().prepareTimeStep();
-              wellModel().initPrimaryVariablesEvaluation();
-              wellModel().assembleWellEq(ebosSimulator_.timeStepSize());
-
-	      //ebosSimulator_problem().beginIteration();// well equation assembly
-            }
-            ebosSimulator_.model().linearizer().linearize(0);
+            ebosSimulator_.problem().beginIteration();
+            ebosSimulator_.model().linearizer().linearizeDomain(/*focustimeindex=*/ 1);
             ebosSimulator_.problem().endIteration();
-	    // to get correct residual could asser small
-            auto& ebosResid = ebosSimulator_.model().linearizer().residual();
-	    wellModel().apply(ebosResid);
+	    wellModel().linearize(ebosSimulator().model().linearizer().jacobian(),
+                                      ebosSimulator().model().linearizer().residual());
 
+	    // we should no have recovered the state of the original forward simulation
+	    auto& ebosResid = ebosSimulator_.model().linearizer().residual();
              //wellModel().recoverWellSolutionAndUpdateWellState(x);
             std::cout << "Printing matrix residual in backward mode" << std::endl;
             std::cout << "Inf norm " << ebosResid.infinity_norm() << std::endl;
@@ -341,39 +327,19 @@ namespace Opm {
             std::unique_ptr<Mat> adj_matrix_for_preconditioner;
             if (param_.matrix_add_well_contributions_) {
 	       wellModel().addWellContributions(ebosJac);
-            }
-            if ( param_.preconditioner_add_well_contributions_ &&
-                 ! param_.matrix_add_well_contributions_ ) {
-	        adj_matrix_for_preconditioner.reset(new Mat(ebosJac));
-                wellModel().addWellContributions(*adj_matrix_for_preconditioner);
-            }
+            }else{
+		// we scip this implementation for now
+		OPM_THROW(std::runtime_error,"Current adjoint only work with matrix_add_well_contribution");
+	    }
+            
 
             // then all well tings has to be done
             // set initial guess
             BVector x(nc);
-            if (param_.use_amgcl_ || param_.use_umfpack_) {
-	       OPM_THROW(std::runtime_error, "Cannot run with amgcl or umfpack");
-	       //InputMatrix = ebosSimulator_.model().linearizer().jacobian().istlMatrix();
-	      //solveWithAMGCLorUMFPACK_Transpose();
-            }else{
+	    OPM_THROW(std::runtime_error,"Todo solve transpose equations"); 
 
-                // Solve system.
-                const Mat& actual_mat_for_prec = adj_matrix_for_preconditioner ? *adj_matrix_for_preconditioner.get() : ebosJac;
-                if( isParallel() )
-                {
-                    typedef WellModelTransposeMatrixAdapter< Mat, BVector, BVector, BlackoilWellModel<TypeTag>, Grid, true > Operator;
-                    Operator opAt(ebosJac,  actual_mat_for_prec, wellModel(), istlSolver().parallelInformation() );
-                    assert( opAt.comm() );
-                    istlSolver().solve( opAt, x, adjRhs, *(opAt.comm()) );
-                }
-                else
-                {
-                    typedef WellModelTransposeMatrixAdapter< Mat, BVector, BVector, BlackoilWellModel<TypeTag>, Grid, false > Operator;
-                    Operator opAt(ebosJac,  actual_mat_for_prec, wellModel());
-                    istlSolver().solve( opAt, x, adjRhs );
-                }
-            }
-            
+	    
+	    
 	    std::cout << "******* lamda_r *****" << std::endl;
             std::cout << x << std::endl;
 
@@ -683,7 +649,7 @@ namespace Opm {
         /// r is the residual.
         void solveJacobianSystem(BVector& x)
         {
-
+   
 	    auto& ebosJac = ebosSimulator_.model().linearizer().jacobian();
             auto& ebosResid = ebosSimulator_.model().linearizer().residual();
 

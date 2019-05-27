@@ -817,12 +817,6 @@ public:
         if (GET_PROP_VALUE(TypeTag, EnablePolymer))
             updateMaxPolymerAdsorption_();
 
-        // set up the wells for the next episode.
-        wellModel_.beginEpisode();
-
-        // set up the aquifers for the next episode.
-        aquiferModel_.beginEpisode();
-
         // set the size of the initial time step of the episode
         Scalar dt = limitNextTimeStepSize_(simulator.episodeLength());
         if (episodeIdx == 0 || tuningEvent)

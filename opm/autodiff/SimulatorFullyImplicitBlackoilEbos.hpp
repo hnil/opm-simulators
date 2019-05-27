@@ -356,13 +356,14 @@ public:
         if(numWellAdjoint==0){
             OPM_THROW(std::runtime_error,"Compilation do not support adjoint change  GET_PROP_VALUE(TypeTag, NumWellAdjoint)");
         }
-        if (modelParam_.matrix_add_well_contributions_ ||
-             modelParam_.preconditioner_add_well_contributions_)
+        if (modelParam_.matrix_add_well_contributions_)
         {
             ebosSimulator_.model().clearAuxiliaryModules();
             wellAuxMod_.reset(new WellConnectionAuxiliaryModule<TypeTag>(schedule(), grid()));
             ebosSimulator_.model().addAuxiliaryModule(wellAuxMod_.get());
-        }
+        }else{
+	    OPM_THROW(std::runtime_error,"Adjoint not supported for operator based solves");
+	}
 	/*
 	static const int storagecache = GET_PROP_VALUE(TypeTag, EnableStorageCache);
         if(storagecache){
