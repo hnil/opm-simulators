@@ -65,7 +65,7 @@
 #include <vector>
 #include <algorithm>
 //#include <fstream>
-
+#include <dune/istl/umfpack.hh>
 //writing matrix
 #include <dune/istl/matrixmarket.hh>
 #include <ewoms/linear/matrixmarket_ewoms.hh>
@@ -141,7 +141,7 @@ namespace Opm {
 
         typedef Dune::FieldVector<Scalar, numEq >        VectorBlockType;
         typedef typename SparseMatrixAdapter::MatrixBlock MatrixBlockType;
-        typedef typename SparseMatrixAdapter::IstlMatrix Mat;
+        typedef typename SparseMatrixAdapter::IstlMatrix MatrixType;
         typedef Dune::BlockVector<VectorBlockType>      BVector;
 
         typedef ISTLSolverEbos<TypeTag> ISTLSolverType;
@@ -324,7 +324,7 @@ namespace Opm {
             //NB we get the linerized version from the reservoir part to be modified
             auto& ebosJac = ebosSimulator_.model().linearizer().jacobian().istlMatrix();
 
-            std::unique_ptr<Mat> adj_matrix_for_preconditioner;
+            
             if (param_.matrix_add_well_contributions_) {
 	       wellModel().addWellContributions(ebosJac);
             }else{
@@ -336,7 +336,16 @@ namespace Opm {
             // then all well tings has to be done
             // set initial guess
             BVector x(nc);
-	    OPM_THROW(std::runtime_error,"Todo solve transpose equations"); 
+	    // make transpose matrix
+	    MatrixType ebosJacTrans =ebosJac;
+	    Dune::MatrixVector::transpose(ebosJac,ebosJacTrans);
+	    auto adjRhs_cp = adjRhs;
+	    // for now explicite use umfpack
+	    bool dummy = false;
+	    Dune::UMFPack<MatrixType> umfpack(ebosJacTrans, true, dummy);
+	    Dune::InverseOperatorResult res;
+	    umfpack.apply(x, adjRhs_cp, res);
+	    //OPM_THROW(std::runtime_error,"Todo solve transpose equations"); 
 
 	    
 	    
