@@ -205,11 +205,11 @@ namespace Opm {
             // despide the fact that flow uses its own time stepper. (The length of the
             // episode does not matter, though.)
             Scalar t = timer.simulationTimeElapsed();
-            ebosSimulator_.startNextEpisode(/*episodeStartTime=*/t, /*episodeLength=*/1e30);
-            ebosSimulator_.setEpisodeIndex(timer.reportStepNum());
-            ebosSimulator_.setTime(t);
+	    ebosSimulator_.setTime(t);
+            // ebosSimulator_.startNextEpisode(/*episodeStartTime=*/t, /*episodeLength=*/1e30);
+            // ebosSimulator_.setEpisodeIndex(timer.reportStepNum());
             ebosSimulator_.setTimeStepSize(timer.currentStepLength());
-            ebosSimulator_.setTimeStepIndex(ebosSimulator_.timeStepIndex() + 1);
+            //ebosSimulator_.setTimeStepIndex(ebosSimulator_.timeStepIndex() + 1);
 
             ebosSimulator_.problem().beginTimeStep();
 
@@ -549,9 +549,11 @@ namespace Opm {
 
             ebosSimulator_.problem().endTimeStep();            
 	    // need to set time for output serialization
-            double time = timer.simulationTimeElapsed()  + timer.currentStepLength();
-            ebosSimulator_.setTime( time);
-            this->adjoint_serialize();
+	    if(param_.use_adjoint_){
+		double time = timer.simulationTimeElapsed()  + timer.currentStepLength();
+		ebosSimulator_.setTime( time);
+		this->adjoint_serialize();
+	    }
         }
 
         /// Assemble the residual and Jacobian of the nonlinear system.
@@ -1021,6 +1023,7 @@ namespace Opm {
         void ebosSerialize(){
             ebosSimulator_.serialize();
         }
+	
         // moved to after step
         void adjoint_serialize(){
             // may hav if here for adjoint run
@@ -1057,17 +1060,19 @@ namespace Opm {
             //fs::path output_dir = ebosSimulator_.vanguard().eclState().getIOConfig().getOutputDir();
             //WellState well_state_proper =  this->wellModel().wellState();//to avoid the const problem with serialize else have to make splitted
             //std::string filename =  well_state_proper.getWellFile(this->ebosSimulator(),this->ebosSimulator().time());
-            std::string filename = this->iofilename();
-	    if(pre){
-	      filename = filename + "_pre";
+	    if(param_.use_adjoint_){
+		std::string filename = this->iofilename();
+		if(pre){
+		    filename = filename + "_pre";
+		}
+		
+		//wellModel().printMatrixes();
+		std::cout << "Serialize well " << filename << std::endl;
+		// could be changed to binary: for wells not for now
+		std::ofstream ofs(filename.c_str());
+		boost::archive::text_oarchive oa(ofs);
+		oa << this->wellModel();
 	    }
-	      
-            //wellModel().printMatrixes();
-            std::cout << "Serialize well " << filename << std::endl;
-            // could be changed to binary: for wells not for now
-            std::ofstream ofs(filename.c_str());
-            boost::archive::text_oarchive oa(ofs);
-            oa << this->wellModel();
         }
 
         void deserialize_well(bool pre=false){
