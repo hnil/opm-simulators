@@ -818,10 +818,10 @@ public:
             updateMaxPolymerAdsorption_();
 
         // set up the wells for the next episode.                                                                    
-        //wellModel_.beginEpisode();
+        wellModel_.beginEpisode(false);
         
         // set up the aquifers for the next episode.
-        //aquiferModel_.beginEpisode();
+        aquiferModel_.beginEpisode();
         
         // set the size of the initial time step of the episode
         Scalar dt = limitNextTimeStepSize_(simulator.episodeLength());
