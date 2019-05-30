@@ -675,7 +675,7 @@ namespace Opm
                 // assemble the jacobians
                 for (int pvIdx = 0; pvIdx < numWellEq; ++pvIdx) {
                     // also need to consider the efficiency factor when manipulating the jacobians.
-                    duneC_[0][cell_idx][pvIdx][componentIdx] += cq_s_effective.derivative(pvIdx+numEq); // intput in transformed matrix
+                    duneC_[0][cell_idx][pvIdx][componentIdx] -= cq_s_effective.derivative(pvIdx+numEq); // intput in transformed matrix
                     invDuneD_[0][0][componentIdx][pvIdx] += cq_s_effective.derivative(pvIdx+numEq);
                 }
 
