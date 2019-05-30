@@ -69,7 +69,6 @@
 //writing matrix
 #include <dune/istl/matrixmarket.hh>
 #include <ewoms/linear/matrixmarket_ewoms.hh>
-#include <opm/autodiff/MatrixAdapterUtilities.hpp>
 #include <opm/autodiff/transpose.hh>
 
 #include <boost/archive/text_iarchive.hpp>
