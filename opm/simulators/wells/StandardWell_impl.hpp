@@ -679,6 +679,13 @@ namespace Opm
                     invDuneD_[0][0][componentIdx][pvIdx] += cq_s_effective.derivative(pvIdx+numEq);
                 }
 
+		if(numWellAdjoint>0){// NB we should probably also have a runtime switch here
+                    duneDA_[0][0][componentIdx][0] += cq_s_effective.derivative(controlIndex);
+                    duneCA_[0][cell_idx][0][componentIdx] -= cq_s_effective.derivative(controlIndex);
+                }
+
+
+		
                 for (int pvIdx = 0; pvIdx < numEq; ++pvIdx) {
                     duneB_[0][cell_idx][componentIdx][pvIdx] += cq_s_effective.derivative(pvIdx);
                 }
