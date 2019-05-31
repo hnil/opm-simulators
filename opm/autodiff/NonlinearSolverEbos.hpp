@@ -158,7 +158,11 @@ namespace Opm {
             // Do model-specific once-per-step calculations.
             model_->prepareStep(timer);
             if (timer.initialStep()) {
+		// just fix the time for the output of the initial serialization
+		double dt = model_->ebosSimulator().timeStepSize();
+	        model_->ebosSimulator().setTimeStepSize(0);
                 model_->adjoint_serialize();
+		model_->ebosSimulator().setTimeStepSize(dt);
             }
 	    //Hopefully this is when wells is fully initialized
 	    //if(param_.use_adjoint_){

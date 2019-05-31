@@ -65,6 +65,7 @@ namespace Ewoms {
     SET_INT_PROP(EclFlowProblemSimple, NumWellAdjoint, 1);
     //SET_BOOL_PROP(EclFlowProblem, EnableStorageCache, true);
     //SET_BOOL_PROP(EclFlowProblem, EnableIntensiveQuantityCache, true);
+    SET_BOOL_PROP(EclFlowProblemSimple,MatrixAddWellContributions,true);   
   }
 }
 
