@@ -328,8 +328,8 @@ namespace Opm {
 
             wellModel().recoverWellAdjointAndUpdateWellAdjoint(x);// also update objective
             std::cout << "********************************* " << std::endl;
-            std::cout << "Print reservoir matrixes" << std::endl;
-            Dune::writeMatrixMarket(ebosJac, std::cout);
+            // std::cout << "Print reservoir matrixes" << std::endl;
+            // Dune::writeMatrixMarket(ebosJac, std::cout);
             std::cout << "*** Well Matrixes " << std::endl;
             wellModel().printMatrixes();	    
             wellModel().printObjective(std::cout);
@@ -366,9 +366,9 @@ namespace Opm {
             // reservoir and well
 
             //auto& ebosResid1 = ebosSimulator_.model().linearizer().residual();
-            std::cout << "Printing jacobian residual 1" << std::endl;
-            std::cout << "*******ebosJac1 " << std::endl;
-            Dune::writeMatrixMarket(ebosJac1, std::cout);
+            // std::cout << "Printing jacobian residual 1" << std::endl;
+            // std::cout << "*******ebosJac1 " << std::endl;
+            // Dune::writeMatrixMarket(ebosJac1, std::cout);
             std::cout << "************rhs_next************* " << std::endl;
             std::cout << rhs_next << std::endl;
 
@@ -531,12 +531,12 @@ namespace Opm {
 		double time = timer.simulationTimeElapsed()  + timer.currentStepLength();
 		this->adjoint_serialize(time);
 		// extra output
-		std::cout << "Printing matrix in forward mode" << std::endl;
-		auto& ebosJac = ebosSimulator_.model().linearizer().jacobian().istlMatrix();
-		Dune::writeMatrixMarket(ebosJac, std::cout);
+		//std::cout << "Printing matrix in forward mode" << std::endl;
+		//auto& ebosJac = ebosSimulator_.model().linearizer().jacobian().istlMatrix();
+		//Dune::writeMatrixMarket(ebosJac, std::cout);
 		std::cout << "Printing matrix residual in forward mode" << std::endl;
 		this->printResiduals();
-		std::cout << "Printing well residual in backward mode" << std::endl;
+		std::cout << "Printing well residual in forward mode" << std::endl;
 		wellModel().printMatrixes();
 	    }
 	    
