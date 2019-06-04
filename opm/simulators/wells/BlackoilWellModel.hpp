@@ -67,7 +67,7 @@ END_PROPERTIES
 #include <boost/archive/tmpdir.hpp>
 #include <boost/archive/text_iarchive.hpp>
 #include <boost/archive/text_oarchive.hpp>
-
+#include <boost/serialization/shared_ptr.hpp>
 #include <boost/serialization/array.hpp>
 #include <boost/serialization/vector.hpp>
 #include <boost/serialization/base_object.hpp>
@@ -370,8 +370,19 @@ namespace Opm {
             friend class  boost::serialization::access;
             template<class Archive>
             void serialize(Archive & ar, const unsigned int version){
+		//ar.template register_type< StandardWell<TypeTag> >();
+		//ar.template register_type< MultisegmentWell<TypeTag> >();
                 //ar & wells_active_;
+
                 //ar & well_container_;
+		for (auto& w : well_container_) {
+		    using SW = StandardWell<TypeTag>;
+		    SW* sw = dynamic_cast<SW*>(w.get());
+		    if (sw) {
+			ar & *sw;
+		    }
+		}
+		
                 ar & well_state_;
                 ar & previous_well_state_;
                 //ar & param_;

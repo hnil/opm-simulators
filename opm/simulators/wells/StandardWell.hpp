@@ -386,12 +386,16 @@ namespace Opm
         // the saturations in the well bore under surface conditions at the beginning of the time step
         std::vector<double> F0_;
 
-//        friend class  boost::serialization::access;
-//        template<class Archive>
-//        void serialize(Archive & ar, const unsigned int version){
-//             ar & F0_;
-
-//        }
+        friend class  boost::serialization::access;
+        template<class Archive>
+        void serialize(Archive & ar, const unsigned int version){
+	    ar & boost::serialization::base_object<Base>(*this);
+	    ar & F0_;
+	    ar & perf_pressure_diffs_;
+	    ar & perf_densities_;
+	    ar & primary_variables_;
+	    //ar & primary_variables_evaluation_;
+        }
 
 
 

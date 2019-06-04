@@ -242,66 +242,86 @@ namespace Opm {
             ebosSimulator_.model().invalidateIntensiveQuantitiesCache(/*timeIdx=*/1);
             ebosSimulator_.model().invalidateIntensiveQuantitiesCache(/*timeIdx=*/0);
             this->prepareStep(timer); //only to set corrrect time for serialization
-            bool only_reservoir = true;
-            this->deserializeReservoir( timer.simulationTimeElapsed(), only_reservoir);
+	    ebosSimulator_.setTime(timer.simulationTimeElapsed());
+            this->deserializeReservoir( timer.simulationTimeElapsed(), /*only_reservoir*/ true);
             SolutionVector solution = ebosSimulator_.model().solution( 0 /* timeIdx */ );
             // Store the initial previous.
             ebosSimulator_.model().solution( 1 /* timeIdx */ ) = solution;
-            deserialize_well(true);//
+            //deserialize_well(true);//
              ++timer;// get back to current step
             // only to update inensive quantity cache1020
-            ebosSimulator_.problem().beginTimeStep();
-	    //deserialize_well(true);
-	    //NB NEW coode
-	    this->assembleReservoir(timer, 0);
-	    ebosSimulator_.model().newtonMethod().setIterationIndex(0);
-            ebosSimulator_.problem().beginIteration();
-            ebosSimulator_.model().linearizer().linearizeDomain(/*focustimeindex=*/ 0);
-            ebosSimulator_.problem().endIteration();
-	    wellModel().linearize(ebosSimulator().model().linearizer().jacobian(),
-                                      ebosSimulator().model().linearizer().residual());
+            // ebosSimulator_.problem().beginTimeStep();
+// 	    //deserialize_well(true);
+// 	    //NB NEW coode
+// 	    this->assembleReservoir(timer, 0);
+// 	    ebosSimulator_.model().newtonMethod().setIterationIndex(0);
+//             ebosSimulator_.problem().beginIteration();
+//             ebosSimulator_.model().linearizer().linearizeDomain(/*focustimeindex=*/ 0);
+//             ebosSimulator_.problem().endIteration();
+// 	    wellModel().linearize(ebosSimulator().model().linearizer().jacobian(),
+//                                       ebosSimulator().model().linearizer().residual());
 
 
-//linarization should not be used
-            ebosSimulator_.problem().endIteration();//needed ??
+// //linarization should not be used
+//             ebosSimulator_.problem().endIteration();//needed ??
 
-            this->prepareStep(timer);// set correct time ??
-            wellModel().beginTimeStep();
+//            this->prepareStep(timer);// set correct time ??
+//            wellModel().beginTimeStep();
             //deserialize_well(true);
             //wellModel().calculateExplicitQuantities();
             //wellModel().prepareTimeStep();
             //this->prepareStep(timer);// set correct time ??
-            this->deserializeReservoir( timer.simulationTimeElapsed(),only_reservoir );
+	    ebosSimulator_.setTime(timer.simulationTimeElapsed());
+            this->deserializeReservoir( timer.simulationTimeElapsed(), /*only_reservoir*/ false);
             // seralizing may owerwrite prevois step since it was intended for restart ??
             ebosSimulator_.model().solution( 1 /* timeIdx */ ) = solution;
-
             ebosSimulator_.model().invalidateIntensiveQuantitiesCache(/*timeIdx=*/1);
             ebosSimulator_.model().invalidateIntensiveQuantitiesCache(/*timeIdx=*/0);
 
-            //deserialize_well();
+            deserialize_well(timer.simulationTimeElapsed(),/*pre_step*/ false);
+	    std::cout << "XXXX" << std::endl;
+	    wellModel().printMatrixes();
             double dt = timer.stepLengthTaken();
             //wellModel().prepareTimeStep();
             assert( abs(dt- ebosSimulator_.timeStepSize()) < 1e-2);
             ebosSimulator_.model().newtonMethod().setIterationIndex(/*iterationIdx*/ 1);
             ebosSimulator_.problem().beginIteration();
-            ebosSimulator_.model().linearizer().linearizeDomain(/*focustimeindex=*/ 1);
+            ebosSimulator_.model().linearizer().linearizeDomain(/*focustimeindex=*/ 0);
             ebosSimulator_.problem().endIteration();
+	    std::cout << "Printing matrix residual in backward mode 1" << std::endl;
+	    std::cout << "Print reservoir matrixes" << std::endl;
+	    {
+		auto& ebosJac_tmp = ebosSimulator_.model().linearizer().jacobian().istlMatrix();
+		Dune::writeMatrixMarket(ebosJac_tmp, std::cout);
+	    }
+
+	    {
+		std::vector< Scalar > B_avg(wellModel().numComponents(), Scalar() );
+		wellModel().computeAverageFormationFactor(B_avg);
+                //wellModel().beginIteration(solve_well_equation);
+		Opm::DeferredLogger local_deferredLogger;
+		wellModel().initPrimaryVariablesEvaluation();
+		wellModel().assembleWellEq(B_avg, dt, local_deferredLogger);                 
+            // // ebosSimulator_.problem().beginIteration();
+            }	    
 	    wellModel().linearize(ebosSimulator().model().linearizer().jacobian(),
-                                      ebosSimulator().model().linearizer().residual());
+                                  ebosSimulator().model().linearizer().residual());
 
 	    // we should no have recovered the state of the original forward simulation
-	    auto& ebosResid = ebosSimulator_.model().linearizer().residual();
+	    //auto& ebosResid = ebosSimulator_.model().linearizer().residual();
              //wellModel().recoverWellSolutionAndUpdateWellState(x);
             std::cout << "Printing matrix residual in backward mode" << std::endl;
-            std::cout << "Inf norm " << ebosResid.infinity_norm() << std::endl;
-            std::cout << "Norm " << ebosResid.two_norm() << std::endl;
-            std::cout << "auxModules"<< ebosSimulator_.model().numAuxiliaryModules() << std::endl;
-            std::cout << "Printing well residual in backward mode" << std::endl;
-            const auto& well_container = wellModel().getWellContainer();
-	    std::cout << "********************************* " << std::endl;
-            std::cout << "ebosResid" << std::endl;
-            std::cout << ebosResid << std::endl;
-	    //	    wellModel().printResidual(std::cout);
+	    this->printResiduals();
+            // std::cout << "Inf norm " << ebosResid.infinity_norm() << std::endl;
+            // std::cout << "Norm " << ebosResid.two_norm() << std::endl;
+            // std::cout << "auxModules"<< ebosSimulator_.model().numAuxiliaryModules() << std::endl;
+            // std::cout << "Printing well residual in backward mode" << std::endl;
+            // const auto& well_container = wellModel().getWellContainer();
+	    // wellModel().printResidual(std::cout);
+	    // std::cout << "********************************* " << std::endl;
+            // std::cout << "ebosResid" << std::endl;
+            // std::cout << ebosResid << std::endl;
+	    
 //            for (const auto& well : well_container) {
 //                 std::cout << "********************************* " << std::endl;
 //                 std::cout << "Print residual for " << well->name() << std::endl;
@@ -353,7 +373,7 @@ namespace Opm {
 
             wellModel().recoverWellAdjointAndUpdateWellAdjoint(x);// also update objective
             std::cout << "********************************* " << std::endl;
-            std::cout << "print all matrixes" << std::endl;
+            std::cout << "Print reservoir matrixes" << std::endl;
             Dune::writeMatrixMarket(ebosJac, std::cout);
             std::cout << "*** Well Matrixes " << std::endl;
             wellModel().printMatrixes();	    
@@ -368,13 +388,13 @@ namespace Opm {
             //int iterationIdx = 1;
             // calculate derivative of the reservoir equation with respect state0
             ebosSimulator_.model().newtonMethod().setIterationIndex(/*iterationIdx*/ 1);
-            {
-                bool solve_well_equation = false;
-                wellModel().beginIteration(solve_well_equation);
-                //wellModel().initPrimaryVariablesEvaluation();
-            // ebosSimulator_.problem().beginIteration();
-            }
-            ebosSimulator_.model().linearizer().linearize(1);
+            // {
+            //     bool solve_well_equation = false;
+            //     wellModel().beginIteration(solve_well_equation);
+            //     //wellModel().initPrimaryVariablesEvaluation();
+            // // ebosSimulator_.problem().beginIteration();
+            // }
+            ebosSimulator_.model().linearizer().linearize(/*foxus time index*/1);
             ebosSimulator_.problem().endIteration();
             const auto& ebosJac1 = ebosSimulator_.model().linearizer().jacobian().istlMatrix();
 
@@ -550,11 +570,38 @@ namespace Opm {
 	    // need to set time for output serialization
 	    if(param_.use_adjoint_){
 		double time = timer.simulationTimeElapsed()  + timer.currentStepLength();
-		ebosSimulator_.setTime( time);
-		this->adjoint_serialize();
+		this->adjoint_serialize(time);
+		// extra output
+		std::cout << "Printing matrix in forward mode" << std::endl;
+		auto& ebosJac = ebosSimulator_.model().linearizer().jacobian().istlMatrix();
+		Dune::writeMatrixMarket(ebosJac, std::cout);
+		std::cout << "Printing matrix residual in forward mode" << std::endl;
+		this->printResiduals();
+		std::cout << "Printing well residual in backward mode" << std::endl;
+		wellModel().printMatrixes();
 	    }
+	    
         }
 
+	void printResiduals(){
+	    auto& ebosResid = ebosSimulator_.model().linearizer().residual();
+	    //wellModel().recoverWellSolutionAndUpdateWellState(x);
+	    
+	    std::cout << "Inf norm " << ebosResid.infinity_norm() << std::endl;
+	    std::cout << "Norm " << ebosResid.two_norm() << std::endl;
+	    std::cout << "auxModules"<< ebosSimulator_.model().numAuxiliaryModules() << std::endl;
+	    std::cout << "********************************* " << std::endl;
+	    std::cout << "ebosResid" << std::endl;
+	    std::cout << ebosResid << std::endl;	    
+	    // const auto& well_container = wellModel().getWellContainer();
+	    // for (const auto& well : well_container) {
+            //     std::cout << "********************************* " << std::endl;
+            //     std::cout << "Print residual for and matrices" << well->name() << std::endl;
+            //     auto reswell = well->printMatrixes();
+            //     //std::cout << "Norm "<< reswell.two_norm() << std::endl;
+	    // }
+
+	}
         /// Assemble the residual and Jacobian of the nonlinear system.
         /// \param[in]      reservoir_state   reservoir state variables
         /// \param[in, out] well_state        well state variables
@@ -1019,24 +1066,26 @@ namespace Opm {
         Simulator& ebosSimulator()
         { return ebosSimulator_; }
 
-        void ebosSerialize(){
-            ebosSimulator_.serialize();
-        }
+        // void ebosSerialize(){
+        //     ebosSimulator_.serialize();
+        // }
 	
         // moved to after step
-        void adjoint_serialize(){
+        void adjoint_serialize(double time){
             // may hav if here for adjoint run
             if(param_.use_adjoint_){
-                ebosSimulator_.serialize();
-                serialize_well();// done in after step
+		double tmp_time = ebosSimulator_.time();
+		ebosSimulator_.setTime(time);
+                ebosSimulator_.serialize(false);
+                serialize_well(time);// done in after step
+		ebosSimulator_.setTime(tmp_time);
             }
         }
 
-        std::string iofilename(){
+        std::string iofilename(double t){
             namespace fs = boost::filesystem;
             std::string output_dir_name = ebosSimulator_.vanguard().eclState().getIOConfig().getOutputDir();
             //std::string filename =  well_state_proper.getWellFile(this->ebosSimulator(),this->ebosSimulator().time());
-            double t = this->ebosSimulator().time();
             int rank = ebosSimulator_.gridView().comm().rank();
             std::string simName = ebosSimulator_.problem().name();
             std::ostringstream oss;
@@ -1054,13 +1103,13 @@ namespace Opm {
             return full_path.string();
         }
 
-        void serialize_well(bool pre=false){
+        void serialize_well(double t,bool pre=false){
             //namespace fs = boost::filesystem;
             //fs::path output_dir = ebosSimulator_.vanguard().eclState().getIOConfig().getOutputDir();
             //WellState well_state_proper =  this->wellModel().wellState();//to avoid the const problem with serialize else have to make splitted
             //std::string filename =  well_state_proper.getWellFile(this->ebosSimulator(),this->ebosSimulator().time());
 	    if(param_.use_adjoint_){
-		std::string filename = this->iofilename();
+		std::string filename = this->iofilename(t);
 		if(pre){
 		    filename = filename + "_pre";
 		}
@@ -1074,9 +1123,9 @@ namespace Opm {
 	    }
         }
 
-        void deserialize_well(bool pre=false){
+        void deserialize_well(double t, bool pre=false){
             //std::string filename =  well_state.getWellFile(ebosSimulator_, ebosSimulator_.time());
-            std::string filename = this->iofilename();
+            std::string filename = this->iofilename(t);
 	    if(pre){
 	      filename = filename + "_pre";
 	    }

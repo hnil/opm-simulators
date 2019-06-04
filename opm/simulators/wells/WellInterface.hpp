@@ -398,13 +398,13 @@ namespace Opm
         template<class Archive>
         void serialize(Archive & ar, const unsigned int version){
             //ar & well_ecl;
-            ar & current_step_;
-            ar & index_of_well_;
+            //ar & current_step_;//todo
+            //ar & index_of_well_;//todo
             //ar & param_;
             //ar & well_type_;
             // ar & num_of_phases_;
-            ar & comp_frac_;
-            ar & connectionRates_;
+            //ar & comp_frac_;//todo
+            //ar & connectionRates_;//todo
             //ar & well_controls_;
             //ar & num_of_perforation;
             //ar & first_perf_;
