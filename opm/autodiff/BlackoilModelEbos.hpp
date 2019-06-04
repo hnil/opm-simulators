@@ -295,15 +295,15 @@ namespace Opm {
 		Dune::writeMatrixMarket(ebosJac_tmp, std::cout);
 	    }
 
-	    {
-		std::vector< Scalar > B_avg(wellModel().numComponents(), Scalar() );
-		wellModel().computeAverageFormationFactor(B_avg);
-                //wellModel().beginIteration(solve_well_equation);
-		Opm::DeferredLogger local_deferredLogger;
-		wellModel().initPrimaryVariablesEvaluation();
-		wellModel().assembleWellEq(B_avg, dt, local_deferredLogger);                 
-            // // ebosSimulator_.problem().beginIteration();
-            }	    
+	    // {
+	    // 	std::vector< Scalar > B_avg(wellModel().numComponents(), Scalar() );
+	    // 	wellModel().computeAverageFormationFactor(B_avg);
+            //     //wellModel().beginIteration(solve_well_equation);
+	    // 	Opm::DeferredLogger local_deferredLogger;
+	    // 	wellModel().initPrimaryVariablesEvaluation();
+	    // 	wellModel().assembleWellEq(B_avg, dt, local_deferredLogger);                 
+            // // // ebosSimulator_.problem().beginIteration();
+            // }	    
 	    wellModel().linearize(ebosSimulator().model().linearizer().jacobian(),
                                   ebosSimulator().model().linearizer().residual());
 
