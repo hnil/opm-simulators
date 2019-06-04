@@ -249,28 +249,7 @@ namespace Opm {
             ebosSimulator_.model().solution( 1 /* timeIdx */ ) = solution;
             //deserialize_well(true);//
              ++timer;// get back to current step
-            // only to update inensive quantity cache1020
-            // ebosSimulator_.problem().beginTimeStep();
-// 	    //deserialize_well(true);
-// 	    //NB NEW coode
-// 	    this->assembleReservoir(timer, 0);
-// 	    ebosSimulator_.model().newtonMethod().setIterationIndex(0);
-//             ebosSimulator_.problem().beginIteration();
-//             ebosSimulator_.model().linearizer().linearizeDomain(/*focustimeindex=*/ 0);
-//             ebosSimulator_.problem().endIteration();
-// 	    wellModel().linearize(ebosSimulator().model().linearizer().jacobian(),
-//                                       ebosSimulator().model().linearizer().residual());
 
-
-// //linarization should not be used
-//             ebosSimulator_.problem().endIteration();//needed ??
-
-//            this->prepareStep(timer);// set correct time ??
-//            wellModel().beginTimeStep();
-            //deserialize_well(true);
-            //wellModel().calculateExplicitQuantities();
-            //wellModel().prepareTimeStep();
-            //this->prepareStep(timer);// set correct time ??
 	    ebosSimulator_.setTime(timer.simulationTimeElapsed());
             this->deserializeReservoir( timer.simulationTimeElapsed(), /*only_reservoir*/ false);
             // seralizing may owerwrite prevois step since it was intended for restart ??
@@ -279,8 +258,6 @@ namespace Opm {
             ebosSimulator_.model().invalidateIntensiveQuantitiesCache(/*timeIdx=*/0);
 
             deserialize_well(timer.simulationTimeElapsed(),/*pre_step*/ false);
-	    std::cout << "XXXX" << std::endl;
-	    wellModel().printMatrixes();
             double dt = timer.stepLengthTaken();
             //wellModel().prepareTimeStep();
             assert( abs(dt- ebosSimulator_.timeStepSize()) < 1e-2);
@@ -288,13 +265,6 @@ namespace Opm {
             ebosSimulator_.problem().beginIteration();
             ebosSimulator_.model().linearizer().linearizeDomain(/*focustimeindex=*/ 0);
             ebosSimulator_.problem().endIteration();
-	    std::cout << "Printing matrix residual in backward mode 1" << std::endl;
-	    std::cout << "Print reservoir matrixes" << std::endl;
-	    {
-		auto& ebosJac_tmp = ebosSimulator_.model().linearizer().jacobian().istlMatrix();
-		Dune::writeMatrixMarket(ebosJac_tmp, std::cout);
-	    }
-
 	    // {
 	    // 	std::vector< Scalar > B_avg(wellModel().numComponents(), Scalar() );
 	    // 	wellModel().computeAverageFormationFactor(B_avg);
@@ -309,26 +279,11 @@ namespace Opm {
 
 	    // we should no have recovered the state of the original forward simulation
 	    //auto& ebosResid = ebosSimulator_.model().linearizer().residual();
-             //wellModel().recoverWellSolutionAndUpdateWellState(x);
-            std::cout << "Printing matrix residual in backward mode" << std::endl;
-	    this->printResiduals();
-            // std::cout << "Inf norm " << ebosResid.infinity_norm() << std::endl;
-            // std::cout << "Norm " << ebosResid.two_norm() << std::endl;
-            // std::cout << "auxModules"<< ebosSimulator_.model().numAuxiliaryModules() << std::endl;
-            // std::cout << "Printing well residual in backward mode" << std::endl;
-            // const auto& well_container = wellModel().getWellContainer();
-	    // wellModel().printResidual(std::cout);
-	    // std::cout << "********************************* " << std::endl;
-            // std::cout << "ebosResid" << std::endl;
-            // std::cout << ebosResid << std::endl;
-	    
-//            for (const auto& well : well_container) {
-//                 std::cout << "********************************* " << std::endl;
-//                 std::cout << "Print residual for " << well->name() << std::endl;
-//                 auto reswell = well->getResWell();
-//                 std::cout << "Norm "<< reswell.two_norm() << std::endl;
-//            }
+            //wellModel().recoverWellSolutionAndUpdateWellState(x);
 
+	    std::cout << "Printing matrix residual in backward mode" << std::endl;
+	    this->printResiduals();
+	    
             const int nc = UgGridHelpers::numCells(grid_);
             BVector lam(nc);
             BVector adjRhs = rhs;           
@@ -388,16 +343,20 @@ namespace Opm {
             //int iterationIdx = 1;
             // calculate derivative of the reservoir equation with respect state0
             ebosSimulator_.model().newtonMethod().setIterationIndex(/*iterationIdx*/ 1);
+            // something has to be done here if:
+	    //                          1) explicite terms related to wells should be considerd
+	    //                          2) accumulation term of wells should be considered
             // {
             //     bool solve_well_equation = false;
             //     wellModel().beginIteration(solve_well_equation);
             //     //wellModel().initPrimaryVariablesEvaluation();
             // // ebosSimulator_.problem().beginIteration();
             // }
+	    //NB !!! assumes no dependency of prevois states of anything else than accumulation term
+	    // of reservoir: THIS is HARDCODED in locallinearresidual
             ebosSimulator_.model().linearizer().linearize(/*foxus time index*/1);
             ebosSimulator_.problem().endIteration();
             const auto& ebosJac1 = ebosSimulator_.model().linearizer().jacobian().istlMatrix();
-
 
             // prepare rhs for next step
             //BVector rhs_next(nc);
