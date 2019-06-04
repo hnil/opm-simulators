@@ -411,7 +411,7 @@ public:
             // hopefulle the -1 is ok we ar pressent at end of the timestep we nned
             // the prevois eclipse state
             // we are before we move back
-            //well_model.beginReportStep(timer.prevReportStepNum());// this should really be clean to make a better initialization for backward simulation
+            wellModel_().beginReportStep(timer.prevReportStepNum());// this should really be clean to make a better initialization for backward simulation
             timer.report(std::cout);
             //WellState prev_well_state// assume we can read all of this inside;
             //output_writer_.initFromRestartFile(phaseUsage_, grid(), state, prev_well_state, extra);
