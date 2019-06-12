@@ -28,7 +28,7 @@
 #include <dune/istl/paamg/smoother.hh>
 #include <dune/istl/paamg/graph.hh>
 #include <dune/istl/paamg/pinfo.hh>
-
+#include <dune/istl/scalarproducts.hh>
 #include <type_traits>
 #include <numeric>
 #include <limits>

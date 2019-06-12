@@ -22,11 +22,11 @@
 #ifndef OPM_PRECONDITIONERFACTORY_HEADER
 #define OPM_PRECONDITIONERFACTORY_HEADER
 
-#include <opm/simulators/linalg/OwningBlockPreconditioner.hpp>
-#include <opm/simulators/linalg/OwningTwoLevelPreconditioner.hpp>
-#include <opm/simulators/linalg/ParallelOverlappingILU0.hpp>
-#include <opm/simulators/linalg/PreconditionerWithUpdate.hpp>
-#include <opm/simulators/linalg/amgcpr.hh>
+#include "OwningBlockPreconditioner.hpp"
+#include "OwningTwoLevelPreconditioner.hpp"
+//#include "ParallelOverlappingILU0.hpp"
+#include "PreconditionerWithUpdate.hpp"
+#include "amgcpr.hh"
 
 #include <dune/istl/paamg/amg.hh>
 #include <dune/istl/paamg/fastamg.hh>
@@ -158,12 +158,12 @@ private:
             const double w = prm.get<double>("relaxation");
             return wrapBlockPreconditioner<DummyUpdatePreconditioner<SeqILU0<M, V, V>>>(comm, op.getmat(), w);
         });
-        doAddCreator("ParOverILU0", [](const O& op, const P& prm, const C& comm) {
-            const double w = prm.get<double>("relaxation");
-            // Already a parallel preconditioner. Need to pass comm, but no need to wrap it in a BlockPreconditioner.
-            return wrapPreconditioner<Opm::ParallelOverlappingILU0<M, V, V, C>>(
-                op.getmat(), comm, 0, w, Opm::MILU_VARIANT::ILU);
-        });
+        // doAddCreator("ParOverILU0", [](const O& op, const P& prm, const C& comm) {
+        //     const double w = prm.get<double>("relaxation");
+        //     // Already a parallel preconditioner. Need to pass comm, but no need to wrap it in a BlockPreconditioner.
+        //     return wrapPreconditioner<Opm::ParallelOverlappingILU0<M, V, V, C>>(
+        //         op.getmat(), comm, 0, w, Opm::MILU_VARIANT::ILU);
+        // });
         doAddCreator("ILUn", [](const O& op, const P& prm, const C& comm) {
             const int n = prm.get<int>("ilulevel");
             const double w = prm.get<double>("relaxation");
@@ -192,7 +192,8 @@ private:
         doAddCreator("amg", [](const O& op, const P& prm, const C& comm) {
             const std::string smoother = prm.get<std::string>("smoother");
             if (smoother == "ILU0") {
-                using Smoother = Opm::ParallelOverlappingILU0<M, V, V, C>;
+                //using Smoother = Opm::ParallelOverlappingILU0<M, V, V, C>;
+		using Smoother = Dune::SeqILU0<M, V, V>;
                 auto crit = amgCriterion(prm);
                 auto sargs = amgSmootherArgs<Smoother>(prm);
                 return std::make_shared<Dune::Amg::AMGCPR<O, V, Smoother, C>>(op, crit, sargs, comm);
@@ -223,10 +224,10 @@ private:
             const double w = prm.get<double>("relaxation");
             return wrapPreconditioner<SeqILU0<M, V, V>>(op.getmat(), w);
         });
-        doAddCreator("ParOverILU0", [](const O& op, const P& prm) {
-            const double w = prm.get<double>("relaxation");
-            return wrapPreconditioner<Opm::ParallelOverlappingILU0<M, V, V>>(op.getmat(), 0, w, Opm::MILU_VARIANT::ILU);
-        });
+        // doAddCreator("ParOverILU0", [](const O& op, const P& prm) {
+        //     const double w = prm.get<double>("relaxation");
+        //     return wrapPreconditioner<Opm::ParallelOverlappingILU0<M, V, V>>(op.getmat(), 0, w, Opm::MILU_VARIANT::ILU);
+        // });
         doAddCreator("ILUn", [](const O& op, const P& prm) {
             const int n = prm.get<int>("ilulevel");
             const double w = prm.get<double>("relaxation");

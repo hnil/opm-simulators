@@ -20,11 +20,11 @@
 #ifndef OPM_OWNINGTWOLEVELPRECONDITIONER_HEADER_INCLUDED
 #define OPM_OWNINGTWOLEVELPRECONDITIONER_HEADER_INCLUDED
 
-#include <opm/simulators/linalg/PreconditionerWithUpdate.hpp>
-#include <opm/simulators/linalg/PressureSolverPolicy.hpp>
-#include <opm/simulators/linalg/PressureTransferPolicy.hpp>
-#include <opm/simulators/linalg/getQuasiImpesWeights.hpp>
-#include <opm/simulators/linalg/twolevelmethodcpr.hh>
+#include "PreconditionerWithUpdate.hpp"
+#include "PressureSolverPolicy.hpp"
+#include "PressureTransferPolicy.hpp"
+#include "getQuasiImpesWeights.hpp"
+#include "twolevelmethodcpr.hh"
 
 #include <dune/common/fmatrix.hh>
 #include <dune/istl/bcrsmatrix.hh>

@@ -20,7 +20,7 @@
 #ifndef OPM_OWNINGBLOCKPRECONDITIONER_HEADER_INCLUDED
 #define OPM_OWNINGBLOCKPRECONDITIONER_HEADER_INCLUDED
 
-#include <opm/simulators/linalg/PreconditionerWithUpdate.hpp>
+#include "PreconditionerWithUpdate.hpp"
 
 #include <dune/istl/schwarz.hh>
 

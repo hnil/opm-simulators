@@ -22,7 +22,7 @@
 #define OPM_PRESSURE_TRANSFER_POLICY_HEADER_INCLUDED
 
 
-#include <opm/simulators/linalg/twolevelmethodcpr.hh>
+#include "twolevelmethodcpr.hh"
 
 
 namespace Opm

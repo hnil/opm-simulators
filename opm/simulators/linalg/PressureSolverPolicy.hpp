@@ -20,7 +20,7 @@
 #ifndef OPM_PRESSURE_SOLVER_POLICY_HEADER_INCLUDED
 #define OPM_PRESSURE_SOLVER_POLICY_HEADER_INCLUDED
 
-#include <opm/simulators/linalg/PressureTransferPolicy.hpp>
+#include "PressureTransferPolicy.hpp"
 
 #include <boost/property_tree/ptree.hpp>
 
