@@ -21,7 +21,7 @@
 #define BOOST_TEST_MODULE BlackoilAmgTest
 #define BOOST_TEST_NO_MAIN
 #include <boost/test/unit_test.hpp>
-#include <opm/autodiff/BlackoilAmg.hpp>
+#include <opm/simulators/linalg/BlackoilAmg.hpp>
 
 #include <dune/common/parallel/mpihelper.hh>
 #include <dune/common/fmatrix.hh>
@@ -303,7 +303,8 @@ void runBlackoilAmgLaplace()
     smootherArgs.iterations = 1;
     Opm::CPRParameter param;
 
-    Opm::BlackoilAmg<Operator,ParSmoother,Criterion,Communication,0> amg(param,
+    Opm::BlackoilAmg<Operator,ParSmoother,Criterion,Communication,0,0> amg(param,
+                                                                         {},
                                                                          fop, criterion,
                                                                          smootherArgs,
                                                                          comm);

@@ -21,6 +21,10 @@ cmake_minimum_required (VERSION 2.8)
 
 option(SIBLING_SEARCH "Search for other modules in sibling directories?" ON)
 set( USE_OPENMP_DEFAULT OFF ) # Use of OpenMP is considered experimental
+option(BUILD_FLOW "Build the production oriented flow simulator?" ON)
+option(BUILD_EBOS "Build the research oriented ebos simulator?" ON)
+option(BUILD_EBOS_EXTENSIONS "Build the variants for various extensions of ebos by default?" OFF)
+option(BUILD_EBOS_DEBUG_EXTENSIONS "Build the ebos variants which are purely for debugging by default?" OFF)
 
 if(SIBLING_SEARCH AND NOT opm-common_DIR)
   # guess the sibling dir
@@ -116,30 +120,164 @@ opm_add_test(test_gatherconvergencereport
     5 ${CMAKE_BINARY_DIR}
 )
 
+opm_add_test(test_gatherdeferredlogger
+  DEPENDS "opmsimulators"
+  LIBRARIES opmsimulators ${Boost_UNIT_TEST_FRAMEWORK_LIBRARY}
+  SOURCES
+    tests/test_gatherdeferredlogger.cpp
+  CONDITION
+    MPI_FOUND
+  DRIVER_ARGS
+    5 ${CMAKE_BINARY_DIR}
+)
+
+include(OpmBashCompletion)
+
+if (NOT BUILD_FLOW)
+  set(FLOW_DEFAULT_ENABLE_IF "FALSE")
+else()
+  set(FLOW_DEFAULT_ENABLE_IF "TRUE")
+endif()
+
+# the production oriented general-purpose ECL simulator
 opm_add_test(flow
   ONLY_COMPILE
   ALWAYS_ENABLE
+  DEFAULT_ENABLE_IF ${FLOW_DEFAULT_ENABLE_IF}
   DEPENDS "opmsimulators"
   LIBRARIES "opmsimulators"
   SOURCES
-    flow/flow.cpp
-    flow/flow_ebos_blackoil.cpp
-    flow/flow_ebos_gasoil.cpp
-    flow/flow_ebos_oilwater.cpp
-    flow/flow_ebos_polymer.cpp
-    flow/flow_ebos_solvent.cpp
-    flow/flow_ebos_energy.cpp
-    flow/flow_ebos_oilwater_polymer.cpp
-    flow/flow_ebos_oilwater_polymer_injectivity.cpp)
-install(TARGETS flow DESTINATION bin)
+  flow/flow.cpp
+  flow/flow_ebos_blackoil.cpp
+  flow/flow_ebos_gasoil.cpp
+  flow/flow_ebos_oilwater.cpp
+  flow/flow_ebos_polymer.cpp
+  flow/flow_ebos_solvent.cpp
+  flow/flow_ebos_energy.cpp
+  flow/flow_ebos_oilwater_polymer.cpp
+  flow/flow_ebos_oilwater_polymer_injectivity.cpp)
 
-add_test(NAME flow__version
-         COMMAND flow --version)
-set_tests_properties(flow__version PROPERTIES
-                     PASS_REGULAR_EXPRESSION "${${project}_LABEL}")
+opm_add_test(flow_blackoil_dunecpr
+  ONLY_COMPILE
+  DEFAULT_ENABLE_IF ${FLOW_DEFAULT_ENABLE_IF}
+  SOURCES flow/flow_blackoil_dunecpr.cpp
+  EXE_NAME flow_blackoil_dunecpr
+  DEPENDS "opmsimulators"
+  LIBRARIES "opmsimulators")
 
 
 
-include(OpmBashCompletion)
-opm_add_bash_completion(flow)
+if (BUILD_FLOW)
+  install(TARGETS flow DESTINATION bin)
+  opm_add_bash_completion(flow)
+
+  add_test(NAME flow__version
+    COMMAND flow --version)
+  set_tests_properties(flow__version PROPERTIES
+    PASS_REGULAR_EXPRESSION "${${project}_LABEL}")
+endif()
+
+if (NOT BUILD_EBOS)
+  set(EBOS_DEFAULT_ENABLE_IF "FALSE")
+else()
+  set(EBOS_DEFAULT_ENABLE_IF "TRUE")
+endif()
+  
+# the research oriented general-purpose ECL simulator ("ebos" == &ecl
+# &black-&oil &simulator)
+opm_add_test(ebos
+  ONLY_COMPILE
+  DEFAULT_ENABLE_IF ${EBOS_DEFAULT_ENABLE_IF}
+  ALWAYS_ENABLE
+  EXE_NAME ebos
+  DEPENDS "opmsimulators"
+  LIBRARIES "opmsimulators"
+  SOURCES ebos/ebos.cc)
+
+if (BUILD_EBOS)
+  install(TARGETS ebos DESTINATION bin)
+  opm_add_bash_completion(ebos)
+endif()
+
+if (NOT BUILD_EBOS_EXTENSIONS)
+  set(EBOS_EXTENSIONS_DEFAULT_ENABLE_IF "FALSE")
+else()
+  set(EBOS_EXTENSIONS_DEFAULT_ENABLE_IF "TRUE")
+endif()
+
+opm_add_test(ebos_solvent
+  ONLY_COMPILE
+  DEFAULT_ENABLE_IF ${EBOS_EXTENSIONS_DEFAULT_ENABLE_IF}
+  SOURCES ebos/ebos_solvent.cc
+  EXE_NAME ebos_solvent
+  DEPENDS "opmsimulators"
+  LIBRARIES "opmsimulators")
+
+opm_add_test(ebos_polymer
+  ONLY_COMPILE
+  DEFAULT_ENABLE_IF ${EBOS_EXTENSIONS_DEFAULT_ENABLE_IF}
+  SOURCES ebos/ebos_polymer.cc
+  EXE_NAME ebos_polymer
+  DEPENDS "opmsimulators"
+  LIBRARIES "opmsimulators")
+
+opm_add_test(ebos_gasoil
+  ONLY_COMPILE
+  DEFAULT_ENABLE_IF ${EBOS_EXTENSIONS_DEFAULT_ENABLE_IF}
+  SOURCES ebos/ebos_gasoil.cc
+  EXE_NAME ebos_gasoil
+  DEPENDS "opmsimulators"
+  LIBRARIES "opmsimulators")
+
+opm_add_test(ebos_oilwater
+  ONLY_COMPILE
+  DEFAULT_ENABLE_IF ${EBOS_EXTENSIONS_DEFAULT_ENABLE_IF}
+  SOURCES ebos/ebos_oilwater.cc
+  EXE_NAME ebos_oilwater
+  DEPENDS "opmsimulators"
+  LIBRARIES "opmsimulators")
+
+opm_add_test(ebos_thermal
+  ONLY_COMPILE
+  DEFAULT_ENABLE_IF ${EBOS_EXTENSIONS_DEFAULT_ENABLE_IF}
+  SOURCES ebos/ebos_thermal.cc
+  EXE_NAME ebos_thermal
+  DEPENDS "opmsimulators"
+  LIBRARIES "opmsimulators")
+
+if (NOT BUILD_EBOS_DEBUG_EXTENSIONS)
+  set(EBOS_DEBUG_EXTENSIONS_DEFAULT_ENABLE_IF "FALSE")
+else()
+  set(EBOS_DEBUG_EXTENSIONS_DEFAULT_ENABLE_IF "TRUE")
+endif()
+
+opm_add_test(ebos_altidx
+  ONLY_COMPILE
+  DEFAULT_ENABLE_IF ${EBOS_DEBUG_EXTENSIONS_DEFAULT_ENABLE_IF}
+  SOURCES ebos/ebos_altidx.cc
+  EXE_NAME ebos_altidx
+  DEPENDS "opmsimulators"
+  LIBRARIES "opmsimulators")
+
+opm_add_test(ebos_plain
+  ONLY_COMPILE
+  DEFAULT_ENABLE_IF ${EBOS_DEBUG_EXTENSIONS_DEFAULT_ENABLE_IF}
+  SOURCES ebos/ebos_plain.cc
+  EXE_NAME ebos_plain
+  DEPENDS "opmsimulators"
+  LIBRARIES "opmsimulators")
+
+opm_add_bash_completion(ebos_solvent)
+opm_add_bash_completion(ebos_polymer)
+opm_add_bash_completion(ebos_gasoil)
+opm_add_bash_completion(ebos_oilwater)
+opm_add_bash_completion(ebos_thermal)
+
+if (BUILD_EBOS_EXTENSIONS)
+  install(TARGETS ebos_solvent DESTINATION bin)
+  install(TARGETS ebos_polymer DESTINATION bin)
+  install(TARGETS ebos_gasoil DESTINATION bin)
+  install(TARGETS ebos_oilwater DESTINATION bin)
+  install(TARGETS ebos_thermal DESTINATION bin)
+endif()
 

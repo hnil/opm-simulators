@@ -41,8 +41,8 @@
 #include <opm/parser/eclipse/EclipseState/Schedule/VFPProdTable.hpp>
 #include <opm/parser/eclipse/Units/UnitSystem.hpp>
 
-#include <opm/autodiff/VFPHelpers.hpp>
-#include <opm/autodiff/VFPProdProperties.hpp>
+#include <opm/simulators/wells/VFPHelpers.hpp>
+#include <opm/simulators/wells/VFPProdProperties.hpp>
 
 
 
@@ -648,11 +648,13 @@ BOOST_AUTO_TEST_CASE(ParseInterpolateRealisticVFPPROD)
 {
     auto units = Opm::UnitSystem::newMETRIC();
 
+    Opm::ParseContext parseContext;
+    Opm::ErrorGuard errorGuard;
     Opm::Parser parser;
     boost::filesystem::path file("VFPPROD2");
 
     auto deck = parser.parseFile(file.string());
-    Opm::checkDeck(deck, parser);
+    Opm::checkDeck(deck, parser, parseContext, errorGuard);
 
     BOOST_REQUIRE(deck.hasKeyword("VFPPROD"));
     BOOST_CHECK_EQUAL(deck.count("VFPPROD"), 1);

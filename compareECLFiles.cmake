@@ -199,6 +199,13 @@ add_test_compareECLFiles(CASENAME ctaquifer_2d_oilwater
                          REL_TOL ${rel_tol}
                          DIR aquifer-oilwater)
 
+add_test_compareECLFiles(CASENAME fetkovich_2d
+                         FILENAME 2D_FETKOVICHAQUIFER
+                         SIMULATOR flow
+                         ABS_TOL ${abs_tol}
+                         REL_TOL ${rel_tol}
+                         DIR aquifer-fetkovich)
+
 add_test_compareECLFiles(CASENAME spe3
                          FILENAME SPE3CASE1
                          SIMULATOR flow
@@ -208,7 +215,7 @@ add_test_compareECLFiles(CASENAME spe3
 
 add_test_compareECLFiles(CASENAME spe9
                          FILENAME SPE9_CP_SHORT
-                         SIMULATOR flow 
+                         SIMULATOR flow
                          ABS_TOL ${abs_tol}
                          REL_TOL ${rel_tol})
 
@@ -222,15 +229,13 @@ add_test_compareECLFiles(CASENAME msw_2d_h
                          FILENAME 2D_H__
                          SIMULATOR flow
                          ABS_TOL ${abs_tol}
-                         REL_TOL ${coarse_rel_tol}
-                         TEST_ARGS --use-multisegment-well=true)
+                         REL_TOL ${coarse_rel_tol})
 
 add_test_compareECLFiles(CASENAME msw_3d_hfa
                          FILENAME 3D_MSW
                          SIMULATOR flow
                          ABS_TOL ${abs_tol}
-                         REL_TOL ${rel_tol}
-                         TEST_ARGS --use-multisegment-well=true)
+                         REL_TOL ${rel_tol})
 
 add_test_compareECLFiles(CASENAME polymer_oilwater
                          FILENAME 2D_OILWATER_POLYMER
@@ -269,8 +274,7 @@ add_test_compareECLFiles(CASENAME msw_model_1
                          SIMULATOR flow
                          ABS_TOL ${abs_tol}
                          REL_TOL ${rel_tol}
-                         DIR model1
-                         TEST_ARGS --use-multisegment-well=true)
+                         DIR model1)
 
 add_test_compareECLFiles(CASENAME base_model_1
                          FILENAME BASE_MODEL_1
@@ -285,6 +289,13 @@ add_test_compareECLFiles(CASENAME faults_model_1
                          ABS_TOL ${abs_tol}
                          REL_TOL ${rel_tol}
                          DIR model1)
+
+add_test_compareECLFiles(CASENAME nnc
+                         FILENAME NNC_AND_EDITNNC
+                         SIMULATOR flow
+                         ABS_TOL ${abs_tol}
+                         REL_TOL ${rel_tol}
+                         DIR editnnc)
 
 # Restart tests
 opm_set_test_driver(${PROJECT_SOURCE_DIR}/tests/run-restart-regressionTest.sh "")

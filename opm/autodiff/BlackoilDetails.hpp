@@ -24,7 +24,8 @@
 #ifndef OPM_BLACKOILDETAILS_HEADER_INCLUDED
 #define OPM_BLACKOILDETAILS_HEADER_INCLUDED
 
-#include <opm/core/linalg/ParallelIstlInformation.hpp>
+#include <opm/simulators/linalg/ParallelIstlInformation.hpp>
+#include <opm/core/props/BlackoilPhases.hpp>
 
 namespace Opm {
 namespace detail {

@@ -36,12 +36,15 @@ SET_BOOL_PROP(EclFlowEnergyProblem, EnableEnergy, true);
 }}
 
 namespace Opm {
-void flowEbosEnergySetDeck(Deck &deck, EclipseState& eclState)
+void flowEbosEnergySetDeck(double setupTime, Deck &deck, EclipseState& eclState, Schedule& schedule, SummaryConfig& summaryConfig)
 {
     typedef TTAG(EclFlowEnergyProblem) TypeTag;
     typedef GET_PROP_TYPE(TypeTag, Vanguard) Vanguard;
 
+    Vanguard::setExternalSetupTime(setupTime);
     Vanguard::setExternalDeck(&deck, &eclState);
+    Vanguard::setExternalSchedule(&schedule);
+    Vanguard::setExternalSummaryConfig(&summaryConfig);
 }
 
 // ----------------- Main program -----------------

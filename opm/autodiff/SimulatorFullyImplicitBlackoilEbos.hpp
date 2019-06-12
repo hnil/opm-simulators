@@ -22,13 +22,12 @@
 #ifndef OPM_SIMULATORFULLYIMPLICITBLACKOILEBOS_HEADER_INCLUDED
 #define OPM_SIMULATORFULLYIMPLICITBLACKOILEBOS_HEADER_INCLUDED
 
-#include <opm/autodiff/IterationReport.hpp>
 #include <opm/autodiff/NonlinearSolverEbos.hpp>
 #include <opm/autodiff/BlackoilModelEbos.hpp>
 #include <opm/autodiff/BlackoilModelParametersEbos.hpp>
-#include <opm/autodiff/WellStateFullyImplicitBlackoil.hpp>
-#include <opm/autodiff/BlackoilAquiferModel.hpp>
-#include <opm/autodiff/moduleVersion.hpp>
+#include <opm/simulators/wells/WellStateFullyImplicitBlackoil.hpp>
+#include <opm/simulators/aquifers/BlackoilAquiferModel.hpp>
+#include <opm/simulators/utils/moduleVersion.hpp>
 #include <opm/simulators/timestepping/AdaptiveTimeSteppingEbos.hpp>
 #include <opm/grid/utility/StopWatch.hpp>
 
@@ -75,7 +74,6 @@ public:
     typedef typename Solver::SolverParameters SolverParameters;
     typedef BlackoilWellModel<TypeTag> WellModel;
     typedef BlackoilAquiferModel<TypeTag> AquiferModel;
-    typedef typename BlackoilModelEbos<TypeTag>::ISTLSolverType ISTLSolverType;
 
 
     /// Initialise from parameters and objects to observe.
@@ -99,10 +97,8 @@ public:
     /// \param[in] eclipse_state the object which represents an internalized ECL deck
     /// \param[in] output_writer
     /// \param[in] threshold_pressures_by_face   if nonempty, threshold pressures that inhibit flow
-    SimulatorFullyImplicitBlackoilEbos(Simulator& ebosSimulator,
-                                       ISTLSolverType& linearSolver)
+    SimulatorFullyImplicitBlackoilEbos(Simulator& ebosSimulator)
         : ebosSimulator_(ebosSimulator)
-        , linearSolver_(linearSolver)
     {
         phaseUsage_ = phaseUsageFromDeck(eclState());
 
@@ -136,15 +132,18 @@ public:
     {
         failureReport_ = SimulatorReport();
 
+        ebosSimulator_.setEpisodeIndex(-1);
+
         // handle restarts
         std::unique_ptr<RestartValue> restartValues;
         if (isRestart()) {
+            Opm::SummaryState& summaryState = ebosSimulator_.vanguard().summaryState();
             std::vector<RestartKey> extraKeys = {
                 {"OPMEXTRA" , Opm::UnitSystem::measure::identity, false}
             };
 
             std::vector<RestartKey> solutionKeys = {};
-            restartValues.reset(new RestartValue(ebosSimulator_.problem().eclIO().loadRestart(solutionKeys, extraKeys)));
+            restartValues.reset(new RestartValue(ebosSimulator_.problem().eclIO().loadRestart(summaryState, solutionKeys, extraKeys)));
         }
 
         // Create timers and file for writing timing info.
@@ -188,6 +187,20 @@ public:
         SimulatorReport stepReport;
 
         if (isRestart()) {
+            // Set the start time of the simulation
+            const auto& schedule = ebosSimulator_.vanguard().schedule();
+            const auto& eclState = ebosSimulator_.vanguard().eclState();
+            const auto& timeMap = schedule.getTimeMap();
+            const auto& initconfig = eclState.getInitConfig();
+            int episodeIdx = initconfig.getRestartStep() - 1;
+
+            ebosSimulator_.setStartTime(timeMap.getStartTime(/*timeStepIdx=*/0));
+            ebosSimulator_.setTime(timeMap.getTimePassedUntil(episodeIdx));
+
+            ebosSimulator_.startNextEpisode(ebosSimulator_.startTime() + ebosSimulator_.time(),
+                                            timeMap.getTimeStepLength(episodeIdx));
+            ebosSimulator_.setEpisodeIndex(episodeIdx);
+            wellModel_().beginEpisode();
             wellModel_().initFromRestartFile(*restartValues);
         }
 
@@ -204,25 +217,6 @@ public:
                 OpmLog::debug(ss.str());
             }
 
-            // write the inital state at the report stage
-            if (timer.initialStep()) {
-                Dune::Timer perfTimer;
-                perfTimer.start();
-
-                wellModel_().beginReportStep(timer.currentStepNum());
-                ebosSimulator_.problem().writeOutput(false);
-
-                report.output_write_time += perfTimer.stop();
-            }
-
-            // Run a multiple steps of the solver depending on the time step control.
-            solverTimer.start();
-
-            auto solver = createSolver(wellModel_());
-
-            solver->model().beginReportStep(firstRestartStep);
-            firstRestartStep = false;
-
             if (terminalOutput_) {
                 std::ostringstream stepMsg;
                 boost::posix_time::time_facet* facet = new boost::posix_time::time_facet("%d-%b-%Y");
@@ -234,6 +228,33 @@ public:
                          << ", date = " << timer.currentDateTime();
                 OpmLog::info(stepMsg.str());
             }
+
+            // write the inital state at the report stage
+            if (timer.initialStep()) {
+                Dune::Timer perfTimer;
+                perfTimer.start();
+
+                ebosSimulator_.setEpisodeIndex(-1);
+                ebosSimulator_.setEpisodeLength(0.0);
+                ebosSimulator_.setTimeStepSize(0.0);
+
+                wellModel_().beginReportStep(timer.currentStepNum());
+                ebosSimulator_.problem().writeOutput();
+
+                report.output_write_time += perfTimer.stop();
+            }
+
+            // Run a multiple steps of the solver depending on the time step control.
+            solverTimer.start();
+
+            auto solver = createSolver(wellModel_());
+
+            ebosSimulator_.startNextEpisode(ebosSimulator_.startTime() + schedule().getTimeMap().getTimePassedUntil(timer.currentStepNum()),
+                                            timer.currentStepLength());
+            ebosSimulator_.setEpisodeIndex(timer.currentStepNum());
+            solver->model().beginReportStep(firstRestartStep);
+            firstRestartStep = false;
+
 
             // If sub stepping is enabled allow the solver to sub cycle
             // in case the report steps are too large for the solver to converge
@@ -268,6 +289,14 @@ public:
                 }
             }
 
+            // write simulation state at the report stage
+            Dune::Timer perfTimer;
+            perfTimer.start();
+            const double nextstep = adaptiveTimeStepping ? adaptiveTimeStepping->suggestedNextStep() : -1.0;
+            ebosSimulator_.problem().setNextTimeStepSize(nextstep);
+            ebosSimulator_.problem().writeOutput();
+            report.output_write_time += perfTimer.stop();
+
             solver->model().endReportStep();
 
             // take time that was used to solve system for this reportStep
@@ -286,14 +315,6 @@ public:
                     outputTimestampFIP(timer, version);
                 }
             }
-
-            // write simulation state at the report stage
-            Dune::Timer perfTimer;
-            perfTimer.start();
-            const double nextstep = adaptiveTimeStepping ? adaptiveTimeStepping->suggestedNextStep() : -1.0;
-            ebosSimulator_.problem().setNextTimeStepSize(nextstep);
-            ebosSimulator_.problem().writeOutput(false);
-            report.output_write_time += perfTimer.stop();
 
             if (terminalOutput_) {
                 std::string msg =
@@ -327,7 +348,6 @@ protected:
         auto model = std::unique_ptr<Model>(new Model(ebosSimulator_,
                                                       modelParam_,
                                                       wellModel,
-                                                      linearSolver_,
                                                       terminalOutput_));
 
         return std::unique_ptr<Solver>(new Solver(solverParam_, std::move(model)));
@@ -375,7 +395,6 @@ protected:
     SolverParameters solverParam_;
 
     // Observed objects.
-    ISTLSolverType& linearSolver_;
     PhaseUsage phaseUsage_;
     // Misc. data
     bool terminalOutput_;

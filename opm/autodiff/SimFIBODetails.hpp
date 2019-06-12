@@ -30,18 +30,16 @@
 namespace Opm
 {
     namespace SimFIBODetails {
-        typedef std::unordered_map<std::string, const Well* > WellMap;
+        typedef std::unordered_map<std::string, Well2 > WellMap;
 
         inline WellMap
-        mapWells(const std::vector< const Well* >& wells)
+        mapWells(const std::vector< Well2 >& wells)
         {
             WellMap wmap;
 
-            for (std::vector< const Well* >::const_iterator
-                     w = wells.begin(), e = wells.end();
-                 w != e; ++w)
+            for (const auto& w : wells)
             {
-                wmap.insert(std::make_pair((*w)->name(), *w));
+                wmap.insert(std::make_pair(w.name(), w));
             }
 
             return wmap;
@@ -69,42 +67,14 @@ namespace Opm
             return (0 <= resv_control(wells.ctrls[w]));
         }
 
-        inline bool
-        is_resv(const WellMap&     wmap,
-                const std::string& name,
-                const std::size_t  step)
-        {
-            bool match = false;
-
-            WellMap::const_iterator i = wmap.find(name);
-
-            if (i != wmap.end()) {
-                const Well* wp = i->second;
-
-                match = (wp->isProducer(step) &&
-                         wp->getProductionProperties(step)
-                         .hasProductionControl(WellProducer::RESV))
-                    ||  (wp->isInjector(step) &&
-                         wp->getInjectionProperties(step)
-                         .hasInjectionControl(WellInjector::RESV));
-            }
-
-            return match;
-        }
-
         inline std::vector<int>
-        resvWells(const Wells*      wells,
-                  const std::size_t step,
-                  const WellMap&    wmap)
+        resvWells(const Wells*      wells)
         {
             std::vector<int> resv_wells;
             if( wells )
             {
                 for (int w = 0, nw = wells->number_of_wells; w < nw; ++w) {
-                    if (is_resv(*wells, w) ||
-                        ((wells->name[w] != 0) &&
-                         is_resv(wmap, wells->name[w], step)))
-                    {
+                    if ( is_resv(*wells, w) ) {
                         resv_wells.push_back(w);
                     }
                 }
@@ -115,10 +85,10 @@ namespace Opm
 
         inline void
         historyRates(const PhaseUsage&               pu,
-                     const WellProductionProperties& p,
+                     const ProductionControls& p,
                      std::vector<double>&            rates)
         {
-            assert (! p.predictionMode);
+            assert (! p.prediction_mode);
             assert (rates.size() ==
                     std::vector<double>::size_type(pu.num_phases));
 
@@ -126,21 +96,21 @@ namespace Opm
                 const std::vector<double>::size_type
                     i = pu.phase_pos[ BlackoilPhases::Aqua ];
 
-                rates[i] = p.WaterRate;
+                rates[i] = p.water_rate;
             }
 
             if (pu.phase_used[ BlackoilPhases::Liquid ]) {
                 const std::vector<double>::size_type
                     i = pu.phase_pos[ BlackoilPhases::Liquid ];
 
-                rates[i] = p.OilRate;
+                rates[i] = p.oil_rate;
             }
 
             if (pu.phase_used[ BlackoilPhases::Vapour ]) {
                 const std::vector<double>::size_type
                     i = pu.phase_pos[ BlackoilPhases::Vapour ];
 
-                rates[i] = p.GasRate;
+                rates[i] = p.gas_rate;
             }
         }
     } // namespace SimFIBODetails

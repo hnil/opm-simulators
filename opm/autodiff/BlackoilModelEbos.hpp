@@ -31,14 +31,14 @@
 
 #include <opm/autodiff/NonlinearSolverEbos.hpp>
 #include <opm/autodiff/BlackoilModelParametersEbos.hpp>
-#include <opm/autodiff/BlackoilWellModel.hpp>
-#include <opm/autodiff/BlackoilAquiferModel.hpp>
-#include <opm/autodiff/WellConnectionAuxiliaryModule.hpp>
+#include <opm/simulators/wells/BlackoilWellModel.hpp>
+#include <opm/simulators/aquifers/BlackoilAquiferModel.hpp>
+#include <opm/simulators/wells/WellConnectionAuxiliaryModule.hpp>
 #include <opm/autodiff/BlackoilDetails.hpp>
 
 #include <opm/grid/UnstructuredGrid.h>
 #include <opm/core/simulator/SimulatorReport.hpp>
-#include <opm/core/linalg/ParallelIstlInformation.hpp>
+#include <opm/simulators/linalg/ParallelIstlInformation.hpp>
 #include <opm/core/props/phaseUsageFromDeck.hpp>
 #include <opm/common/ErrorMacros.hpp>
 #include <opm/common/Exceptions.hpp>
@@ -49,7 +49,7 @@
 #include <opm/parser/eclipse/EclipseState/EclipseState.hpp>
 #include <opm/parser/eclipse/EclipseState/Tables/TableManager.hpp>
 
-#include <opm/autodiff/ISTLSolverEbos.hpp>
+#include <opm/simulators/linalg/ISTLSolverEbos.hpp>
 #include <opm/common/data/SimulationDataContainer.hpp>
 
 #include <dune/istl/owneroverlapcopy.hh>
@@ -69,7 +69,7 @@
 
 BEGIN_PROPERTIES
 
-NEW_TYPE_TAG(EclFlowProblem, INHERITS_FROM(BlackOilModel, EclBaseProblem, FlowNonLinearSolver, FlowIstlSolver, FlowModelParameters, FlowTimeSteppingParameters));
+NEW_TYPE_TAG(EclFlowProblem, INHERITS_FROM(BlackOilModel, EclBaseProblem, FlowNonLinearSolver, FlowModelParameters, FlowTimeSteppingParameters));
 SET_STRING_PROP(EclFlowProblem, OutputDir, "");
 SET_BOOL_PROP(EclFlowProblem, EnableDebuggingChecks, false);
 // default in flow is to formulate the equations in surface volumes
@@ -86,6 +86,8 @@ SET_BOOL_PROP(EclFlowProblem, EnableTemperature, true);
 SET_BOOL_PROP(EclFlowProblem, EnableEnergy, false);
 
 SET_TYPE_PROP(EclFlowProblem, EclWellModel, Opm::BlackoilWellModel<TypeTag>);
+SET_TAG_PROP(EclFlowProblem, LinearSolverSplice, FlowIstlSolver);
+
 
 END_PROPERTIES
 
@@ -149,11 +151,9 @@ namespace Opm {
         BlackoilModelEbos(Simulator& ebosSimulator,
                           const ModelParameters& param,
                           BlackoilWellModel<TypeTag>& well_model,
-                          const ISTLSolverType& linsolver,
                           const bool terminal_output)
         : ebosSimulator_(ebosSimulator)
         , grid_(ebosSimulator_.vanguard().grid())
-        , istlSolver_( dynamic_cast< const ISTLSolverType* > (&linsolver) )
         , phaseUsage_(phaseUsageFromDeck(eclState()))
         , has_disgas_(FluidSystem::enableDissolvedGas())
         , has_vapoil_(FluidSystem::enableVaporizedOil())
@@ -169,12 +169,6 @@ namespace Opm {
         {
             // compute global sum of number of cells
             global_nc_ = detail::countGlobalCells(grid_);
-            //find rows of matrix corresponding to overlap
-            detail::findOverlapRowsAndColumns(grid_,overlapRowAndColumns_);
-            if (!istlSolver_)
-            {
-                OPM_THROW(std::logic_error,"solver down cast to ISTLSolver failed");
-            }
             convergence_reports_.reserve(300); // Often insufficient, but avoids frequent moves.
         }
 
@@ -188,7 +182,6 @@ namespace Opm {
         /// \param[in] timer                  simulation timer
         void prepareStep(const SimulatorTimerInterface& timer)
         {
-
             // update the solution variables in ebos
             if ( timer.lastStepFailed() ) {
                 ebosSimulator_.model().updateFailed();
@@ -200,13 +193,8 @@ namespace Opm {
             // know the report step/episode index because of timing dependend data
             // despide the fact that flow uses its own time stepper. (The length of the
             // episode does not matter, though.)
-            Scalar t = timer.simulationTimeElapsed();
-            ebosSimulator_.startNextEpisode(/*episodeStartTime=*/t, /*episodeLength=*/1e30);
-            ebosSimulator_.setEpisodeIndex(timer.reportStepNum());
-            ebosSimulator_.setTime(t);
+            ebosSimulator_.setTime(timer.simulationTimeElapsed());
             ebosSimulator_.setTimeStepSize(timer.currentStepLength());
-            ebosSimulator_.setTimeStepIndex(ebosSimulator_.timeStepIndex() + 1);
-
             ebosSimulator_.problem().beginTimeStep();
 
             unsigned numDof = ebosSimulator_.model().numGridDof();
@@ -252,7 +240,7 @@ namespace Opm {
             report.total_linearizations = 1;
 
             try {
-                report += assemble(timer, iteration);
+                report += assembleReservoir(timer, iteration);
                 report.assemble_time += perfTimer.stop();
             }
             catch (...) {
@@ -299,12 +287,21 @@ namespace Opm {
                 const int nc = UgGridHelpers::numCells(grid_);
                 BVector x(nc);
 
+                // apply the Schur compliment of the well model to the reservoir linearized
+                // equations
+                wellModel().linearize(ebosSimulator().model().linearizer().jacobian(),
+                                      ebosSimulator().model().linearizer().residual());
+
+                // Solve the linear system.
+                linear_solve_setup_time_ = 0.0;
                 try {
                     solveJacobianSystem(x);
+                    report.linear_solve_setup_time += linear_solve_setup_time_;
                     report.linear_solve_time += perfTimer.stop();
                     report.total_linear_iterations += linearIterationsLastSolve();
                 }
                 catch (...) {
+                    report.linear_solve_setup_time += linear_solve_setup_time_;
                     report.linear_solve_time += perfTimer.stop();
                     report.total_linear_iterations += linearIterationsLastSolve();
 
@@ -357,7 +354,7 @@ namespace Opm {
         /// Called once after each time step.
         /// In this class, this function does nothing.
         /// \param[in] timer                  simulation timer
-        void afterStep(const SimulatorTimerInterface& OPM_UNUSED timer)
+        void afterStep(const SimulatorTimerInterface& timer OPM_UNUSED)
         {
             ebosSimulator_.problem().endTimeStep();
         }
@@ -366,24 +363,14 @@ namespace Opm {
         /// \param[in]      reservoir_state   reservoir state variables
         /// \param[in, out] well_state        well state variables
         /// \param[in]      initial_assembly  pass true if this is the first call to assemble() in this timestep
-        SimulatorReport assemble(const SimulatorTimerInterface& timer,
-                                 const int iterationIdx)
+        SimulatorReport assembleReservoir(const SimulatorTimerInterface& /* timer */,
+                                          const int iterationIdx)
         {
             // -------- Mass balance equations --------
             ebosSimulator_.model().newtonMethod().setIterationIndex(iterationIdx);
             ebosSimulator_.problem().beginIteration();
-            ebosSimulator_.model().linearizer().linearize();
+            ebosSimulator_.model().linearizer().linearizeDomain();
             ebosSimulator_.problem().endIteration();
-
-            auto& ebosJac = ebosSimulator_.model().linearizer().jacobian();
-            if (param_.matrix_add_well_contributions_) {
-                wellModel().addWellContributions(ebosJac.istlMatrix());
-            }
-            if ( param_.preconditioner_add_well_contributions_ &&
-                                  ! param_.matrix_add_well_contributions_ ) {
-                matrix_for_preconditioner_ .reset(new Mat(ebosJac.istlMatrix()));
-                wellModel().addWellContributions(*matrix_for_preconditioner_);
-            }
 
             return wellModel().lastReport();
         }
@@ -469,179 +456,35 @@ namespace Opm {
         /// Number of linear iterations used in last call to solveJacobianSystem().
         int linearIterationsLastSolve() const
         {
-            return istlSolver().iterations();
-        }
-
-        /// Zero out off-diagonal blocks on rows corresponding to overlap cells
-        /// Diagonal blocks on ovelap rows are set to diag(1e100).
-        void makeOverlapRowsInvalid(Mat& ebosJacIgnoreOverlap) const
-        {	  	  
-            //value to set on diagonal
-            MatrixBlockType diag_block(0.0);
-            for (int eq = 0; eq < numEq; ++eq)	    
-                diag_block[eq][eq] = 1.0e100;
-	  	  
-            //loop over precalculated overlap rows and columns
-            for (auto row = overlapRowAndColumns_.begin(); row != overlapRowAndColumns_.end(); row++ )
-            {
-                int lcell = row->first; 
-                //diagonal block set to large value diagonal
-                ebosJacIgnoreOverlap[lcell][lcell] = diag_block;
-
-                //loop over off diagonal blocks in overlap row	      
-                for (auto col = row->second.begin(); col != row->second.end(); ++col)
-                {
-                    int ncell = *col;
-                    //zero out block
-                    ebosJacIgnoreOverlap[lcell][ncell] = 0.0;
-                }
-            }    	  
+            return ebosSimulator_.model().newtonMethod().linearSolver().iterations ();
         }
 
         /// Solve the Jacobian system Jx = r where J is the Jacobian and
         /// r is the residual.
-        void solveJacobianSystem(BVector& x) const
+        void solveJacobianSystem(BVector& x)
         {
-            // J = [A, B; C, D], where A is the reservoir equations, B and C the interaction of well
-            // with the reservoir and D is the wells itself.
-            // The full system is reduced to a number of cells X number of cells system via Schur complement
-            // A -= B^T D^-1 C
-            // Instead of modifying A, the Ax operator is modified. i.e Ax -= B^T D^-1 C x in the WellModelMatrixAdapter.
-            // The residual is modified similarly.
-            // r = [r, r_well], where r is the residual and r_well the well residual.
-            // r -= B^T * D^-1 r_well
 
             auto& ebosJac = ebosSimulator_.model().linearizer().jacobian();
             auto& ebosResid = ebosSimulator_.model().linearizer().residual();
 
-            wellModel().apply(ebosResid);
-
             // set initial guess
             x = 0.0;
 
-            const Mat& actual_mat_for_prec = matrix_for_preconditioner_ ? *matrix_for_preconditioner_.get() : ebosJac.istlMatrix();
-            // Solve system.
-            if( isParallel() )
-            {	      
-                typedef WellModelMatrixAdapter< Mat, BVector, BVector, BlackoilWellModel<TypeTag>, true > Operator;
+            auto& ebosSolver = ebosSimulator_.model().newtonMethod().linearSolver();
+            Dune::Timer perfTimer;
+            perfTimer.start();
+            ebosSolver.prepare(ebosJac, ebosResid);
+            linear_solve_setup_time_ = perfTimer.stop();
+            ebosSolver.setResidual(ebosResid);
+            // actually, the error needs to be calculated after setResidual in order to
+            // account for parallelization properly. since the residual of ECFV
+            // discretizations does not need to be synchronized across processes to be
+            // consistent, this is not relevant for OPM-flow...
+            ebosSolver.setMatrix(ebosJac);
+            ebosSolver.solve(x);
+       }
 
-                auto ebosJacIgnoreOverlap = Mat(ebosJac.istlMatrix());
-                //remove ghost rows in local matrix
-                makeOverlapRowsInvalid(ebosJacIgnoreOverlap);
 
-                //Not sure what actual_mat_for_prec is, so put ebosJacIgnoreOverlap as both variables
-                //to be certain that correct matrix is used for preconditioning.
-                Operator opA(ebosJacIgnoreOverlap, ebosJacIgnoreOverlap, wellModel(),
-                             istlSolver().parallelInformation() );
-                assert( opA.comm() );
-                istlSolver().solve( opA, x, ebosResid, *(opA.comm()) );
-            }
-            else
-            {
-                typedef WellModelMatrixAdapter< Mat, BVector, BVector, BlackoilWellModel<TypeTag>, false > Operator;
-                Operator opA(ebosJac.istlMatrix(), actual_mat_for_prec, wellModel());
-                istlSolver().solve( opA, x, ebosResid );
-            }
-        }
-
-        //=====================================================================
-        // Implementation for ISTL-matrix based operator
-        //=====================================================================
-
-        /*!
-           \brief Adapter to turn a matrix into a linear operator.
-
-           Adapts a matrix to the assembled linear operator interface
-         */
-        template<class M, class X, class Y, class WellModel, bool overlapping >
-        class WellModelMatrixAdapter : public Dune::AssembledLinearOperator<M,X,Y>
-        {
-          typedef Dune::AssembledLinearOperator<M,X,Y> BaseType;
-
-        public:
-          typedef M matrix_type;
-          typedef X domain_type;
-          typedef Y range_type;
-          typedef typename X::field_type field_type;
-
-#if HAVE_MPI
-          typedef Dune::OwnerOverlapCopyCommunication<int,int> communication_type;
-#else
-          typedef Dune::CollectiveCommunication< Grid > communication_type;
-#endif
-
-#if DUNE_VERSION_NEWER(DUNE_ISTL, 2, 6)
-          Dune::SolverCategory::Category category() const override
-          {
-            return overlapping ?
-                   Dune::SolverCategory::overlapping : Dune::SolverCategory::sequential;
-          }
-#else
-          enum {
-            //! \brief The solver category.
-            category = overlapping ?
-                Dune::SolverCategory::overlapping :
-                Dune::SolverCategory::sequential
-          };
-#endif
-
-          //! constructor: just store a reference to a matrix
-          WellModelMatrixAdapter (const M& A,
-                                  const M& A_for_precond,
-                                  const WellModel& wellMod,
-                                  const boost::any& parallelInformation = boost::any() )
-              : A_( A ), A_for_precond_(A_for_precond), wellMod_( wellMod ), comm_()
-          {
-#if HAVE_MPI
-            if( parallelInformation.type() == typeid(ParallelISTLInformation) )
-            {
-              const ParallelISTLInformation& info =
-                  boost::any_cast<const ParallelISTLInformation&>( parallelInformation);
-              comm_.reset( new communication_type( info.communicator() ) );
-            }
-#endif
-          }
-
-          virtual void apply( const X& x, Y& y ) const
-          {
-            A_.mv( x, y );
-
-            // add well model modification to y
-            wellMod_.apply(x, y );
-
-#if HAVE_MPI
-            if( comm_ )
-              comm_->project( y );
-#endif
-          }
-
-          // y += \alpha * A * x
-          virtual void applyscaleadd (field_type alpha, const X& x, Y& y) const
-          {
-            A_.usmv(alpha,x,y);
-
-            // add scaled well model modification to y
-            wellMod_.applyScaleAdd( alpha, x, y );
-
-#if HAVE_MPI
-            if( comm_ )
-              comm_->project( y );
-#endif
-          }
-
-          virtual const matrix_type& getmat() const { return A_for_precond_; }
-
-          communication_type* comm()
-          {
-              return comm_.operator->();
-          }
-
-        protected:
-          const matrix_type& A_ ;
-          const matrix_type& A_for_precond_ ;
-          const WellModel& wellMod_;
-          std::unique_ptr< communication_type > comm_;
-        };
 
         /// Apply an update to the primary variables.
         void updateSolution(const BVector& dx)
@@ -748,7 +591,7 @@ namespace Opm {
                 const auto& intQuants = elemCtx.intensiveQuantities(/*spaceIdx=*/0, /*timeIdx=*/0);
                 const auto& fs = intQuants.fluidState();
 
-                const double pvValue = ebosProblem.porosity(cell_idx) * ebosModel.dofTotalVolume( cell_idx );
+                const double pvValue = ebosProblem.referencePorosity(cell_idx, /*timeIdx=*/0) * ebosModel.dofTotalVolume( cell_idx );
                 pvSumLocal += pvValue;
 
                 for (unsigned phaseIdx = 0; phaseIdx < FluidSystem::numPhases; ++phaseIdx)
@@ -945,6 +788,7 @@ namespace Opm {
             std::vector<Scalar> B_avg(numEq, 0.0);
             auto report = getReservoirConvergence(timer.currentStepLength(), iteration, B_avg, residual_norms);
             report += wellModel().getWellConvergence(B_avg);
+
             return report;
         }
 
@@ -966,7 +810,7 @@ namespace Opm {
         /// Should not be called
         std::vector<std::vector<double> >
         computeFluidInPlace(const std::vector<int>& /*fipnum*/) const
-        {            
+        {
             //assert(true)
             //return an empty vector
             std::vector<std::vector<double> > regionValues(0, std::vector<double>(0,0.0));
@@ -1030,9 +874,6 @@ namespace Opm {
         double current_relaxation_;
         BVector dx_old_;
 
-        std::unique_ptr<Mat> matrix_for_preconditioner_;        
-        std::vector<std::pair<int,std::vector<int>>> overlapRowAndColumns_;
-
         std::vector<StepReport> convergence_reports_;
     public:
         /// return the StandardWells object
@@ -1058,7 +899,7 @@ namespace Opm {
         double dsMax() const { return param_.ds_max_; }
         double drMaxRel() const { return param_.dr_max_rel_; }
         double maxResidualAllowed() const { return param_.max_residual_allowed_; }
-
+        double linear_solve_setup_time_;
     public:
         std::vector<bool> wasSwitched_;
     };

@@ -322,7 +322,7 @@ namespace Opm {
                         Opm::time::StopWatch perfTimer;
                         perfTimer.start();
 
-                        ebosProblem.writeOutput(/*isSubStep=*/true);
+                        ebosProblem.writeOutput();
 
                         report.output_write_time += perfTimer.secsSinceStart();
                     }
@@ -491,6 +491,14 @@ namespace Opm {
             std::ostringstream msg;
             msg << "    Excessive chopping detected in report step "
                 << sr.back().report_step << ", substep " << sr.back().current_step << "\n";
+
+            std::set<std::string> failing_wells;
+
+            // return empty set if no report exists
+            // well failures in assembly is not yet registred
+            if(sr.back().report.empty())
+                return failing_wells;
+
             const auto& wfs = sr.back().report.back().wellFailures();
             for (const auto& wf : wfs) {
                 msg << "        Well that failed: " << wf.wellName() << "\n";
@@ -503,7 +511,6 @@ namespace Opm {
             const int rep_step = sr.back().report_step;
             const int sub_step = sr.back().current_step;
             const int sr_size = sr.size();
-            std::set<std::string> failing_wells;
             for (const auto& wf : wfs) {
                 failing_wells.insert(wf.wellName());
             }

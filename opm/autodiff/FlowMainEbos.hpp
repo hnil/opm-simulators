@@ -25,12 +25,12 @@
 
 #include <sys/utsname.h>
 
-#include <opm/simulators/ParallelFileMerger.hpp>
+#include <opm/simulators/utils/ParallelFileMerger.hpp>
 
 #include <opm/autodiff/BlackoilModelEbos.hpp>
 #include <opm/autodiff/MissingFeatures.hpp>
-#include <opm/autodiff/moduleVersion.hpp>
-#include <opm/autodiff/ExtractParallelGridInformationToISTL.hpp>
+#include <opm/simulators/utils/moduleVersion.hpp>
+#include <opm/simulators/linalg/ExtractParallelGridInformationToISTL.hpp>
 #include <opm/autodiff/SimulatorFullyImplicitBlackoilEbos.hpp>
 
 #include <opm/core/props/satfunc/RelpermDiagnostics.hpp>
@@ -41,6 +41,7 @@
 
 #include <opm/parser/eclipse/Deck/Deck.hpp>
 #include <opm/parser/eclipse/Parser/Parser.hpp>
+#include <opm/parser/eclipse/Parser/ParseContext.hpp>
 #include <opm/parser/eclipse/EclipseState/EclipseState.hpp>
 #include <opm/parser/eclipse/EclipseState/IOConfig/IOConfig.hpp>
 #include <opm/parser/eclipse/EclipseState/InitConfig/InitConfig.hpp>
@@ -58,12 +59,14 @@ NEW_PROP_TAG(OutputMode);
 NEW_PROP_TAG(EnableDryRun);
 NEW_PROP_TAG(OutputInterval);
 NEW_PROP_TAG(UseAmg);
+NEW_PROP_TAG(EnableLoggingFalloutWarning);
 
 SET_STRING_PROP(EclFlowProblem, OutputMode, "all");
 
 // TODO: enumeration parameters. we use strings for now.
 SET_STRING_PROP(EclFlowProblem, EnableDryRun, "auto");
-
+// Do not merge parallel output files or warn about them
+SET_BOOL_PROP(EclFlowProblem, EnableLoggingFalloutWarning, false);
 SET_INT_PROP(EclFlowProblem, OutputInterval, 1);
 
 END_PROPERTIES
@@ -94,7 +97,6 @@ namespace Opm
         typedef typename GET_PROP_TYPE(TypeTag, FluidSystem) FluidSystem;
 
         typedef Opm::SimulatorFullyImplicitBlackoilEbos<TypeTag> Simulator;
-        typedef typename BlackoilModelEbos<TypeTag>::ISTLSolverType ISTLSolverType;
 
         // Read the command line parameters. Throws an exception if something goes wrong.
         static int setupParameters_(int argc, char** argv)
@@ -106,9 +108,10 @@ namespace Opm
                                  "Specify if the simulation ought to be actually run, or just pretended to be");
             EWOMS_REGISTER_PARAM(TypeTag, int, OutputInterval,
                                  "Specify the number of report steps between two consecutive writes of restart data");
-            Simulator::registerParameters();
+            EWOMS_REGISTER_PARAM(TypeTag, bool, EnableLoggingFalloutWarning,
+                                 "Developer option to see whether logging was on non-root processors. In that case it will be appended to the *.DBG or *.PRT files");
 
-            ISTLSolverType::registerParameters();
+            Simulator::registerParameters();
 
             // register the parameters inherited from ebos
             Ewoms::registerAllParameters_<TypeTag>(/*finalizeRegistration=*/false);
@@ -129,28 +132,30 @@ namespace Opm
             // in flow only the deck file determines the end time of the simulation
             EWOMS_HIDE_PARAM(TypeTag, EndTime);
 
-            // time stepping is not (yet) done by the eWoms code in flow
+            // time stepping is not done by the eWoms code in flow
             EWOMS_HIDE_PARAM(TypeTag, InitialTimeStepSize);
             EWOMS_HIDE_PARAM(TypeTag, MaxTimeStepDivisions);
             EWOMS_HIDE_PARAM(TypeTag, MaxTimeStepSize);
             EWOMS_HIDE_PARAM(TypeTag, MinTimeStepSize);
             EWOMS_HIDE_PARAM(TypeTag, PredeterminedTimeStepsFile);
 
-            // flow currently uses its own linear solver
-            EWOMS_HIDE_PARAM(TypeTag, LinearSolverMaxError);
-            EWOMS_HIDE_PARAM(TypeTag, LinearSolverMaxIterations);
-            EWOMS_HIDE_PARAM(TypeTag, LinearSolverOverlapSize);
-            EWOMS_HIDE_PARAM(TypeTag, LinearSolverTolerance);
-            EWOMS_HIDE_PARAM(TypeTag, LinearSolverVerbosity);
-            EWOMS_HIDE_PARAM(TypeTag, PreconditionerRelaxation);
+            EWOMS_HIDE_PARAM(TypeTag, EclMaxTimeStepSizeAfterWellEvent);
+            EWOMS_HIDE_PARAM(TypeTag, EclRestartShrinkFactor);
+            EWOMS_HIDE_PARAM(TypeTag, EclMaxFails);
+            EWOMS_HIDE_PARAM(TypeTag, EclEnableTuning);
 
             // flow also does not use the eWoms Newton method
             EWOMS_HIDE_PARAM(TypeTag, NewtonMaxError);
             EWOMS_HIDE_PARAM(TypeTag, NewtonMaxIterations);
-            EWOMS_HIDE_PARAM(TypeTag, NewtonRawTolerance);
+            EWOMS_HIDE_PARAM(TypeTag, NewtonTolerance);
             EWOMS_HIDE_PARAM(TypeTag, NewtonTargetIterations);
             EWOMS_HIDE_PARAM(TypeTag, NewtonVerbose);
             EWOMS_HIDE_PARAM(TypeTag, NewtonWriteConvergence);
+            EWOMS_HIDE_PARAM(TypeTag, EclNewtonSumTolerance);
+            EWOMS_HIDE_PARAM(TypeTag, EclNewtonSumToleranceExponent);
+            EWOMS_HIDE_PARAM(TypeTag, EclNewtonStrictIterations);
+            EWOMS_HIDE_PARAM(TypeTag, EclNewtonRelaxedVolumeFraction);
+            EWOMS_HIDE_PARAM(TypeTag, EclNewtonRelaxedTolerance);
 
             // the default eWoms checkpoint/restart mechanism does not work with flow
             EWOMS_HIDE_PARAM(TypeTag, RestartTime);
@@ -222,9 +227,20 @@ namespace Opm
                 setupOutput();
                 setupEbosSimulator();
                 setupLogging();
-                printPRTHeader();
+                int unknownKeyWords = printPRTHeader();
+#if HAVE_MPI
+                int globalUnknownKeyWords;
+                MPI_Allreduce(&unknownKeyWords,  &globalUnknownKeyWords, 1, MPI_INT,  MPI_SUM, MPI_COMM_WORLD);
+                unknownKeyWords = globalUnknownKeyWords;
+#endif
+                if ( unknownKeyWords )
+                {
+#if HAVE_MPI
+                    MPI_Finalize();
+#endif
+                    exit(EXIT_FAILURE);
+                }
                 runDiagnostics();
-                setupLinearSolver();
                 createSimulator();
 
                 // do the actual work
@@ -321,10 +337,15 @@ namespace Opm
             std::ostringstream debugFileStream;
             std::ostringstream logFileStream;
 
-            if (boost::to_upper_copy(path(fpath.extension()).string()) == ".DATA") {
-                baseName = path(fpath.stem()).string();
-            } else {
-                baseName = path(fpath.filename()).string();
+            // Strip extension "." or ".DATA"
+            std::string extension = boost::to_upper_copy(fpath.extension().string());
+            if ( extension == ".DATA" || extension == "." )
+            {
+                baseName = boost::to_upper_copy(fpath.stem().string());
+            }
+            else
+            {
+                baseName = boost::to_upper_copy(fpath.filename().string());
             }
 
             const std::string& output_dir = eclState().getIOConfig().getOutputDir();
@@ -370,10 +391,11 @@ namespace Opm
         }
 
         // Print an ASCII-art header to the PRT and DEBUG files.
-        void printPRTHeader()
+        // \return Whether unkown keywords were seen during parsing.
+        bool printPRTHeader()
         {
           if (output_cout_) {
-              const std::string version = moduleVersionName();
+              const std::string version = moduleVersion();
               const double megabyte = 1024 * 1024;
               unsigned num_cpu = std::thread::hardware_concurrency();
               struct utsname arch;
@@ -409,7 +431,16 @@ namespace Opm
               Ewoms::Parameters::printValues<TypeTag>(ss);
 
               OpmLog::note(ss.str());
-            }
+          }
+
+              if ( mpi_rank_ == 0 )
+              {
+                  return Ewoms::Parameters::printUnused<TypeTag>(std::cerr);
+              }
+              else
+              {
+                  return false;
+              }
         }
 
         void mergeParallelLogFiles()
@@ -425,9 +456,21 @@ namespace Opm
             const std::string& output_dir = eclState().getIOConfig().getOutputDir();
             fs::path output_path(output_dir);
             fs::path deck_filename(EWOMS_GET_PARAM(TypeTag, std::string, EclDeckFileName));
+            std::string basename;
+            // Strip extension "." and ".DATA"
+            std::string extension = boost::to_upper_copy(deck_filename.extension().string());
+            if ( extension == ".DATA" || extension == "." )
+            {
+                basename = boost::to_upper_copy(deck_filename.stem().string());
+            }
+            else
+            {
+                basename = boost::to_upper_copy(deck_filename.filename().string());
+            }
             std::for_each(fs::directory_iterator(output_path),
                           fs::directory_iterator(),
-                          detail::ParallelFileMerger(output_path, deck_filename.stem().string()));
+                          detail::ParallelFileMerger(output_path, basename,
+                                                     EWOMS_GET_PARAM(TypeTag, bool, EnableLoggingFalloutWarning)));
         }
 
         void setupEbosSimulator()
@@ -546,33 +589,6 @@ namespace Opm
             }
         }
 
-        // Setup linear solver.
-        // Writes to:
-        //   linearSolver_
-        void setupLinearSolver()
-        {
-            extractParallelGridInformationToISTL(grid(), parallel_information_);
-            auto *tmp = new ISTLSolverType(parallel_information_);
-            linearSolver_.reset(tmp);
-
-            // Deactivate selection of CPR via eclipse keyword
-            // as this preconditioner is still considered experimental
-            // and fails miserably for some models.
-            if (output_cout_
-                && eclState().getSimulationConfig().useCPR()
-                && !tmp->parameters().use_cpr_)
-            {
-                std::ostringstream message;
-                message << "Ignoring request for CPRPreconditioner "
-                        << "via Eclipse keyword as it is considered "
-                        <<" experimental. To activate use "
-                        <<"\"--flow-use-cpr=true\" command "
-                        <<"line parameter.";
-                OpmLog::info(message.str());
-            }
-
-        }
-
         /// This is the main function of Flow.
         // Create simulator instance.
         // Writes to:
@@ -580,7 +596,7 @@ namespace Opm
         void createSimulator()
         {
             // Create the simulator instance.
-            simulator_.reset(new Simulator(*ebosSimulator_, *linearSolver_));
+            simulator_.reset(new Simulator(*ebosSimulator_));
         }
 
         unsigned long long getTotalSystemMemory()
@@ -602,7 +618,6 @@ namespace Opm
         FileOutputMode output_ = OUTPUT_ALL;
         bool output_to_files_ = false;
         boost::any parallel_information_;
-        std::unique_ptr<ISTLSolverType> linearSolver_;
         std::unique_ptr<Simulator> simulator_;
         std::string logFile_;
     };

@@ -20,6 +20,8 @@
 
 #include <opm/parser/eclipse/Deck/DeckKeyword.hpp>
 #include <opm/parser/eclipse/Parser/Parser.hpp>
+#include <opm/parser/eclipse/Parser/ParseContext.hpp>
+#include <opm/parser/eclipse/Parser/ErrorGuard.hpp>
 #include <opm/parser/eclipse/Parser/ParserKeywords/C.hpp>
 #include <opm/parser/eclipse/Parser/ParserKeywords/E.hpp>
 #include <opm/parser/eclipse/Parser/ParserKeywords/P.hpp>
@@ -45,7 +47,7 @@ namespace MissingFeatures {
 
 
     template <typename T>
-    void checkOptions(const DeckKeyword& keyword, std::multimap<std::string , PartiallySupported<T> >& map)
+    void checkOptions(const DeckKeyword& keyword, std::multimap<std::string , PartiallySupported<T> >& map, const ParseContext& parseContext, ErrorGuard& errorGuard)
     {
         // check for partially supported keywords.
         typename std::multimap<std::string, PartiallySupported<T> >::iterator it, itlow, itup;
@@ -57,12 +59,21 @@ namespace MissingFeatures {
                 std::string msg = "For keyword '" + it->first + "' only value " + boost::lexical_cast<std::string>(it->second.item_value)
                     + " in item " + it->second.item + " is supported by flow.\n"
                     + "In file " + keyword.getFileName() + ", line " + std::to_string(keyword.getLineNumber()) + "\n";
-                OpmLog::warning(msg);
+                parseContext.handleError(ParseContext::SIMULATOR_KEYWORD_ITEM_NOT_SUPPORTED, msg, errorGuard);
             }
         }
     }
 
-    void checkKeywords(const Deck& deck)
+    template <typename T>
+    void checkKeywords(const Deck& deck, const ParseContext& parseContext, T&& errorGuard) {
+        checkKeywords(deck, parseContext, errorGuard);
+    }
+
+    void checkKeywords(const Deck& deck) {
+        checkKeywords(deck, ParseContext(), ErrorGuard());
+    }
+
+    void checkKeywords(const Deck& deck, const ParseContext& parseContext, ErrorGuard& errorGuard)
     {
         // These keywords are supported by opm-parser, but are not supported
         // by flow. For some of them, only part of the options are supported.
@@ -74,17 +85,13 @@ namespace MissingFeatures {
             "API",
             "APIGROUP",
             "AQUCON",
-            "AQUCT",
-            "AQUTAB",
-            "AQUNUM"
-            "CARFIN"
+            "AQUNUM",
+            "BRANPROP",
+            "CARFIN",
             "COMPDATL",
-            "COMPLUMP",
             "CONNECTION",
             "CPR",
             "DATE",
-            "ECHO",
-            "EDITNNC",
             "ENDACTIO",
             "ENDFIN"
             "ENDNUM",
@@ -96,15 +103,19 @@ namespace MissingFeatures {
             "EXCEL",
             "EXTRAPMS",
             "FILLEPS",
-            "FIPNUM",
+            "FLUXTYPE",
             "FULLIMP",
+            "GCONSALE",
+            "GCONSUMP",
             "GDORIENT",
             "GECON",
             "GLIFTOPT",
             "GNETINJE",
+            "GPMAINT",
             "GRIDUNIT",
             "GRUPNET",
             "GSATPROD",
+            "GUIDERAT",
             "IMKRVD",
             "IMPES",
             "IMPTVD",
@@ -120,7 +131,7 @@ namespace MissingFeatures {
             "NETBALAN",
             "NEXTSTEP",
             "NOCASC",
-            "NOECHO",
+            "NODEPROP",
             "NOGGF",
             "NOINSPEC",
             "NOMONITO",
@@ -159,7 +170,6 @@ namespace MissingFeatures {
             "RPTPROS",
             "PRTRST",
             "RPTRUNSP",
-            "RPTSCHED",
             "RPTSMRY",
             "RPTSOL",
             "RSCONST",
@@ -194,7 +204,6 @@ namespace MissingFeatures {
             "WPAVE",
             "WPITAB",
             "WTEMP",
-            "WTEST",
             "WTRACER",
             "ZIPPY2" };
         std::multimap<std::string, PartiallySupported<std::string> > string_options;
@@ -214,10 +223,10 @@ namespace MissingFeatures {
             if (it != unsupported_keywords.end()) {
                 std::string msg = "Keyword '" + keyword.name() + "' is not supported by flow.\n"
                     + "In file " + keyword.getFileName() + ", line " + std::to_string(keyword.getLineNumber()) + "\n";
-                OpmLog::warning(msg);
+                parseContext.handleError(ParseContext::SIMULATOR_KEYWORD_NOT_SUPPORTED, msg, errorGuard);
             }
-            checkOptions<std::string>(keyword, string_options);
-            checkOptions<int>(keyword, int_options);
+            checkOptions<std::string>(keyword, string_options, parseContext, errorGuard);
+            checkOptions<int>(keyword, int_options, parseContext, errorGuard);
         }
     }
 } // namespace MissingFeatures
