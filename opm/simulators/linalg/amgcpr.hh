@@ -26,94 +26,94 @@ namespace Dune
 {
   namespace Amg
   {
-// #if !DUNE_VERSION_NEWER(DUNE_ISTL, 2, 5)
-//   template<class M, class V>
-//   struct DirectSolverSelector
-//   {
-// #if DISABLE_AMG_DIRECTSOLVER
-//     static constexpr bool isDirectSolver = false;
-//     using type = void;
-// #elif HAVE_SUITESPARSE_UMFPACK
-//     using field_type = typename M::field_type;
-//     using type = typename std::conditional<std::is_same<double, field_type>::value, UMFPack<M>,
-//                                            typename std::conditional<std::is_same<std::complex<double>, field_type>::value,
-//                                                                      UMFPack<M>,
-//                                                                      void>::type>::type;
-//     static constexpr bool isDirectSolver = std::is_same<UMFPack<M>, type>::value;
-// #elif HAVE_SUPERLU
-//     static constexpr bool isDirectSolver = true;
-//     using type = SuperLU<M>;
-// #else
-//     static constexpr bool isDirectSolver = false;
-//     using type = void;
-// #endif
+#if !DUNE_VERSION_NEWER(DUNE_ISTL, 2, 5)
+  template<class M, class V>
+  struct DirectSolverSelector
+  {
+#if DISABLE_AMG_DIRECTSOLVER
+    static constexpr bool isDirectSolver = false;
+    using type = void;
+#elif HAVE_SUITESPARSE_UMFPACK
+    using field_type = typename M::field_type;
+    using type = typename std::conditional<std::is_same<double, field_type>::value, UMFPack<M>,
+                                           typename std::conditional<std::is_same<std::complex<double>, field_type>::value,
+                                                                     UMFPack<M>,
+                                                                     void>::type>::type;
+    static constexpr bool isDirectSolver = std::is_same<UMFPack<M>, type>::value;
+#elif HAVE_SUPERLU
+    static constexpr bool isDirectSolver = true;
+    using type = SuperLU<M>;
+#else
+    static constexpr bool isDirectSolver = false;
+    using type = void;
+#endif
 
-//     static type* create(const M& mat, bool verbose, bool reusevector )
-//     {
-//       return create(mat, verbose, reusevector, std::integral_constant<bool, isDirectSolver>());
-//     }
-//     static type* create(const M& /* mat */, bool /* verbose */, bool /* reusevector */, std::integral_constant<bool, false> )
-//     {
-//       DUNE_THROW(NotImplemented,"DirectSolver not selected");
-//       return nullptr;
-//     }
+    static type* create(const M& mat, bool verbose, bool reusevector )
+    {
+      return create(mat, verbose, reusevector, std::integral_constant<bool, isDirectSolver>());
+    }
+    static type* create(const M& /* mat */, bool /* verbose */, bool /* reusevector */, std::integral_constant<bool, false> )
+    {
+      DUNE_THROW(NotImplemented,"DirectSolver not selected");
+      return nullptr;
+    }
 
-//     static type* create(const M& mat, bool verbose, bool reusevector, std::integral_constant<bool, true> )
-//     {
-//       return new type(mat, verbose, reusevector);
-//     }
-//     static std::string name()
-//     {
-//       if(std::is_same<type,void>::value)
-//         return "None";
-// #if HAVE_SUITESPARSE_UMFPACK
-//       if(std::is_same<type, UMFPack<M> >::value)
-//         return "UMFPack";
-// #endif
-// #if HAVE_SUPERLU
-//       if(std::is_same<type, SuperLU<M> >::value)
-//         return "SuperLU";
-// #endif
-//     }
-//   };
+    static type* create(const M& mat, bool verbose, bool reusevector, std::integral_constant<bool, true> )
+    {
+      return new type(mat, verbose, reusevector);
+    }
+    static std::string name()
+    {
+      if(std::is_same<type,void>::value)
+        return "None";
+#if HAVE_SUITESPARSE_UMFPACK
+      if(std::is_same<type, UMFPack<M> >::value)
+        return "UMFPack";
+#endif
+#if HAVE_SUPERLU
+      if(std::is_same<type, SuperLU<M> >::value)
+        return "SuperLU";
+#endif
+    }
+  };
 
-// #endif
+#endif
 
 
-// #if HAVE_MPI
-//   template<class M, class T>
-//   void redistributeMatrixAmg(M&, M&, SequentialInformation&, SequentialInformation&, T&)
-//   {
-//     // noop
-//   }
+#if HAVE_MPI
+  template<class M, class T>
+  void redistributeMatrixAmg(M&, M&, SequentialInformation&, SequentialInformation&, T&)
+  {
+    // noop
+  }
 
-//   template<class M, class PI>
-//   typename std::enable_if<!std::is_same<PI,SequentialInformation>::value,void>::type
-//   redistributeMatrixAmg(M& mat, M& matRedist, PI& info, PI& infoRedist,
-//                         Dune::RedistributeInformation<PI>& redistInfo)
-//   {
-//     info.buildGlobalLookup(mat.N());
-//     redistributeMatrixEntries(mat, matRedist, info, infoRedist, redistInfo);
-//     info.freeGlobalLookup();
-//   }
-// #endif
+  template<class M, class PI>
+  typename std::enable_if<!std::is_same<PI,SequentialInformation>::value,void>::type
+  redistributeMatrixAmg(M& mat, M& matRedist, PI& info, PI& infoRedist,
+                        Dune::RedistributeInformation<PI>& redistInfo)
+  {
+    info.buildGlobalLookup(mat.N());
+    redistributeMatrixEntries(mat, matRedist, info, infoRedist, redistInfo);
+    info.freeGlobalLookup();
+  }
+#endif
 
-//     /**
-//      * @defgroup ISTL_PAAMG Parallel Algebraic Multigrid
-//      * @ingroup ISTL_Prec
-//      * @brief A Parallel Algebraic Multigrid based on Agglomeration.
-//      */
+    /**
+     * @defgroup ISTL_PAAMG Parallel Algebraic Multigrid
+     * @ingroup ISTL_Prec
+     * @brief A Parallel Algebraic Multigrid based on Agglomeration.
+     */
 
-//     /**
-//      * @addtogroup ISTL_PAAMG
-//      *
-//      * @{
-//      */
+    /**
+     * @addtogroup ISTL_PAAMG
+     *
+     * @{
+     */
 
-//     /** @file
-//      * @author Markus Blatt
-//      * @brief The AMG preconditioner.
-//      */
+    /** @file
+     * @author Markus Blatt
+     * @brief The AMG preconditioner.
+     */
 
     template<class M, class X, class S, class P, class K, class A>
     class KAMG;
@@ -652,6 +652,8 @@ namespace Dune
         }
         else
         {
+          if(verbosity_>0 && matrices_->parallelInformation().coarsest()->communicator().rank()==0)
+            std::cout<< "Using a bicgstab on coarse solver level"  << std::endl;
           if(matrices_->parallelInformation().coarsest().isRedistributed())
           {
             if(matrices_->matrices().coarsest().getRedistributed().getmat().N()>0)
@@ -665,7 +667,7 @@ namespace Dune
                                                                    std::conditional<std::is_same<PI,SequentialInformation>::value,
                                                                                     Dune::SeqScalarProduct<X>,
                                                                                     Dune::OverlappingSchwarzScalarProduct<X,PI> >::type&>(*scalarProduct_),
-                                                  *coarseSmoother_, 1E-2, 1000, 0));
+                                                  *coarseSmoother_, 1E-6, 1000, verbosity_));
             else
               solver_.reset();
           }else
@@ -676,7 +678,7 @@ namespace Dune
                                                                    std::conditional<std::is_same<PI,SequentialInformation>::value,
                                                                                     Dune::SeqScalarProduct<X>,
                                                                                     Dune::OverlappingSchwarzScalarProduct<X,PI> >::type&>(*scalarProduct_),
-                                                  *coarseSmoother_, 1E-2, 1000, 0));
+                                                  *coarseSmoother_, 1E-6, 1000, verbosity_));
             // // we have to allocate these types using the rebound allocator
             // // in order to ensure that we fulfill the alignement requirements
             // using Alloc = typename A::template rebind<BiCGSTABSolver<X>>::other;
