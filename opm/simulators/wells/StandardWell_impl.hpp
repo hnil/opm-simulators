@@ -605,7 +605,7 @@ namespace Opm
                    WellState& well_state,
                    Opm::DeferredLogger& deferred_logger)
     {
-
+	assert(well_state.currentControls()[index_of_well_] == well_controls_get_current(this->well_controls_));
         checkWellOperability(ebosSimulator, well_state, deferred_logger);
 
         if (!this->isOperable()) return;

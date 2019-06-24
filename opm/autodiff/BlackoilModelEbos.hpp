@@ -258,6 +258,7 @@ namespace Opm {
             ebosSimulator_.model().invalidateIntensiveQuantitiesCache(/*timeIdx=*/0);
 
             deserialize_well(timer.simulationTimeElapsed(),/*pre_step*/ false);
+	    wellModel().resetWellControlFromState();
             double dt = timer.stepLengthTaken();
             //wellModel().prepareTimeStep();
             assert( abs(dt- ebosSimulator_.timeStepSize()) < 1e-2);
