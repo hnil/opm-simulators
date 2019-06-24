@@ -23,8 +23,8 @@
 
 #include <opm/material/common/ResetLocale.hpp>
 #include <opm/grid/CpGrid.hpp>
-#include <opm/autodiff/SimulatorFullyImplicitBlackoilEbos.hpp>
-#include <opm/autodiff/FlowMainEbos.hpp>
+#include <opm/simulators/flow/SimulatorFullyImplicitBlackoilEbos.hpp>
+#include <opm/simulators/flow/FlowMainEbos.hpp>
 
 #if HAVE_DUNE_FEM
 #include <dune/fem/misc/mpimanager.hh>
@@ -40,7 +40,8 @@ void flowEbosBlackoilSetDeck(double setupTime, Deck &deck, EclipseState& eclStat
     typedef GET_PROP_TYPE(TypeTag, Vanguard) Vanguard;
 
     Vanguard::setExternalSetupTime(setupTime);
-    Vanguard::setExternalDeck(&deck, &eclState);
+    Vanguard::setExternalDeck(&deck);
+    Vanguard::setExternalEclState(&eclState);
     Vanguard::setExternalSchedule(&schedule);
     Vanguard::setExternalSummaryConfig(&summaryConfig);
 }

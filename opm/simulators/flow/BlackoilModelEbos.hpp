@@ -29,15 +29,15 @@
 
 #include <opm/simulators/timestepping/AdaptiveTimeSteppingEbos.hpp>
 
-#include <opm/autodiff/NonlinearSolverEbos.hpp>
-#include <opm/autodiff/BlackoilModelParametersEbos.hpp>
+#include <opm/simulators/flow/NonlinearSolverEbos.hpp>
+#include <opm/simulators/flow/BlackoilModelParametersEbos.hpp>
 #include <opm/simulators/wells/BlackoilWellModel.hpp>
 #include <opm/simulators/aquifers/BlackoilAquiferModel.hpp>
 #include <opm/simulators/wells/WellConnectionAuxiliaryModule.hpp>
-#include <opm/autodiff/BlackoilDetails.hpp>
+#include <opm/simulators/flow/countGlobalCells.hpp>
 
 #include <opm/grid/UnstructuredGrid.h>
-#include <opm/core/simulator/SimulatorReport.hpp>
+#include <opm/simulators/timestepping/SimulatorReport.hpp>
 #include <opm/simulators/linalg/ParallelIstlInformation.hpp>
 #include <opm/core/props/phaseUsageFromDeck.hpp>
 #include <opm/common/ErrorMacros.hpp>
@@ -666,8 +666,8 @@ namespace Opm {
         /// r is the residual.
         void solveJacobianSystem(BVector& x)
         {
-   
-	    auto& ebosJac = ebosSimulator_.model().linearizer().jacobian();
+
+            auto& ebosJac = ebosSimulator_.model().linearizer().jacobian();
             auto& ebosResid = ebosSimulator_.model().linearizer().residual();
 
             // set initial guess
@@ -1171,6 +1171,7 @@ namespace Opm {
         }
 
     private:
+
         double dpMaxRel() const { return param_.dp_max_rel_; }
         double dsMax() const { return param_.ds_max_; }
         double drMaxRel() const { return param_.dr_max_rel_; }

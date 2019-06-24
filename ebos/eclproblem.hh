@@ -152,6 +152,9 @@ NEW_PROP_TAG(EnableApiTracking);
 // The class which deals with ECL aquifers
 NEW_PROP_TAG(EclAquiferModel);
 
+// In experimental mode, decides if the aquifer model should be enabled or not
+NEW_PROP_TAG(EclEnableAquifers);
+
 // time stepping parameters
 NEW_PROP_TAG(EclMaxTimeStepSizeAfterWellEvent);
 NEW_PROP_TAG(EclRestartShrinkFactor);
@@ -231,6 +234,9 @@ SET_TYPE_PROP(EclBaseProblem, EclAquiferModel, Ewoms::EclBaseAquiferModel<TypeTa
 
 // use the built-in proof of concept well model by default
 SET_TYPE_PROP(EclBaseProblem, EclWellModel, EclWellManager<TypeTag>);
+
+// Enable aquifers by default in experimental mode
+SET_BOOL_PROP(EclBaseProblem, EclEnableAquifers, true);
 
 // Enable gravity
 SET_BOOL_PROP(EclBaseProblem, EnableGravity, true);
@@ -479,6 +485,9 @@ public:
         if (enableExperiments)
             EWOMS_REGISTER_PARAM(TypeTag, bool, EclEnableDriftCompensation,
                                  "Enable partial compensation of systematic mass losses via the source term of the next time step");
+        if (enableExperiments)
+            EWOMS_REGISTER_PARAM(TypeTag, bool, EclEnableAquifers,
+                                 "Enable analytic and numeric aquifer models");
         EWOMS_REGISTER_PARAM(TypeTag, Scalar, EclMaxTimeStepSizeAfterWellEvent,
                              "Maximum time step size after an well event");
         EWOMS_REGISTER_PARAM(TypeTag, Scalar, EclRestartShrinkFactor,
@@ -560,11 +569,11 @@ public:
             return
                 "The Ecl-deck Black-Oil reservoir Simulator (ebos); a hydrocarbon "
                 "reservoir simulation program that processes ECL-formatted input "
-                "files and is provided by the Open Porous Media project "
+                "files that is part of the Open Porous Media project "
                 "(https://opm-project.org).\n"
                 "\n"
-                "THE `ebos` SIMULATOR IS FOR RESEARCH PURPOSES ONLY! For industrial "
-                "applications, use `flow`.";
+                "THE GOAL OF THE `ebos` SIMULATOR IS TO CATER FOR THE NEEDS OF "
+                "DEVELOPMENT AND RESEARCH. No guarantees are made for production use!";
         else
             return briefDescription_;
     }
@@ -604,6 +613,11 @@ public:
             enableDriftCompensation_ = false;
 
         enableEclOutput_ = EWOMS_GET_PARAM(TypeTag, bool, EnableEclOutput);
+
+        if (enableExperiments)
+            enableAquifers_ = EWOMS_GET_PARAM(TypeTag, bool, EclEnableAquifers);
+        else
+            enableAquifers_ = true;
 
         enableTuning_ = EWOMS_GET_PARAM(TypeTag, bool, EclEnableTuning);
         initialTimeStepSize_ = EWOMS_GET_PARAM(TypeTag, Scalar, InitialTimeStepSize);
@@ -675,7 +689,11 @@ public:
         readThermalParameters_();
         transmissibilities_.finishInit();
 
-        readInitialCondition_();
+        const auto& initconfig = eclState.getInitConfig();
+        if (initconfig.restartRequested())
+            readEclRestartSolution_();
+        else
+            readInitialCondition_();
 
         updatePffDofData_();
 
@@ -706,8 +724,11 @@ public:
 
         // after finishing the initialization and writing the initial solution, we move
         // to the first "real" episode/report step
-        simulator.startNextEpisode(timeMap.getTimeStepLength(0));
-        simulator.setEpisodeIndex(0);
+        // for restart the episode index and start is already set
+        if (!initconfig.restartRequested()) {
+            simulator.startNextEpisode(timeMap.getTimeStepLength(0));
+            simulator.setEpisodeIndex(0);
+        }
     }
 
     void prefetch(const Element& elem) const
@@ -821,8 +842,10 @@ public:
         wellModel_.beginEpisode(false);
         
         // set up the aquifers for the next episode.
-        aquiferModel_.beginEpisode();
-        
+        if (enableAquifers_)
+            // set up the aquifers for the next episode.
+            aquiferModel_.beginEpisode();
+
         // set the size of the initial time step of the episode
         Scalar dt = limitNextTimeStepSize_(simulator.episodeLength());
         if (episodeIdx == 0 || tuningEvent)
@@ -866,7 +889,8 @@ public:
             this->model().invalidateIntensiveQuantitiesCache(/*timeIdx=*/0);
 
         wellModel_.beginTimeStep();
-        aquiferModel_.beginTimeStep();
+        if (enableAquifers_)
+            aquiferModel_.beginTimeStep();
         tracerModel_.beginTimeStep();
 
     }
@@ -888,7 +912,8 @@ public:
     void beginIteration()
     {
         wellModel_.beginIteration();
-        aquiferModel_.beginIteration();
+        if (enableAquifers_)
+            aquiferModel_.beginIteration();
     }
 
     /*!
@@ -897,7 +922,8 @@ public:
     void endIteration()
     {
         wellModel_.endIteration();
-        aquiferModel_.endIteration();
+        if (enableAquifers_)
+            aquiferModel_.endIteration();
     }
 
     /*!
@@ -911,15 +937,19 @@ public:
             // the right thing (i.e., the mass change inside the whole reservoir must be
             // equivalent to the fluxes over the grid's boundaries plus the source rates
             // specified by the problem)
-            std::cout << "checking conservativeness of solution\n";
+            int rank = this->simulator().gridView().comm().rank();
+            if (rank == 0)
+                std::cout << "checking conservativeness of solution\n";
             this->model().checkConservativeness(/*tolerance=*/-1, /*verbose=*/true);
-            std::cout << "solution is sufficiently conservative\n";
+            if (rank == 0)
+                std::cout << "solution is sufficiently conservative\n";
         }
 #endif // NDEBUG
 
         const auto& simulator = this->simulator();
         wellModel_.endTimeStep();
-        aquiferModel_.endTimeStep();
+        if (enableAquifers_)
+            aquiferModel_.endTimeStep();
         tracerModel_.endTimeStep();
 
         // deal with DRSDT and DRVDT
@@ -958,24 +988,10 @@ public:
     }
 
     /*!
-     * \brief Returns true if the current solution should be written
-     *        to disk for visualization.
-     *
-     * For the ECL simulator we only write at the end of
-     * episodes/report steps...
+     * \brief Always returns true. The ecl output writer takes care of the rest
      */
     bool shouldWriteOutput() const
-    {
-        const auto& simulator = this->simulator();
-        if (simulator.timeStepIndex() < 0)
-            // always write the initial solution
-            return true;
-
-        if (EWOMS_GET_PARAM(TypeTag, bool, EnableWriteAllSolutions))
-            return true;
-
-        return simulator.episodeWillBeOver();
-    }
+    { return true; }
 
     /*!
      * \brief Returns true if an eWoms restart file should be written to disk.
@@ -990,14 +1006,15 @@ public:
      * \brief Write the requested quantities of the current solution into the output
      *        files.
      */
-    void writeOutput(bool isSubStep, bool verbose = true)
+    void writeOutput(bool verbose = true)
     {
-        assert(!this->simulator().episodeWillBeOver() == isSubStep);
-
         // use the generic code to prepare the output fields and to
         // write the desired VTK files.
-        ParentType::writeOutput(isSubStep, verbose);
+        ParentType::writeOutput(verbose);
 
+        bool isSubStep = !EWOMS_GET_PARAM(TypeTag, bool, EnableWriteAllSolutions) && !this->simulator().episodeWillBeOver();
+
+        eclWriter_->evalSummaryState(isSubStep);
         if (enableEclOutput_)
             eclWriter_->writeOutput(isSubStep);
     }
@@ -1469,10 +1486,6 @@ public:
      */
     void initialSolutionApplied()
     {
-        const auto& simulator = this->simulator();
-        const auto& vanguard = simulator.vanguard();
-        const auto& eclState = vanguard.eclState();
-
         // initialize the wells. Note that this needs to be done after initializing the
         // intrinsic permeabilities and the after applying the initial solution because
         // the well model uses these...
@@ -1485,11 +1498,8 @@ public:
 
         updateCompositionChangeLimits_();
 
-        aquiferModel_.initialSolutionApplied();
-
-        const auto& initconfig = eclState.getInitConfig();
-        if (initconfig.restartRequested())
-            readEclRestartSolution_();
+        if (enableAquifers_)
+            aquiferModel_.initialSolutionApplied();
     }
 
     /*!
@@ -1517,7 +1527,8 @@ public:
             assert(Opm::isfinite(rate[eqIdx]));
         }
 
-        aquiferModel_.addToSource(rate, context, spaceIdx, timeIdx);
+        if (enableAquifers_)
+            aquiferModel_.addToSource(rate, context, spaceIdx, timeIdx);
 
         // if requested, compensate systematic mass loss for cells which were "well
         // behaved" in the last time step
@@ -1835,7 +1846,8 @@ private:
     void checkDeckCompatibility_() const
     {
         const auto& deck = this->simulator().vanguard().deck();
-        bool beVerbose = this->simulator().gridView().comm().rank() == 0;
+        const auto& comm = this->simulator().gridView().comm();
+        bool beVerbose = comm.rank() == 0;
 
         if (enableApiTracking)
             throw std::logic_error("API tracking is not yet implemented but requested at compile time.");
@@ -2448,7 +2460,7 @@ private:
         const auto& eclState = simulator.vanguard().eclState();
         const auto& timeMap = schedule.getTimeMap();
         const auto& initconfig = eclState.getInitConfig();
-        int episodeIdx = initconfig.getRestartStep() - 1;
+        int episodeIdx = initconfig.getRestartStep();
 
         simulator.setStartTime(timeMap.getStartTime(/*timeStepIdx=*/0));
         simulator.setTime(timeMap.getTimePassedUntil(episodeIdx));
@@ -2477,9 +2489,6 @@ private:
             Opm::OpmLog::warning("NO_POLYMW_RESTART", msg);
             polymerMoleWeight_.resize(numElems, 0.0);
         }
-
-        // this is a hack to preserve the initial fluid states
-        auto tmpInitialFs = initialFluidStates_;
 
         for (size_t elemIdx = 0; elemIdx < numElems; ++elemIdx) {
             auto& elemFluidState = initialFluidStates_[elemIdx];
@@ -2510,8 +2519,10 @@ private:
             for (size_t pvtRegionIdx = 0; pvtRegionIdx < maxDRv_.size(); ++pvtRegionIdx)
                 maxDRv_[pvtRegionIdx] = oilVaporizationControl.getMaxDRVDT(pvtRegionIdx)*simulator.timeStepSize();
 
-        if (tracerModel().numTracers() > 0)
-            std::cout << "Warning: Restart is not implemented for the tracer model, it will initialize with initial tracer concentration" << std::endl;
+        if (tracerModel().numTracers() > 0 && this->gridView().comm().rank() == 0)
+            std::cout << "Warning: Restart is not implemented for the tracer model, it will initialize itself "
+                      << "with the initial tracer concentration.\n"
+                      << std::flush;
 
         // assign the restart solution to the current solution. note that we still need
         // to compute real initial solution after this because the initial fluid states
@@ -2537,12 +2548,6 @@ private:
         // 100% correctly for such elements, let's play safe and explicitly synchronize
         // using message passing.
         this->model().syncOverlap();
-
-        // this is a hack to preserve the initial fluid states
-        initialFluidStates_ = tmpInitialFs;
-        // make sure that the stuff which needs to be done at the beginning of an episode
-        // is run.
-        this->beginEpisode();
 
         eclWriter_->endRestart();
     }
@@ -2923,6 +2928,7 @@ private:
 
         if (vanguard.deck().hasKeyword("BC")) {
             nonTrivialBoundaryConditions_ = true;
+
             size_t numCartDof = vanguard.cartesianSize();
             unsigned numElems = vanguard.gridView().size(/*codim=*/0);
             std::vector<int> cartesianToCompressedElemIdx(numCartDof);
@@ -3043,6 +3049,12 @@ private:
                                 }
                             }
                         }
+                        // TODO: either the real initial solution needs to be computed or read from the restart file
+                        const auto& eclState = simulator.vanguard().eclState();
+                        const auto& initconfig = eclState.getInitConfig();
+                        if (initconfig.restartRequested()) {
+                            throw std::logic_error("restart is not compatible with using free boundary conditions");
+                        }
                     } else {
                         throw std::logic_error("invalid type for BC. Use FREE or RATE");
                     }
@@ -3065,10 +3077,6 @@ private:
         // first thing in the morning, limit the time step size to the maximum size
         dtNext = std::min(dtNext, maxTimeStepSize_);
 
-        // use at least slightly more than half of the maximum time step size by default
-        if (dtNext < maxTimeStepSize_ && maxTimeStepSize_ < dtNext*2)
-            dtNext = 1.01 * maxTimeStepSize_/2.0;
-
         Scalar remainingEpisodeTime =
             simulator.episodeStartTime() + simulator.episodeLength()
             - (simulator.startTime() + simulator.time());
@@ -3081,16 +3089,18 @@ private:
             // necessary, but it should not hurt and is more fool-proof
             dtNext = std::min(maxTimeStepSize_, remainingEpisodeTime/2.0);
 
-        // if a well event occured, respect the limit for the maximum time step after
-        // that, too
-        int reportStepIdx = std::max(episodeIdx, 0);
-        bool wellEventOccured =
-            events.hasEvent(Opm::ScheduleEvents::NEW_WELL, reportStepIdx)
-            || events.hasEvent(Opm::ScheduleEvents::PRODUCTION_UPDATE, reportStepIdx)
-            || events.hasEvent(Opm::ScheduleEvents::INJECTION_UPDATE, reportStepIdx)
-            || events.hasEvent(Opm::ScheduleEvents::WELL_STATUS_CHANGE, reportStepIdx);
-        if (episodeIdx >= 0 && wellEventOccured && maxTimeStepAfterWellEvent_ > 0)
-            dtNext = std::min(dtNext, maxTimeStepAfterWellEvent_);
+        if (simulator.episodeStarts()) {
+            // if a well event occured, respect the limit for the maximum time step after
+            // that, too
+            int reportStepIdx = std::max(episodeIdx, 0);
+            bool wellEventOccured =
+                    events.hasEvent(Opm::ScheduleEvents::NEW_WELL, reportStepIdx)
+                    || events.hasEvent(Opm::ScheduleEvents::PRODUCTION_UPDATE, reportStepIdx)
+                    || events.hasEvent(Opm::ScheduleEvents::INJECTION_UPDATE, reportStepIdx)
+                    || events.hasEvent(Opm::ScheduleEvents::WELL_STATUS_CHANGE, reportStepIdx);
+            if (episodeIdx >= 0 && wellEventOccured && maxTimeStepAfterWellEvent_ > 0)
+                dtNext = std::min(dtNext, maxTimeStepAfterWellEvent_);
+        }
 
         return dtNext;
     }
@@ -3141,6 +3151,7 @@ private:
     GlobalEqVector drift_;
 
     EclWellModel wellModel_;
+    bool enableAquifers_;
     EclAquiferModel aquiferModel_;
 
     bool enableEclOutput_;

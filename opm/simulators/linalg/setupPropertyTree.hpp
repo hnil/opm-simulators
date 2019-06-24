@@ -1,5 +1,5 @@
 /*
-  Copyright 2015 SINTEF ICT, Applied Mathematics.
+  Copyright 2019 SINTEF Digital, Mathematics and Cybernetics.
 
   This file is part of the Open Porous Media project (OPM).
 
@@ -17,16 +17,18 @@
   along with OPM.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#ifndef OPM_MPIUTILITIES_HEADER_INCLUDED
-#define OPM_MPIUTILITIES_HEADER_INCLUDED
+#ifndef OPM_SETUPPROPERTYTREE_HEADER_INCLUDED
+#define OPM_SETUPPROPERTYTREE_HEADER_INCLUDED
 
-#include <boost/any.hpp>
+#include <opm/simulators/linalg/FlowLinearSolverParameters.hpp>
+
+#include <boost/property_tree/ptree.hpp>
 
 namespace Opm
 {
-    /// Return true if this is a serial run, or rank zero on an MPI run.
-    bool isIORank(const boost::any& parallel_info);
+
+boost::property_tree::ptree setupPropertyTree(const FlowLinearSolverParameters& p);
 
 } // namespace Opm
 
-#endif // OPM_MPIUTILITIES_HEADER_INCLUDED
+#endif // OPM_SETUPPROPERTYTREE_HEADER_INCLUDED

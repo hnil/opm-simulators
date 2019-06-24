@@ -30,10 +30,13 @@ NEW_PROP_TAG(NumWellAdjoint);
 END_PROPERTIES
 
 
+#include <opm/simulators/wells/RateConverter.hpp>
 #include <opm/simulators/wells/WellInterface.hpp>
 #include <opm/simulators/linalg/ISTLSolverEbos.hpp>
-#include <opm/autodiff/RateConverter.hpp>
 #include <dune/istl/matrixmarket.hh>
+#include <opm/material/densead/DynamicEvaluation.hpp>
+#include <dune/common/dynvector.hh>
+#include <dune/common/dynmatrix.hh>
 
 namespace Opm
 {
@@ -96,10 +99,6 @@ namespace Opm
         // TODO: we should have indices for the well equations and well primary variables separately
         static const int Bhp = numStaticWellEq - numWellControlEq;
 
-        // total number of the well equations and primary variables
-        // for StandardWell, no extra well equations will be used.
-        static const int numWellEq = numStaticWellEq;
-
         using typename Base::Scalar;
 
 
@@ -122,29 +121,29 @@ namespace Opm
         // B  D ]   x_well]      res_well]
 
         // the vector type for the res_well and x_well
-        typedef Dune::FieldVector<Scalar, numWellEq> VectorBlockWellType;
+        typedef Dune::DynamicVector<Scalar> VectorBlockWellType;
         typedef Dune::BlockVector<VectorBlockWellType> BVectorWell;
 
-	typedef Dune::FieldVector<Scalar, 1> VectorBlockWellCtrlType;
-	typedef Dune::BlockVector<VectorBlockWellCtrlType> BVectorWellCtrl;
+//	typedef Dune::FieldVector<Scalar, 1> VectorBlockWellCtrlType;
+//	typedef Dune::BlockVector<VectorBlockWellCtrlType> BVectorWellCtrl;
 	
 	
         // the matrix type for the diagonal matrix D l
-        typedef Dune::FieldMatrix<Scalar, numWellEq, numWellEq > DiagMatrixBlockWellType;
-        typedef Dune::FieldMatrix<Scalar, numWellEq, 1 > DiagMatrixBlockWellAdjointType;
-        typedef Dune::BCRSMatrix <DiagMatrixBlockWellType> DiagMatWell;
-        typedef Dune::BCRSMatrix <DiagMatrixBlockWellAdjointType> DiagMatWellCtrl;
+//        typedef Dune::FieldMatrix<Scalar, numWellEq, numWellEq > DiagMatrixBlockWellType;
+//        typedef Dune::FieldMatrix<Scalar, numWellEq, 1 > DiagMatrixBlockWellAdjointType;
+//        typedef Dune::BCRSMatrix <DiagMatrixBlockWellType> DiagMatWell;
+//        typedef Dune::BCRSMatrix <DiagMatrixBlockWellAdjointType> DiagMatWellCtrl;
 
         // the matrix type for the non-diagonal matrix B and C^T
-        typedef Dune::FieldMatrix<Scalar, numWellEq, numEq>  OffDiagMatrixBlockWellType;
+        typedef Dune::DynamicMatrix<Scalar> OffDiagMatrixBlockWellType;
         typedef Dune::BCRSMatrix<OffDiagMatrixBlockWellType> OffDiagMatWell;
 
         // for adjoint
-        typedef Dune::FieldMatrix<Scalar, 1, numEq>  OffDiagMatrixBlockWellAdjointType;
-        typedef Dune::BCRSMatrix<OffDiagMatrixBlockWellAdjointType> OffDiagMatWellCtrl;
+//        typedef Dune::FieldMatrix<Scalar, 1, numEq>  OffDiagMatrixBlockWellAdjointType;
+//        typedef Dune::BCRSMatrix<OffDiagMatrixBlockWellAdjointType> OffDiagMatWellCtrl;
 
         // added extra space in derivative to have control derivatives
-        typedef DenseAd::Evaluation<double, /*size=*/numEq + numWellEq+numWellAdjoint> EvalWell;
+        typedef DenseAd::Evaluation<Scalar, /*size=*/numStaticWellEq + numEq + 1 + numWellAdjoint> EvalWell;
 
         using Base::contiSolventEqIdx;
         using Base::contiPolymerEqIdx;
@@ -326,6 +325,10 @@ namespace Opm
         using Base::perf_length_;
         using Base::bore_diameters_;
 
+        // total number of the well equations and primary variables
+        // there might be extra equations be used, numWellEq will be updated during the initialization
+        int numWellEq_ = numStaticWellEq;
+
         // densities of the fluid in each perforation
         std::vector<double> perf_densities_;
         // pressure drop between different perforations
@@ -348,19 +351,19 @@ namespace Opm
         DiagMatWell invDuneD_;
 
         // for adjoint
-        OffDiagMatWellCtrl duneCA_;
+        OffDiagMatWell duneCA_;
         //OffDiagMatWellAdjoint duneCA_;
-        DiagMatWellCtrl duneDA_;
+        DiagMatWell duneDA_;
 
         // quatities forobjective function
         Scalar objval_;
-        mutable BVectorWellCtrl objder_;
+        mutable BVectorWell objder_;
         // well, cells, res primary var
         mutable BVector  objder_adjres_;
         // ... well, well_primary variables
         mutable BVectorWell  objder_adjwell_;
         // ... well, control variables
-        mutable BVectorWellCtrl objder_adjctrl_;
+        mutable BVectorWell objder_adjctrl_;
 
 
 
@@ -512,6 +515,10 @@ namespace Opm
         void updatePrimaryVariablesNewton(const BVectorWell& dwells,
                                           const WellState& well_state) const;
 
+        // update extra primary vriables if there are any
+        void updateExtraPrimaryVariables(const BVectorWell& dwells) const;
+
+
         void updateWellStateFromPrimaryVariables(WellState& well_state, Opm::DeferredLogger& deferred_logger) const;
 
         void updateThp(WellState& well_state, Opm::DeferredLogger& deferred_logger) const;
@@ -528,15 +535,13 @@ namespace Opm
         // mostly related to BHP limit and THP limit
         virtual void checkWellOperability(const Simulator& ebos_simulator,
                                           const WellState& well_state,
-                                          Opm::DeferredLogger& deferred_logger
-                                          ) override;
+                                          Opm::DeferredLogger& deferred_logger) override;
 
         // check whether the well is operable under the current reservoir condition
         // mostly related to BHP limit and THP limit
         void updateWellOperability(const Simulator& ebos_simulator,
                                    const WellState& well_state,
-                                   Opm::DeferredLogger& deferred_logger
-                                   );
+                                   Opm::DeferredLogger& deferred_logger);
 
         // check whether the well is operable under BHP limit with current reservoir condition
         void checkOperabilityUnderBHPLimitProducer(const Simulator& ebos_simulator, Opm::DeferredLogger& deferred_logger);
@@ -592,8 +597,35 @@ namespace Opm
                                          WellState& well_state, WellTestState& welltest_state,
                                          Opm::DeferredLogger& deferred_logger) override;
 
+        // calculate the skin pressure based on water velocity, throughput and polymer concentration.
+        // throughput is used to describe the formation damage during water/polymer injection.
+        // calculated skin pressure will be applied to the drawdown during perforation rate calculation
+        // to handle the effect from formation damage.
+        EvalWell pskin(const double throuhgput,
+                       const EvalWell& water_velocity,
+                       const EvalWell& poly_inj_conc,
+                       Opm::DeferredLogger& deferred_logger) const;
+
+        // calculate the skin pressure based on water velocity, throughput during water injection.
+        EvalWell pskinwater(const double throughput,
+                            const EvalWell& water_velocity,
+                            Opm::DeferredLogger& deferred_logger) const;
+
+        // calculate the injecting polymer molecular weight based on the througput and water velocity
+        EvalWell wpolymermw(const double throughput,
+                            const EvalWell& water_velocity,
+                            Opm::DeferredLogger& deferred_logger) const;
+
+        // handle the extra equations for polymer injectivity study
+        void handleInjectivityRateAndEquations(const IntensiveQuantities& int_quants,
+                                               const WellState& well_state,
+                                               const int perf,
+                                               std::vector<EvalWell>& cq_s,
+                                               Opm::DeferredLogger& deferred_logger);
+
         virtual void updateWaterThroughput(const double dt, WellState& well_state) const override;
 
+        // checking the convergence of the well control equations
         void checkConvergenceControlEq(ConvergenceReport& report,
                                        DeferredLogger& deferred_logger) const;
 

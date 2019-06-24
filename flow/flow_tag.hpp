@@ -20,11 +20,12 @@
 */
 #ifndef FLOW_TAG_HPP
 #define FLOW_TAG_HPP
-#include <opm/autodiff/SimulatorFullyImplicitBlackoilEbos.hpp>
-#include <opm/autodiff/FlowMainEbos.hpp>
+
+#include <opm/simulators/flow/FlowMainEbos.hpp>
+#include <opm/simulators/flow/MissingFeatures.hpp>
+#include <opm/simulators/flow/SimulatorFullyImplicitBlackoilEbos.hpp>
 #include <ewoms/common/propertysystem.hh>
 #include <ewoms/common/parametersystem.hh>
-#include <opm/autodiff/MissingFeatures.hpp>
 #include <opm/common/utility/parameters/ParameterGroup.hpp>
 #include <opm/material/common/ResetLocale.hpp>
 
@@ -62,7 +63,8 @@ namespace Opm {
   void flowEbosSetDeck(Deck &deck, EclipseState& eclState)
   {
     typedef typename GET_PROP_TYPE(TypeTag, Vanguard) Vanguard;
-    Vanguard::setExternalDeck(&deck, &eclState);
+    Vanguard::setExternalDeck(&deck);
+    Vanguard::setExternalEclState(&eclState);
   }
   
 // ----------------- Main program -----------------

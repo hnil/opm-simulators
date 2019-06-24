@@ -25,13 +25,12 @@
 
 #include <sys/utsname.h>
 
+#include <opm/simulators/flow/BlackoilModelEbos.hpp>
+#include <opm/simulators/flow/MissingFeatures.hpp>
+#include <opm/simulators/flow/SimulatorFullyImplicitBlackoilEbos.hpp>
 #include <opm/simulators/utils/ParallelFileMerger.hpp>
-
-#include <opm/autodiff/BlackoilModelEbos.hpp>
-#include <opm/autodiff/MissingFeatures.hpp>
 #include <opm/simulators/utils/moduleVersion.hpp>
 #include <opm/simulators/linalg/ExtractParallelGridInformationToISTL.hpp>
-#include <opm/autodiff/SimulatorFullyImplicitBlackoilEbos.hpp>
 
 #include <opm/core/props/satfunc/RelpermDiagnostics.hpp>
 
@@ -231,7 +230,19 @@ namespace Opm
                 setupOutput();
                 setupEbosSimulator();
                 setupLogging();
-                printPRTHeader();
+                int unknownKeyWords = printPRTHeader();
+#if HAVE_MPI
+                int globalUnknownKeyWords;
+                MPI_Allreduce(&unknownKeyWords,  &globalUnknownKeyWords, 1, MPI_INT,  MPI_SUM, MPI_COMM_WORLD);
+                unknownKeyWords = globalUnknownKeyWords;
+#endif
+                if ( unknownKeyWords )
+                {
+#if HAVE_MPI
+                    MPI_Finalize();
+#endif
+                    exit(EXIT_FAILURE);
+                }
                 runDiagnostics();
                 createSimulator();
 
@@ -383,7 +394,8 @@ namespace Opm
         }
 
         // Print an ASCII-art header to the PRT and DEBUG files.
-        void printPRTHeader()
+        // \return Whether unkown keywords were seen during parsing.
+        bool printPRTHeader()
         {
           if (output_cout_) {
               const std::string version = moduleVersion();
@@ -422,7 +434,16 @@ namespace Opm
               Ewoms::Parameters::printValues<TypeTag>(ss);
 
               OpmLog::note(ss.str());
-            }
+          }
+
+              if ( mpi_rank_ == 0 )
+              {
+                  return Ewoms::Parameters::printUnused<TypeTag>(std::cerr);
+              }
+              else
+              {
+                  return false;
+              }
         }
 
         void mergeParallelLogFiles()

@@ -44,6 +44,7 @@ namespace Opm
     , segment_viscosities_(numberOfSegments(), 0.0)
     , segment_mass_rates_(numberOfSegments(), 0.0)
     , segment_depth_diffs_(numberOfSegments(), 0.0)
+    , upwinding_segments_(numberOfSegments(), 0)
     {
         // not handling solvent or polymer for now with multisegment well
         if (has_solvent) {
@@ -838,6 +839,15 @@ namespace Opm
             // update the total rate // TODO: should we have a limitation of the total rate change?
             {
                 primary_variables_[seg][GTotal] = old_primary_variables[seg][GTotal] - relaxation_factor * dwells[seg][GTotal];
+
+                // make sure that no injector produce and no producer inject
+                if (seg == 0) {
+                    if (well_type_ == INJECTOR) {
+                        primary_variables_[seg][GTotal] = std::max( primary_variables_[seg][GTotal], 0.0);
+                    } else {
+                        primary_variables_[seg][GTotal] = std::min( primary_variables_[seg][GTotal], 0.0);
+                    }
+                }
             }
 
         }
@@ -1387,25 +1397,24 @@ namespace Opm
     typename MultisegmentWell<TypeTag>::EvalWell
     MultisegmentWell<TypeTag>::
     getSegmentRateUpwinding(const int seg,
-                            const int comp_idx,
-                            const bool upwinding,
-                            int& seg_upwind) const
+                            const int comp_idx) const
     {
-        // not considering upwinding for the injectors for now
-        if ((!upwinding) || (well_type_ == INJECTOR) || (primary_variables_evaluation_[seg][GTotal] <= 0.) || (seg == 0)) {
-            seg_upwind = seg; // using the composition from the seg
-            return primary_variables_evaluation_[seg][GTotal] * volumeFractionScaled(seg, comp_idx);
+        const int seg_upwind = upwinding_segments_[seg];
+        // the result will contain the derivative with resepct to GTotal in segment seg,
+        // and the derivatives with respect to WFrac GFrac in segment seg_upwind.
+        // the derivative with respect to SPres should be zero.
+        if (seg == 0 && well_type_ == INJECTOR) {
+            const double* distr = well_controls_get_current_distr(well_controls_);
+            if (distr[ebosCompIdxToFlowCompIdx(comp_idx)] > 0)
+                return primary_variables_evaluation_[seg][GTotal] / scalingFactor(ebosCompIdxToFlowCompIdx(comp_idx));
+            return 0.0;
         }
 
-        // assert( seg != 0); // if top segment flowing towards the wrong direction, we are not handling it
+        const EvalWell segment_rate = primary_variables_evaluation_[seg][GTotal] * volumeFractionScaled(seg_upwind, comp_idx);
 
-        // basically here, it a producer and flow is in the injecting direction
-        // we will use the compsotion from the outlet segment
-        const int outlet_segment_index = segmentNumberToIndex(segmentSet()[seg].outletSegment());
-        seg_upwind = outlet_segment_index;
+        assert(segment_rate.derivative(SPres + numEq) == 0.);
 
-        // TODO: we can refactor above code to use the following return
-        return primary_variables_evaluation_[seg][GTotal] * volumeFractionScaled(seg_upwind, comp_idx);
+        return segment_rate;
     }
 
 
@@ -1509,28 +1518,38 @@ namespace Opm
                     }
                 }
                 assert(number_phases_under_control > 0);
-
-                const std::vector<double> g = {1.0, 1.0, 0.01};
                 const double target_rate = well_controls_get_current_target(well_controls_);
-                // TODO: the two situations below should be able to be merged to be handled as one situation
+                const std::vector<double> g = {1.0, 1.0, 0.01};
 
-                if (number_phases_under_control == 1) { // single phase control
+                if (well_type_ == INJECTOR) {
+                    assert(number_phases_under_control == 1);
+                    // only support single component injection
                     for (int phase = 0; phase < number_of_phases_; ++phase) {
                         if (distr[phase] > 0.) { // under the control of this phase
-                            control_eq = getSegmentGTotal(0) * volumeFraction(0, flowPhaseToEbosCompIdx(phase)) - g[phase] * target_rate;
+                            control_eq = getSegmentGTotal(0) - g[phase] * target_rate;
                             break;
                         }
                     }
-                } else { // multiphase rate control
-                    EvalWell rate_for_control(0.0);
-                    const EvalWell G_total = getSegmentGTotal(0);
-                    for (int phase = 0; phase < number_of_phases_; ++phase) {
-                        if (distr[phase] > 0.) {
-                            rate_for_control += G_total * volumeFractionScaled(0, flowPhaseToEbosCompIdx(phase));
+                } else {
+                    // TODO: the two situations below should be able to be merged to be handled as one situation
+                    if (number_phases_under_control == 1) { // single phase control
+                        for (int phase = 0; phase < number_of_phases_; ++phase) {
+                            if (distr[phase] > 0.) { // under the control of this phase
+                                control_eq = getSegmentGTotal(0) * volumeFraction(0, flowPhaseToEbosCompIdx(phase)) - g[phase] * target_rate;
+                                break;
+                            }
                         }
+                    } else { // multiphase rate control
+                        EvalWell rate_for_control(0.0);
+                        const EvalWell G_total = getSegmentGTotal(0);
+                        for (int phase = 0; phase < number_of_phases_; ++phase) {
+                            if (distr[phase] > 0.) {
+                                rate_for_control += G_total * volumeFractionScaled(0, flowPhaseToEbosCompIdx(phase));
+                            }
+                        }
+                        // TODO: maybe the following equation can be scaled a little bit for gas phase
+                        control_eq = rate_for_control - target_rate;
                     }
-                    // TODO: maybe the following equation can be scaled a little bit for gas phase
-                    control_eq = rate_for_control - target_rate;
                 }
                 break;
             }
@@ -1550,8 +1569,6 @@ namespace Opm
             default:
                 OPM_DEFLOG_THROW(std::runtime_error, "Unknown well control control types for well " << name(), deferred_logger);
         }
-
-
         // using control_eq to update the matrix and residuals
 
         resWell_[0][SPres] = control_eq.value();
@@ -1954,6 +1971,9 @@ namespace Opm
         // calculate the fluid properties needed.
         computeSegmentFluidProperties(ebosSimulator);
 
+        // update the upwinding segments
+        updateUpwindingSegments();
+
         // clear all entries
         duneB_ = 0.0;
         duneC_ = 0.0;
@@ -1992,11 +2012,11 @@ namespace Opm
             // considering the contributions due to flowing out from the segment
             {
                 for (int comp_idx = 0; comp_idx < num_components_; ++comp_idx) {
-                    int seg_upwind = -1;
-                    const EvalWell segment_rate = getSegmentRateUpwinding(seg, comp_idx, true, seg_upwind);
+                    const EvalWell segment_rate = getSegmentRateUpwinding(seg, comp_idx);
 
-                    assert(seg_upwind >= 0);
-
+                    const int seg_upwind = upwinding_segments_[seg];
+                    // segment_rate contains the derivatives with respect to GTotal in seg,
+                    // and WFrac and GFrac in seg_upwind
                     resWell_[seg][comp_idx] -= segment_rate.value();
                     duneD_[seg][seg][comp_idx][GTotal] -= segment_rate.derivative(GTotal + numEq);
                     duneD_[seg][seg_upwind][comp_idx][WFrac] -= segment_rate.derivative(WFrac + numEq);
@@ -2009,14 +2029,15 @@ namespace Opm
             {
                 for (const int inlet : segment_inlets_[seg]) {
                     for (int comp_idx = 0; comp_idx < num_components_; ++comp_idx) {
-                        int seg_upwind = -1;
-                        const EvalWell inlet_rate = getSegmentRateUpwinding(inlet, comp_idx, true, seg_upwind);
-                        assert(seg_upwind >= 0);
+                        const EvalWell inlet_rate = getSegmentRateUpwinding(inlet, comp_idx);
 
+                        const int inlet_upwind = upwinding_segments_[inlet];
+                        // inlet_rate contains the derivatives with respect to GTotal in inlet,
+                        // and WFrac and GFrac in inlet_upwind
                         resWell_[seg][comp_idx] += inlet_rate.value();
                         duneD_[seg][inlet][comp_idx][GTotal] += inlet_rate.derivative(GTotal + numEq);
-                        duneD_[seg][seg_upwind][comp_idx][WFrac] += inlet_rate.derivative(WFrac + numEq);
-                        duneD_[seg][seg_upwind][comp_idx][GFrac] += inlet_rate.derivative(GFrac + numEq);
+                        duneD_[seg][inlet_upwind][comp_idx][WFrac] += inlet_rate.derivative(WFrac + numEq);
+                        duneD_[seg][inlet_upwind][comp_idx][GFrac] += inlet_rate.derivative(GFrac + numEq);
                         // pressure derivative should be zero
                     }
                 }
@@ -2418,4 +2439,35 @@ namespace Opm
             report.setWellFailed({ctrltype, CR::Severity::Normal, dummy_component, name()});
         }
     }
+
+
+
+
+
+
+    template<typename TypeTag>
+    void
+    MultisegmentWell<TypeTag>::
+    updateUpwindingSegments()
+    {
+        for (int seg = 0; seg < numberOfSegments(); ++seg) {
+            // special treatment is needed for segment 0
+            if (seg == 0) {
+                // we are not supposed to have injecting producers and producing injectors
+                assert( ! (well_type_ == PRODUCER && primary_variables_evaluation_[seg][GTotal] > 0.) );
+                assert( ! (well_type_ == INJECTOR && primary_variables_evaluation_[seg][GTotal] < 0.) );
+                upwinding_segments_[seg] = seg;
+                continue;
+            }
+
+            // for other normal segments
+            if (primary_variables_evaluation_[seg][GTotal] <= 0.) {
+                upwinding_segments_[seg] = seg;
+            } else {
+                const int outlet_segment_index = segmentNumberToIndex(segmentSet()[seg].outletSegment());
+                upwinding_segments_[seg] = outlet_segment_index;
+            }
+        }
+    }
+
 }

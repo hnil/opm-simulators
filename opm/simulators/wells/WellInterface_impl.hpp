@@ -101,6 +101,9 @@ namespace Opm
                       saturation_table_number_.begin() );
         }
 
+        // initialization of the completions mapping
+        initCompletions();
+
         well_efficiency_factor_ = 1.0;
 
         connectionRates_.resize(number_of_perforations_);
@@ -133,6 +136,28 @@ namespace Opm
         phase_usage_ = phase_usage_arg;
         gravity_ = gravity_arg;
     }
+
+
+
+
+
+    template<typename TypeTag>
+    void
+    WellInterface<TypeTag>::
+    initCompletions()
+    {
+        assert(completions_.empty() );
+
+        const WellConnections& connections = well_ecl_.getConnections();
+        const int num_conns = connections.size();
+
+        assert(num_conns == number_of_perforations_);
+
+        for (int c = 0; c < num_conns; c++) {
+            completions_[connections[c].complnum()].push_back(c);
+        }
+    }
+
 
 
 
@@ -285,8 +310,8 @@ namespace Opm
             return 0.0;
         }
 
-        WellInjectionProperties injection = well_ecl_.getInjectionProperties();
-        if (injection.injectorType == WellInjector::GAS) {
+        auto injectorType = well_ecl_.injectorType();
+        if (injectorType == WellInjector::GAS) {
             double solvent_fraction = well_ecl_.getSolventFraction();
             return solvent_fraction;
         } else {
@@ -308,10 +333,10 @@ namespace Opm
             return 0.0;
         }
 
-        WellInjectionProperties injection = well_ecl_.getInjectionProperties();
-        WellPolymerProperties polymer = well_ecl_.getPolymerProperties();
+        auto injectorType = well_ecl_.injectorType();
 
-        if (injection.injectorType == WellInjector::WATER) {
+        if (injectorType == WellInjector::WATER) {
+            WellPolymerProperties polymer = well_ecl_.getPolymerProperties();
             const double polymer_injection_concentration = polymer.m_polymerConcentration;
             return polymer_injection_concentration;
         } else {
@@ -519,20 +544,7 @@ namespace Opm
     WellInterface<TypeTag>::
     underPredictionMode(Opm::DeferredLogger& deferred_logger) const
     {
-        bool under_prediction_mode = false;
-
-        switch( well_type_ ) {
-        case PRODUCER:
-            under_prediction_mode = well_ecl_.getProductionProperties().predictionMode;
-            break;
-        case INJECTOR:
-            under_prediction_mode = well_ecl_.getInjectionProperties().predictionMode;
-            break;
-        default:
-            OPM_DEFLOG_THROW(std::logic_error, "Expected PRODUCER or INJECTOR type for well " << name(), deferred_logger);
-        }
-
-        return under_prediction_mode;
+        return well_ecl_.predictionMode();
     }
 
 
@@ -597,77 +609,39 @@ namespace Opm
     checkMaxWaterCutLimit(const WellEconProductionLimits& econ_production_limits,
                           const WellState& well_state) const
     {
-        bool water_cut_limit_violated = false;
-        int worst_offending_completion = INVALIDCOMPLETION;
-        double violation_extent = -1.0;
-
-        const int np = number_of_phases_;
-        const Opm::PhaseUsage& pu = phaseUsage();
-        const int well_number = index_of_well_;
 
         assert(FluidSystem::phaseIsActive(FluidSystem::oilPhaseIdx));
         assert(FluidSystem::phaseIsActive(FluidSystem::waterPhaseIdx));
 
-        const double oil_rate = well_state.wellRates()[well_number * np + pu.phase_pos[ Oil ] ];
-        const double water_rate = well_state.wellRates()[well_number * np + pu.phase_pos[ Water ] ];
-        const double liquid_rate = oil_rate + water_rate;
-        double water_cut;
-        if (std::abs(liquid_rate) != 0.) {
-            water_cut = water_rate / liquid_rate;
-        } else {
-            water_cut = 0.0;
-        }
+        // function to calculate water cut based on rates
+        auto waterCut = [](const std::vector<double>& rates,
+                           const PhaseUsage& pu) {
+
+            const double oil_rate = rates[pu.phase_pos[Oil]];
+            const double water_rate = rates[pu.phase_pos[Water]];
+
+            // both rate should be in the same direction
+            assert(oil_rate * water_rate >= 0.);
+
+            const double liquid_rate = oil_rate + water_rate;
+            if (liquid_rate != 0.) {
+                return (water_rate / liquid_rate);
+            } else {
+                return 0.;
+            }
+        };
 
         const double max_water_cut_limit = econ_production_limits.maxWaterCut();
-        if (water_cut > max_water_cut_limit) {
-            water_cut_limit_violated = true;
-        }
+        assert(max_water_cut_limit > 0.);
+
+        const bool water_cut_limit_violated = checkMaxRatioLimitWell(well_state, max_water_cut_limit, waterCut);
+
+        int worst_offending_completion = INVALIDCOMPLETION;
+        double violation_extent = -1.;
 
         if (water_cut_limit_violated) {
-            // need to handle the worst_offending_connection
-            const int perf_start = first_perf_;
-            const int perf_number = number_of_perforations_;
-
-            std::vector<double> water_cut_perf(perf_number);
-            for (int perf = 0; perf < perf_number; ++perf) {
-                const int i_perf = perf_start + perf;
-                const double oil_perf_rate = well_state.perfPhaseRates()[i_perf * np + pu.phase_pos[ Oil ] ];
-                const double water_perf_rate = well_state.perfPhaseRates()[i_perf * np + pu.phase_pos[ Water ] ];
-                const double liquid_perf_rate = oil_perf_rate + water_perf_rate;
-                if (std::abs(liquid_perf_rate) != 0.) {
-                    water_cut_perf[perf] = water_perf_rate / liquid_perf_rate;
-                } else {
-                    water_cut_perf[perf] = 0.;
-                }
-            }
-            const auto& completions = well_ecl_.getCompletions();
-            const auto& connections = well_ecl_.getConnections();
-
-            int complnumIdx = 0;
-            std::vector<double> water_cut_in_completions(completions.size(), 0.0);
-            for (const auto& completion : completions) {
-                int complnum = completion.first;
-                for (int perf = 0; perf < perf_number; ++perf) {
-                    if (complnum == connections.get ( perf ).complnum()) {
-                        water_cut_in_completions[complnumIdx] +=  water_cut_perf[perf];
-                    }
-                }
-                complnumIdx++;
-            }
-
-            double max_water_cut_perf = 0.;
-            complnumIdx = 0;
-            for (const auto& completion : completions) {
-                if (water_cut_in_completions[complnumIdx] > max_water_cut_perf) {
-                    worst_offending_completion = completion.first;
-                    max_water_cut_perf = water_cut_in_completions[complnumIdx];
-                }
-                complnumIdx++;
-            }
-
-            assert(max_water_cut_limit != 0.);
-            assert(worst_offending_completion != INVALIDCOMPLETION);
-            violation_extent = max_water_cut_perf / max_water_cut_limit;
+            checkMaxRatioLimitCompletions(well_state, max_water_cut_limit, waterCut,
+                                          worst_offending_completion, violation_extent);
         }
 
         return std::make_tuple(water_cut_limit_violated, worst_offending_completion, violation_extent);
@@ -727,6 +701,80 @@ namespace Opm
         }
 
         return std::make_tuple(any_limit_violated, worst_offending_completion, violation_extent);
+    }
+
+
+
+
+    template<typename TypeTag>
+    template<typename RatioFunc>
+    bool
+    WellInterface<TypeTag>::
+    checkMaxRatioLimitWell(const WellState& well_state,
+                           const double max_ratio_limit,
+                           const RatioFunc& ratioFunc) const
+    {
+        const int np = number_of_phases_;
+
+        std::vector<double> well_rates(np, 0.0);
+
+        for (int p = 0; p < np; ++p) {
+            well_rates[p] = well_state.wellRates()[index_of_well_ * np + p];
+        }
+
+        const double well_ratio = ratioFunc(well_rates, phaseUsage());
+
+        return (well_ratio > max_ratio_limit);
+    }
+
+
+
+
+    template<typename TypeTag>
+    template<typename RatioFunc>
+    void
+    WellInterface<TypeTag>::
+    checkMaxRatioLimitCompletions(const WellState& well_state,
+                                  const double max_ratio_limit,
+                                  const RatioFunc& ratioFunc,
+                                  int& worst_offending_completion,
+                                  double& violation_extent) const
+    {
+        worst_offending_completion = INVALIDCOMPLETION;
+        violation_extent = -1.0;
+
+        // the maximum water cut value of the completions
+        // it is used to identify the most offending completion
+        double max_ratio_completion = 0;
+
+        // look for the worst_offending_completion
+        for (const auto& completion : completions_) {
+
+            const int np = number_of_phases_;
+            std::vector<double> completion_rates(np, 0.0);
+
+            // looping through the connections associated with the completion
+            const std::vector<int>& conns = completion.second;
+            for (const int c : conns) {
+                const int index_con = c + first_perf_;
+
+                for (int p = 0; p < np; ++p) {
+                    const double connection_rate = well_state.perfPhaseRates()[index_con * np + p];
+                    completion_rates[p] += connection_rate;
+                }
+            } // end of for (const int c : conns)
+
+            const double ratio_completion = ratioFunc(completion_rates, phaseUsage());
+
+            if (ratio_completion > max_ratio_completion) {
+                worst_offending_completion = completion.first;
+                max_ratio_completion = ratio_completion;
+            }
+        } // end of for (const auto& completion : completions_)
+
+        assert(max_ratio_completion > max_ratio_limit);
+        assert(worst_offending_completion != INVALIDCOMPLETION);
+        violation_extent = max_ratio_completion / max_ratio_limit;
     }
 
 
@@ -964,7 +1012,7 @@ namespace Opm
                         const double simulation_time, const int report_step,
                         const WellState& well_state, WellTestState& welltest_state, Opm::DeferredLogger& deferred_logger)
     {
-        deferred_logger.debug(" well " + name() + " is being tested for economic limits");
+        deferred_logger.info(" well " + name() + " is being tested for economic limits");
 
         WellState well_state_copy = well_state;
 
@@ -1131,9 +1179,8 @@ namespace Opm
         // we need to get the table number through the parser, in case THP constraint/target is not there.
         // When THP control/limit is not active, if available VFP table is provided, we will still need to
         // update THP value. However, it will only used for output purpose.
-
         if (well_type_ == PRODUCER) { // producer
-          const int table_id = well_ecl_.getProductionProperties().VFPTableNumber;
+            const int table_id = well_ecl_.vfp_table_number();
             if (table_id <= 0) {
                 return false;
             } else {
@@ -1146,7 +1193,7 @@ namespace Opm
             }
 
         } else { // injector
-            const int table_id = well_ecl_.getInjectionProperties().VFPTableNumber;
+            const int table_id = well_ecl_.vfp_table_number();
             if (table_id <= 0) {
                 return false;
             } else {

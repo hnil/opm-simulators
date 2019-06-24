@@ -41,10 +41,8 @@
 
 #include <opm/material/fluidmatrixinteractions/EclMaterialLawManager.hpp>
 #include <opm/grid/GridHelpers.hpp>
-#include <opm/autodiff/FlowMainEbos.hpp>
-#include <opm/autodiff/BlackoilModelEbos.hpp>
-#include <opm/autodiff/createGlobalCellArray.hpp>
-#include <opm/autodiff/GridInit.hpp>
+#include <opm/simulators/flow/FlowMainEbos.hpp>
+#include <opm/simulators/flow/BlackoilModelEbos.hpp>
 
 #include <ebos/eclproblem.hh>
 #include <ewoms/common/start.hh>
@@ -58,12 +56,13 @@
 #include <dune/common/parallel/mpihelper.hh>
 #endif
 
+
+
 using StandardWell = Opm::StandardWell<TTAG(EclFlowProblem)>;
 
 struct SetupTest {
 
     using Grid = UnstructuredGrid;
-    using GridInit = Opm::GridInit<Grid>;
 
     SetupTest ()
     {
@@ -81,18 +80,15 @@ struct SetupTest {
         const std::vector<double>& porv =
                             ecl_state->get3DProperties().getDoubleGridProperty("PORV").getData();
 
-        std::unique_ptr<GridInit> grid_init(new GridInit(*ecl_state, porv));
-        const Grid& grid = grid_init->grid();
-
-        // Create material law manager.
-        std::vector<int> compressed_to_cartesianIdx;
-        Opm::createGlobalCellArray(grid, compressed_to_cartesianIdx);
+        Opm::GridManager gm(ecl_state->getInputGrid(), porv);
+        const Grid& grid = *(gm.c_grid());
 
         current_timestep = 0;
 
         // Create wells.
         wells_manager.reset(new Opm::WellsManager(*ecl_state,
                                                   *schedule,
+                                                  summaryState,
                                                   current_timestep,
                                                   Opm::UgGridHelpers::numCells(grid),
                                                   Opm::UgGridHelpers::globalCell(grid),
@@ -108,6 +104,7 @@ struct SetupTest {
     std::unique_ptr<const Opm::WellsManager> wells_manager;
     std::unique_ptr<const Opm::EclipseState> ecl_state;
     std::unique_ptr<const Opm::Schedule> schedule;
+    Opm::SummaryState summaryState;
     int current_timestep;
 };
 
@@ -206,7 +203,7 @@ BOOST_AUTO_TEST_CASE(TestBehavoir) {
         BOOST_CHECK_EQUAL(well->name(), "PROD1");
         BOOST_CHECK(well->wellType() == PRODUCER);
         BOOST_CHECK(well->numEq == 3);
-        BOOST_CHECK(well->numWellEq == 4);
+        BOOST_CHECK(well->numStaticWellEq== 4);
         const auto& wc = well->wellControls();
         const int ctrl_num = well_controls_get_num(wc);
         BOOST_CHECK(ctrl_num > 0);
@@ -225,7 +222,7 @@ BOOST_AUTO_TEST_CASE(TestBehavoir) {
         BOOST_CHECK_EQUAL(well->name(), "INJE1");
         BOOST_CHECK(well->wellType() == INJECTOR);
         BOOST_CHECK(well->numEq == 3);
-        BOOST_CHECK(well->numWellEq == 4);
+        BOOST_CHECK(well->numStaticWellEq== 4);
         const auto& wc = well->wellControls();
         const int ctrl_num = well_controls_get_num(wc);
         BOOST_CHECK(ctrl_num > 0);

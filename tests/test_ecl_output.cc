@@ -83,8 +83,6 @@ SET_BOOL_PROP(TestEclOutputTypeTag, EnableAsyncEclOutput, false);
 
 END_PROPERTIES
 
-static const int day = 24 * 60 * 60;
-
 template <class TypeTag>
 std::unique_ptr<typename GET_PROP_TYPE(TypeTag, Simulator)>
 initSimulator(const char *filename)
@@ -132,11 +130,17 @@ void test_summary()
     Opm::data::Wells dw;
     bool substep = false;
     simulator->startNextEpisode(0.0, 1e30);
+
     simulator->setEpisodeIndex(0);
+    eclWriter->evalSummaryState(substep);
     eclWriter->writeOutput(substep);
+
     simulator->setEpisodeIndex(1);
+    eclWriter->evalSummaryState(substep);
     eclWriter->writeOutput(substep);
+
     simulator->setEpisodeIndex(2);
+    eclWriter->evalSummaryState(substep);
     eclWriter->writeOutput(substep);
 
     auto res = readsum( casename );

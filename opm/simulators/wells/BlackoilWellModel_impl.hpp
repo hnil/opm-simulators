@@ -21,6 +21,7 @@
 */
 
 #include <opm/simulators/utils/DeferredLoggingErrorHelpers.hpp>
+#include <opm/simulators/wells/SimFIBODetails.hpp>
 
 namespace Opm {
     template<typename TypeTag>
@@ -212,11 +213,13 @@ namespace Opm {
         const Grid& grid = ebosSimulator_.vanguard().grid();
         const auto& defunct_well_names = ebosSimulator_.vanguard().defunctWellNames();
         const auto& eclState = ebosSimulator_.vanguard().eclState();
+        const auto& summaryState = ebosSimulator_.vanguard().summaryState();
         wells_ecl_ = schedule().getWells2(timeStepIdx);
 
         // Create wells and well state.
         wells_manager_.reset( new WellsManager (eclState,
                                                 schedule(),
+                                                summaryState,
                                                 timeStepIdx,
                                                 Opm::UgGridHelpers::numCells(grid),
                                                 Opm::UgGridHelpers::globalCell(grid),
@@ -492,9 +495,11 @@ namespace Opm {
         // will not be present in a restart file. Use the previous time step to retrieve
         // wells that have information written to the restart file.
         const int report_step = std::max(eclState().getInitConfig().getRestartStep() - 1, 0);
+        const auto& summaryState = ebosSimulator_.vanguard().summaryState();
 
         WellsManager wellsmanager(eclState(),
                                   schedule(),
+                                  summaryState,
                                   report_step,
                                   Opm::UgGridHelpers::numCells(grid()),
                                   Opm::UgGridHelpers::globalCell(grid()),
@@ -602,13 +607,8 @@ namespace Opm {
                 const int pvtreg = pvt_region_idx_[well_cell_top];
 
                 if ( !well_ecl.isMultiSegment() || !param_.use_multisegment_well_) {
-                    if ( GET_PROP_VALUE(TypeTag, EnablePolymerMW) && well_ecl.isInjector() ) {
-                        well_container.emplace_back(new StandardWellV<TypeTag>(well_ecl, time_step, wells,
-                                                    param_, *rateConverter_, pvtreg, numComponents() ) );
-                    } else {
-                        well_container.emplace_back(new StandardWell<TypeTag>(well_ecl, time_step, wells,
-                                                    param_, *rateConverter_, pvtreg, numComponents() ) );
-                    }
+                    well_container.emplace_back(new StandardWell<TypeTag>(well_ecl, time_step, wells,
+                                                param_, *rateConverter_, pvtreg, numComponents() ) );
                 } else {
                     well_container.emplace_back(new MultisegmentWell<TypeTag>(well_ecl, time_step, wells,
                                                 param_, *rateConverter_, pvtreg, numComponents() ) );
@@ -1209,6 +1209,7 @@ namespace Opm {
         computeAverageFormationFactor(B_avg);
 
         const Opm::SummaryConfig& summaryConfig = ebosSimulator_.vanguard().summaryConfig();
+        const auto& summaryState = ebosSimulator_.vanguard().summaryState();
         int exception_thrown = 0;
         try {
             for (const auto& well : well_container_copy) {
@@ -1219,28 +1220,28 @@ namespace Opm {
                 well_controls_clear(wc);
                 well_controls_assert_number_of_phases( wc , np);
                 if (well->wellType() == INJECTOR) {
-                    const auto& injectionProperties = well->wellEcl()->getInjectionProperties();
+                    const auto controls = well->wellEcl()->injectionControls(summaryState);
 
-                    if (injectionProperties.hasInjectionControl(WellInjector::THP)) {
-                        const double thp_limit  = injectionProperties.THPLimit;
-                        const int    vfp_number = injectionProperties.VFPTableNumber;
+                    if (controls.hasControl(WellInjector::THP)) {
+                        const double thp_limit  = controls.thp_limit;
+                        const int    vfp_number = controls.vfp_table_number;
                         well_controls_add_new(THP, thp_limit, invalid_alq, vfp_number, NULL, wc);
                     }
 
                     // we always have a bhp limit
-                    const double bhp_limit = injectionProperties.BHPLimit;
+                    const double bhp_limit = controls.bhp_limit;
                     well_controls_add_new(BHP, bhp_limit, invalid_alq, invalid_vfp, NULL, wc);
                 } else {
-                    const auto& productionProperties = well->wellEcl()->getProductionProperties();
-                    if (productionProperties.hasProductionControl(WellProducer::THP)) {
-                        const double thp_limit  = productionProperties.THPLimit;
-                        const double alq_value  = productionProperties.ALQValue;
-                        const int    vfp_number = productionProperties.VFPTableNumber;
+                    const auto controls = well->wellEcl()->productionControls(summaryState);
+                    if (controls.hasControl(WellProducer::THP)) {
+                        const double thp_limit  = controls.thp_limit;
+                        const double alq_value  = controls.alq_value;
+                        const int    vfp_number = controls.vfp_table_number;
                         well_controls_add_new(THP, thp_limit, alq_value, vfp_number, NULL, wc);
                     }
 
                     // we always have a bhp limit
-                    const double bhp_limit = productionProperties.BHPLimit;
+                    const double bhp_limit = controls.bhp_limit;
                     well_controls_add_new(BHP, bhp_limit, invalid_alq, invalid_vfp, NULL, wc);
 
                     well->setVFPProperties(vfp_properties_.get());
@@ -1769,6 +1770,7 @@ namespace Opm {
     {
 
         const std::vector<int>& resv_wells = SimFIBODetails::resvWells(wells());
+        const auto& summaryState = ebosSimulator_.vanguard().summaryState();
 
         int global_number_resv_wells = resv_wells.size();
         global_number_resv_wells = ebosSimulator_.gridView().comm().sum(global_number_resv_wells);
@@ -1814,6 +1816,7 @@ namespace Opm {
                         well_controls_iset_distr(ctrl, rctrl, & distr[0]);
 
                         // for the WCONHIST wells, we need to calculate the RESV rates since it can not be specified directly
+                        // for the WCONPROD wells, the rates are specified already, it is not necessary to update
                         if (is_producer) {
                             const WellMap::const_iterator i = wmap.find(wells()->name[*rp]);
 
@@ -1821,22 +1824,24 @@ namespace Opm {
                                 OPM_DEFLOG_THROW(std::logic_error, "Failed to find the well " << wells()->name[*rp] << " in wmap.", deferred_logger);
                             }
                             const auto& wp = i->second;
-                            const WellProductionProperties& production_properties = wp.getProductionProperties();
-                            // historical phase rates
-                            std::vector<double> hrates(np);
-                            SimFIBODetails::historyRates(phase_usage_, production_properties, hrates);
+                            const auto production_controls = wp.productionControls(summaryState);
+                            if ( !production_controls.prediction_mode ) {
+                                // historical phase rates
+                                std::vector<double> hrates(np);
+                                SimFIBODetails::historyRates(phase_usage_, production_controls, hrates);
 
-                            std::vector<double> hrates_resv(np);
-                            rateConverter_->calcReservoirVoidageRates(fipreg, pvtreg, hrates, hrates_resv);
+                                std::vector<double> hrates_resv(np);
+                                rateConverter_->calcReservoirVoidageRates(fipreg, pvtreg, hrates, hrates_resv);
 
-                            const double target = -std::accumulate(hrates_resv.begin(), hrates_resv.end(), 0.0);
+                                const double target = -std::accumulate(hrates_resv.begin(), hrates_resv.end(), 0.0);
 
-                            well_controls_iset_target(ctrl, rctrl, target);
-                        }
-                    }
+                                well_controls_iset_target(ctrl, rctrl, target);
+                            }
+                        } // end of if (is_producer)
+                    } // end of if if (0 <= rctrl)
                 }
-            }
-        }
+            } // end of for loop
+        } // end of if (! resv_wells.empty())
     }
 
 

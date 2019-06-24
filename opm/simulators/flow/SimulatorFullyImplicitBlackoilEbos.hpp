@@ -22,9 +22,9 @@
 #ifndef OPM_SIMULATORFULLYIMPLICITBLACKOILEBOS_HEADER_INCLUDED
 #define OPM_SIMULATORFULLYIMPLICITBLACKOILEBOS_HEADER_INCLUDED
 
-#include <opm/autodiff/NonlinearSolverEbos.hpp>
-#include <opm/autodiff/BlackoilModelEbos.hpp>
-#include <opm/autodiff/BlackoilModelParametersEbos.hpp>
+#include <opm/simulators/flow/NonlinearSolverEbos.hpp>
+#include <opm/simulators/flow/BlackoilModelEbos.hpp>
+#include <opm/simulators/flow/BlackoilModelParametersEbos.hpp>
 #include <opm/simulators/wells/WellStateFullyImplicitBlackoil.hpp>
 #include <opm/simulators/aquifers/BlackoilAquiferModel.hpp>
 #include <opm/simulators/utils/moduleVersion.hpp>
@@ -142,12 +142,13 @@ public:
         // handle restarts
         std::unique_ptr<RestartValue> restartValues;
         if (isRestart()) {
+            Opm::SummaryState& summaryState = ebosSimulator_.vanguard().summaryState();
             std::vector<RestartKey> extraKeys = {
                 {"OPMEXTRA" , Opm::UnitSystem::measure::identity, false}
             };
 
             std::vector<RestartKey> solutionKeys = {};
-            restartValues.reset(new RestartValue(ebosSimulator_.problem().eclIO().loadRestart(solutionKeys, extraKeys)));
+            restartValues.reset(new RestartValue(ebosSimulator_.problem().eclIO().loadRestart(summaryState, solutionKeys, extraKeys)));
         }
 
         // Create timers and file for writing timing info.
@@ -170,21 +171,6 @@ public:
 
             double suggestedStepSize = -1.0;
             if (isRestart()) {
-                // Set the start time of the simulation
-                const auto& schedule = ebosSimulator_.vanguard().schedule();
-                const auto& eclState = ebosSimulator_.vanguard().eclState();
-                const auto& timeMap = schedule.getTimeMap();
-                const auto& initconfig = eclState.getInitConfig();
-                int episodeIdx = initconfig.getRestartStep() - 1;
-
-                ebosSimulator_.setStartTime(timeMap.getStartTime(/*timeStepIdx=*/0));
-                ebosSimulator_.setTime(timeMap.getTimePassedUntil(episodeIdx));
-
-                ebosSimulator_.startNextEpisode(ebosSimulator_.startTime() + ebosSimulator_.time(),
-                                                timeMap.getTimeStepLength(episodeIdx));
-                ebosSimulator_.setEpisodeIndex(episodeIdx);
-
-
                 // This is a restart, determine the time step size from the restart data
                 if (restartValues->hasExtra("OPMEXTRA")) {
                     std::vector<double> opmextra = restartValues->getExtra("OPMEXTRA");
@@ -206,6 +192,20 @@ public:
         SimulatorReport stepReport;
 
         if (isRestart()) {
+            // Set the start time of the simulation
+            const auto& schedule = ebosSimulator_.vanguard().schedule();
+            const auto& eclState = ebosSimulator_.vanguard().eclState();
+            const auto& timeMap = schedule.getTimeMap();
+            const auto& initconfig = eclState.getInitConfig();
+            int episodeIdx = initconfig.getRestartStep() - 1;
+
+            ebosSimulator_.setStartTime(timeMap.getStartTime(/*timeStepIdx=*/0));
+            ebosSimulator_.setTime(timeMap.getTimePassedUntil(episodeIdx));
+
+            ebosSimulator_.startNextEpisode(ebosSimulator_.startTime() + ebosSimulator_.time(),
+                                            timeMap.getTimeStepLength(episodeIdx));
+            ebosSimulator_.setEpisodeIndex(episodeIdx);
+            wellModel_().beginEpisode();
             wellModel_().initFromRestartFile(*restartValues);
         }
 
@@ -244,7 +244,7 @@ public:
                 ebosSimulator_.setTimeStepSize(0.0);
 
                 wellModel_().beginReportStep(timer.currentStepNum());
-                ebosSimulator_.problem().writeOutput(false);
+                ebosSimulator_.problem().writeOutput();
 
                 report.output_write_time += perfTimer.stop();
             }
@@ -299,7 +299,7 @@ public:
             perfTimer.start();
             const double nextstep = adaptiveTimeStepping ? adaptiveTimeStepping->suggestedNextStep() : -1.0;
             ebosSimulator_.problem().setNextTimeStepSize(nextstep);
-            ebosSimulator_.problem().writeOutput(false);
+            ebosSimulator_.problem().writeOutput();
             report.output_write_time += perfTimer.stop();
 
             solver->model().endReportStep();

@@ -24,11 +24,10 @@
 #include <opm/simulators/linalg/MatrixBlock.hpp>
 #include <opm/simulators/linalg/BlackoilAmg.hpp>
 #include <opm/simulators/linalg/CPRPreconditioner.hpp>
-#include <opm/autodiff/MPIUtilities.hpp>
 #include <opm/simulators/linalg/ParallelRestrictedAdditiveSchwarz.hpp>
 #include <opm/simulators/linalg/ParallelOverlappingILU0.hpp>
 #include <opm/simulators/linalg/ExtractParallelGridInformationToISTL.hpp>
-#include <opm/autodiff/BlackoilDetails.hpp>
+#include <opm/simulators/linalg/findOverlapRowsAndColumns.hpp>
 #include <opm/common/Exceptions.hpp>
 #include <opm/simulators/linalg/ParallelIstlInformation.hpp>
 #include <opm/common/utility/platform_dependent/disable_warnings.h>
@@ -56,6 +55,19 @@ NEW_PROP_TAG(SparseMatrixAdapter);
 NEW_PROP_TAG(Indices);
 NEW_PROP_TAG(Simulator);
 NEW_PROP_TAG(EclWellModel);
+
+//! Set the type of a global jacobian matrix for linear solvers that are based on
+//! dune-istl.
+SET_PROP(FlowIstlSolver, SparseMatrixAdapter)
+{
+private:
+    typedef typename GET_PROP_TYPE(TypeTag, Scalar) Scalar;
+    enum { numEq = GET_PROP_VALUE(TypeTag, NumEq) };
+    typedef Ewoms::MatrixBlock<Scalar, numEq, numEq> Block;
+
+public:
+    typedef typename Ewoms::Linear::IstlSparseMatrixAdapter<Block> type;
+};
 
 END_PROPERTIES
 
