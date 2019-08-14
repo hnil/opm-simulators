@@ -79,7 +79,14 @@ namespace Opm
         // number of the well equations that will always be used
         // based on the solution strategy, there might be other well equations be introduced
         static const int numStaticWellEq = numWellConservationEq + numWellControlEq;
+	//
+	static const int numWellEq_ = numStaticWellEq;
+        static const int numWellAdjoint = GET_PROP_VALUE(TypeTag, NumWellAdjoint);
+        static const int controlIndex = numEq + numWellEq_;
+        static const int numDerivatives = numEq + numWellEq_ + numWellAdjoint;
+	
 
+	
         // the positions of the primary variables for StandardWell
         // the first one is the weighted total rate (WQ_t), the second and the third ones are F_w and F_g,
         // which represent the fraction of Water and Gas based on the weighted total rate, the last one is BHP.
@@ -109,9 +116,7 @@ namespace Opm
 
         // TODO: with flow_ebos，for a 2P deck, // TODO: for the 2p deck, numEq will be 3, a dummy phase is already added from the reservoir side.
         // it will cause problem here without processing the dummy phase.
-        static const int numWellAdjoint = GET_PROP_VALUE(TypeTag, NumWellAdjoint);
-        static const int controlIndex = numEq + numWellEq;
-
+	
         using typename Base::Mat;
         using typename Base::BVector;
         using typename Base::Eval;
@@ -138,12 +143,17 @@ namespace Opm
         typedef Dune::DynamicMatrix<Scalar> OffDiagMatrixBlockWellType;
         typedef Dune::BCRSMatrix<OffDiagMatrixBlockWellType> OffDiagMatWell;
 
+        typedef Dune::DynamicMatrix<Scalar> DiagMatrixBlockWellType;
+        typedef Dune::BCRSMatrix<DiagMatrixBlockWellType> DiagMatWell;
+
+	
+
         // for adjoint
 //        typedef Dune::FieldMatrix<Scalar, 1, numEq>  OffDiagMatrixBlockWellAdjointType;
 //        typedef Dune::BCRSMatrix<OffDiagMatrixBlockWellAdjointType> OffDiagMatWellCtrl;
 
         // added extra space in derivative to have control derivatives
-        typedef DenseAd::Evaluation<Scalar, /*size=*/numStaticWellEq + numEq + 1 + numWellAdjoint> EvalWell;
+        typedef DenseAd::Evaluation<Scalar, /*size=*/numDerivatives + 1> EvalWell;
 
         using Base::contiSolventEqIdx;
         using Base::contiPolymerEqIdx;
@@ -327,7 +337,7 @@ namespace Opm
 
         // total number of the well equations and primary variables
         // there might be extra equations be used, numWellEq will be updated during the initialization
-        int numWellEq_ = numStaticWellEq;
+        
 
         // densities of the fluid in each perforation
         std::vector<double> perf_densities_;
@@ -629,6 +639,10 @@ namespace Opm
         void checkConvergenceControlEq(ConvergenceReport& report,
                                        DeferredLogger& deferred_logger) const;
 
+	void checkConvergenceExtraEqs(const std::vector<double>& res,
+				      ConvergenceReport& report,
+				      DeferredLogger& deferred_logger) const;
+	
 	void setControlDerivative(double&) const
         {
         }

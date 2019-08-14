@@ -81,7 +81,7 @@ namespace Opm
 
         // with the updated numWellEq_, we can initialize the primary variables and matrices now
         primary_variables_.resize(numWellEq_, 0.0);
-        primary_variables_evaluation_.resize(numWellEq_, EvalWell{numWellEq_ + numEq + numWellAdjoint, 0.0});
+        primary_variables_evaluation_.resize(numWellEq_, EvalWell{numDerivatives, 0.0});
 
         // setup sparsity pattern for the matrices
         //[A C^T    [x    =  [ res
@@ -194,10 +194,10 @@ namespace Opm
             objder_adjres_.resize(num_cells);
 	    // derivative with respect to well variables
             objder_adjwell_.resize(1);// on block pr well
-	    objder_adjwell[0].resize(numWellEq_);
+	    objder_adjwell_[0].resize(numWellEq_);
 	    // derivative of objective with respect ot all "controls" i.e. veriables which one obtain derivatives for
             objder_adjctrl_.resize(1);// one block pr well
-	    objder_adjctrl[0].resize(numWellAdjoint);
+	    objder_adjctrl_[0].resize(numWellAdjoint);
         }
     }
 
@@ -341,7 +341,7 @@ namespace Opm
     wellSurfaceVolumeFraction(const int compIdx) const
     {
 
-        EvalWell sum_volume_fraction_scaled(numWellEq_ + numEq + numWellAdjoint, 0.);
+        EvalWell sum_volume_fraction_scaled(numDerivatives, 0.);
         for (int idx = 0; idx < num_components_; ++idx) {
             sum_volume_fraction_scaled += wellVolumeFractionScaled(idx);
         }
@@ -360,7 +360,7 @@ namespace Opm
     StandardWell<TypeTag>::
     extendEval(const Eval& in) const
     {
-        EvalWell out(numWellEq_ + numEq + numWellAdjoint, in.value());
+        EvalWell out(numDerivatives, in.value());
         for(int eqIdx = 0; eqIdx < numEq;++eqIdx) {
             out.setDerivative(eqIdx, in.derivative(eqIdx));
         }
@@ -390,7 +390,7 @@ namespace Opm
         const EvalWell pressure = extendEval(fs.pressure(FluidSystem::oilPhaseIdx));
         const EvalWell rs = extendEval(fs.Rs());
         const EvalWell rv = extendEval(fs.Rv());
-        std::vector<EvalWell> b_perfcells_dense(num_components_, EvalWell{numWellEq_ + numEq + numWellAdjoint, 0.0});
+        std::vector<EvalWell> b_perfcells_dense(num_components_, EvalWell{numDerivatives, 0.0});
         for (unsigned phaseIdx = 0; phaseIdx < FluidSystem::numPhases; ++phaseIdx) {
             if (!FluidSystem::phaseIsActive(phaseIdx)) {
                 continue;
@@ -463,13 +463,13 @@ namespace Opm
 
 
             // surface volume fraction of fluids within wellbore
-            std::vector<EvalWell> cmix_s(num_components_, EvalWell{numWellEq_ + numEq + numWellAdjoint});
+            std::vector<EvalWell> cmix_s(num_components_, EvalWell{numDerivatives});
             for (int componentIdx = 0; componentIdx < num_components_; ++componentIdx) {
                 cmix_s[componentIdx] = wellSurfaceVolumeFraction(componentIdx);
             }
 
             // compute volume ratio between connection at standard conditions
-            EvalWell volumeRatio(numWellEq_ + numEq + numWellAdjoint, 0.);
+            EvalWell volumeRatio(numDerivatives, 0.);
             if (FluidSystem::phaseIsActive(FluidSystem::waterPhaseIdx)) {
                 const unsigned waterCompIdx = Indices::canonicalToActiveComponentIndex(FluidSystem::waterCompIdx);
                 volumeRatio += cmix_s[waterCompIdx] / b_perfcells_dense[waterCompIdx];
@@ -483,7 +483,7 @@ namespace Opm
                 const unsigned oilCompIdx = Indices::canonicalToActiveComponentIndex(FluidSystem::oilCompIdx);
                 const unsigned gasCompIdx = Indices::canonicalToActiveComponentIndex(FluidSystem::gasCompIdx);
                 // Incorporate RS/RV factors if both oil and gas active
-                const EvalWell d = EvalWell(numWellEq_ + numEq + numWellAdjoint, 1.0) - rv * rs;
+                const EvalWell d = EvalWell(numDerivatives, 1.0) - rv * rs;
 
                 if (d.value() == 0.0) {
                     OPM_DEFLOG_THROW(Opm::NumericalIssue, "Zero d value obtained for well " << name() << " during flux calcuation"
@@ -603,7 +603,7 @@ namespace Opm
         const EvalWell obj = Opm::Objectives::TotalWaterRate::objective(q, t, dt);
 
         // pick out the well value and derivative
-        for (int pvIdx = 0; pvIdx < numWellEq; ++pvIdx) {
+        for (int pvIdx = 0; pvIdx < numWellEq_; ++pvIdx) {
             objder_adjwell_[0][pvIdx] = obj.derivative(pvIdx+numEq);
         }
         objder_adjctrl_[0][0] = obj.derivative(controlIndex);
@@ -697,10 +697,10 @@ namespace Opm
 
             const int cell_idx = well_cells_[perf];
             const auto& intQuants = *(ebosSimulator.model().cachedIntensiveQuantities(cell_idx, /*timeIdx=*/ 0));
-            std::vector<EvalWell> mob(num_components_, {numWellEq_ + numEq + numWellAdjoint, 0.});
+            std::vector<EvalWell> mob(num_components_, {numDerivatives, 0.});
             getMobility(ebosSimulator, perf, mob, deferred_logger);
 
-            std::vector<EvalWell> cq_s(num_components_, {numWellEq_ + numEq + numWellAdjoint, 0.});
+            std::vector<EvalWell> cq_s(num_components_, {numDerivatives, 0.});
             double perf_dis_gas_rate = 0.;
             double perf_vap_oil_rate = 0.;
             double trans_mult = ebosSimulator.problem().template rockCompTransMultiplier<double>(intQuants,  cell_idx);
@@ -767,7 +767,7 @@ namespace Opm
 
                     const unsigned activeCompIdx = Indices::canonicalToActiveComponentIndex(FluidSystem::solventComponentIndex(phaseIdx));
                     // convert to reservoar conditions
-                    EvalWell cq_r_thermal(numWellEq_ + numEq + numWellAdjoint, 0.);
+                    EvalWell cq_r_thermal(numDerivatives, 0.);
                     if (FluidSystem::phaseIsActive(FluidSystem::oilPhaseIdx) && FluidSystem::phaseIsActive(FluidSystem::gasPhaseIdx)) {
 
                         if(FluidSystem::waterPhaseIdx == phaseIdx)
@@ -896,11 +896,11 @@ namespace Opm
     StandardWell<TypeTag>::
     assembleControlEq(Opm::DeferredLogger& deferred_logger)
     {
-        EvalWell control_eq(numWellEq_ + numEq + numWellAdjoint, 0.);
+        EvalWell control_eq(numDerivatives, 0.);
         switch (well_controls_get_current_type(well_controls_)) {
             case THP:
             {
-                std::vector<EvalWell> rates(3, {numWellEq_ + numEq + numWellAdjoint, 0.});
+                std::vector<EvalWell> rates(3, {numDerivatives, 0.});
                 if (FluidSystem::phaseIsActive(FluidSystem::waterPhaseIdx)) {
                     rates[ Water ] = getQs(flowPhaseToEbosCompIdx(Water));
                 }
@@ -933,7 +933,7 @@ namespace Opm
                     control_eq = getWQTotal() - target_rate;
                 } else if (well_type_ == PRODUCER) {
                     if (target_rate != 0.) {
-                        EvalWell rate_for_control(numWellEq_ + numEq + numWellAdjoint, 0.);
+                        EvalWell rate_for_control(numDerivatives, 0.);
                         const EvalWell& g_total = getWQTotal();
                         // a variable to check if we are producing any targeting fluids
                         double sum_fraction = 0.;
@@ -985,7 +985,7 @@ namespace Opm
                     }
                 } else {
                     const EvalWell& g_total = getWQTotal();
-                    EvalWell rate_for_control(numWellEq_ + numEq + numWellAdjoint, 0.); // reservoir rate
+                    EvalWell rate_for_control(numDerivatives, 0.); // reservoir rate
                     for (int phase = 0; phase < number_of_phases_; ++phase) {
                         rate_for_control += g_total * wellVolumeFraction( flowPhaseToEbosCompIdx(phase) );
                     }
@@ -1531,7 +1531,7 @@ namespace Opm
         std::fill(ipr_b_.begin(), ipr_b_.end(), 0.);
 
         for (int perf = 0; perf < number_of_perforations_; ++perf) {
-            std::vector<EvalWell> mob(num_components_, {numWellEq_ + numEq + numWellAdjoint, 0.0});
+            std::vector<EvalWell> mob(num_components_, {numDerivatives, 0.0});
             // TODO: mabye we should store the mobility somewhere, so that we only need to calculate it one per iteration
             getMobility(ebos_simulator, perf, mob, deferred_logger);
 
