@@ -165,6 +165,10 @@ public:
     const EquilCartesianIndexMapper& equilCartesianIndexMapper() const
     { return *equilCartesianIndexMapper_; }
 
+    void releaseGlobalTransmissibilities(){
+    }
+
+ 
 protected:
     void createGrids_()
     {
