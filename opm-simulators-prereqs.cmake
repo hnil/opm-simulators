@@ -7,6 +7,11 @@ set (opm-simulators_CONFIG_VAR
   HAVE_PETSC
   HAVE_SUITESPARSE_UMFPACK_H
   HAVE_DUNE_ISTL
+  HAVE_DUNE_FEM
+  HAVE_DUNE_ALUGRID
+  HAVE_DUNE_GEOMETRY
+  HAVE_DUNE_GRID
+  HAVE_DUNE_LOCALFUNCTIONS
   DUNE_ISTL_VERSION_MAJOR
   DUNE_ISTL_VERSION_MINOR
   DUNE_ISTL_VERSION_REVISION
@@ -39,6 +44,11 @@ set (opm-simulators_DEPS
   "opm-material REQUIRED"
   "opm-grid REQUIRED"
   "opm-models REQUIRED"
+  "dune-localfunctions"
+  "dune-alugrid"
+  "dune-fem"
+  "opm-grid"
+
   )
 
 find_package_deps(opm-simulators)

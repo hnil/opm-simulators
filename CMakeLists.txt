@@ -81,6 +81,15 @@ macro (config_hook)
   opm_need_version_of ("dune-common")
   opm_need_version_of ("dune-istl")
   opm_need_version_of ("opm-models")
+  if(dune-fem_FOUND)
+      opm_need_version_of("dune-fem")
+      opm_need_version_of("dune-geometry")
+      opm_need_version_of("dune-grid")
+      opm_need_version_of("dune-localfunctions")
+      opm_need_version_of("dune-alugrid")
+    endif()
+
+
 endmacro (config_hook)
 
 macro (prereqs_hook)
