@@ -30,7 +30,7 @@
 
 #include "collecttoiorank.hh"
 #include "ecloutputblackoilmodule.hh"
-
+#include "ecltransmissibility.hh"
 #include <opm/models/blackoil/blackoilmodel.hh>
 #include <opm/models/discretization/ecfv/ecfvdiscretization.hh>
 #include <opm/models/io/baseoutputwriter.hh>
