@@ -536,10 +536,10 @@ protected:
         asImp_().updateOutputDir_();
         asImp_().finalizeInit_();
 
-        if (enableExperiments) {
-            Opm::RelpermDiagnostics relpermDiagnostics;
-            relpermDiagnostics.diagnosis(*eclState_, *deck_, asImp_().grid());
-        }
+        // if (enableExperiments) {
+        //     Opm::RelpermDiagnostics relpermDiagnostics;
+        //     relpermDiagnostics.diagnosis(*eclState_, *deck_, asImp_().grid());
+        // }
     }
 private:
     void updateOutputDir_()

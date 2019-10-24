@@ -592,49 +592,52 @@ phasePressures(const Grid& grid,
         {{  std::numeric_limits<double>::max(),
             -std::numeric_limits<double>::max() }}; // Symm. about 0.
 
-    int ncell = 0;
-    {
-        // This code is only supported in three space dimensions
-        assert (Grid::dimensionworld == 3);
+    // int ncell = 0;
+    // {
+    //     // This code is only supported in three space dimensions
+    //     assert (Grid::dimensionworld == 3);
 
-        const int nd = Grid::dimensionworld;
+    //     const int nd = Grid::dimensionworld;
 
-        // Define vertical span as
-        //
-        //   [minimum(node depth(cells)), maximum(node depth(cells))]
-        //
-        // Note: We use a sledgehammer approach--looping all
-        // the nodes of all the faces of all the 'cells'--to
-        // compute those bounds.  This necessarily entails
-        // visiting some nodes (and faces) multiple times.
-        //
-        // Note: The implementation of 'RK4IVP<>' implicitly
-        // imposes the requirement that cell centroids are all
-        // within this vertical span.  That requirement is not
-        // checked.
-        auto cell2Faces = Opm::UgGridHelpers::cell2Faces(grid);
-        auto faceVertices = Opm::UgGridHelpers::face2Vertices(grid);
+    //     // Define vertical span as
+    //     //
+    //     //   [minimum(node depth(cells)), maximum(node depth(cells))]
+    //     //
+    //     // Note: We use a sledgehammer approach--looping all
+    //     // the nodes of all the faces of all the 'cells'--to
+    //     // compute those bounds.  This necessarily entails
+    //     // visiting some nodes (and faces) multiple times.
+    //     //
+    //     // Note: The implementation of 'RK4IVP<>' implicitly
+    //     // imposes the requirement that cell centroids are all
+    //     // within this vertical span.  That requirement is not
+    //     // checked.
+    //     auto cell2Faces = Opm::UgGridHelpers::cell2Faces(grid);
+    //     auto faceVertices = Opm::UgGridHelpers::face2Vertices(grid);
 
-        for (typename CellRange::const_iterator
-                 ci = cells.begin(), ce = cells.end();
-             ci != ce; ++ci, ++ncell)
-        {
-            for (auto fi=cell2Faces[*ci].begin(),
-                     fe=cell2Faces[*ci].end();
-                 fi != fe;
-                 ++fi)
-            {
-                for (auto i = faceVertices[*fi].begin(), e = faceVertices[*fi].end();
-                     i != e; ++i)
-                {
-                    const double z = Opm::UgGridHelpers::vertexCoordinates(grid, *i)[nd-1];
+    //     for (typename CellRange::const_iterator
+    //              ci = cells.begin(), ce = cells.end();
+    //          ci != ce; ++ci, ++ncell)
+    //     {
+    //         for (auto fi=cell2Faces[*ci].begin(),
+    //                  fe=cell2Faces[*ci].end();
+    //              fi != fe;
+    //              ++fi)
+    //         {
+    //             for (auto i = faceVertices[*fi].begin(), e = faceVertices[*fi].end();
+    //                  i != e; ++i)
+    //             {
+    //                 const double z = Opm::UgGridHelpers::vertexCoordinates(grid, *i)[nd-1];
 
-                    if (z < span[0]) { span[0] = z; }
-                    if (z > span[1]) { span[1] = z; }
-                }
-            }
-        }
-    }
+    //                 if (z < span[0]) { span[0] = z; }
+    //                 if (z > span[1]) { span[1] = z; }
+    //             }
+    //         }
+    //     }
+    // }
+    int ncell = grid.size(0);
+    span[0]=500;
+    span[1]=1000;
     const int np = FluidSystem::numPhases;  //reg.phaseUsage().numPhases;
 
     typedef std::vector<double> pval;

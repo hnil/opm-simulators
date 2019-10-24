@@ -278,6 +278,15 @@ opm_add_test(ebos_plain
   DEPENDS opmsimulators
   LIBRARIES opmsimulators)
 
+opm_add_test(ebos_plain_alu
+  ONLY_COMPILE
+  DEFAULT_ENABLE_IF ${EBOS_DEBUG_EXTENSIONS_DEFAULT_ENABLE_IF}
+  SOURCES ebos/ebos_plain_alu.cc
+  EXE_NAME ebos_plain_alu
+  DEPENDS opmsimulators
+  LIBRARIES opmsimulators)
+
+
 if (BUILD_EBOS_EXTENSIONS)
   foreach(TGT ebos_solvent ebos_polymer ebos_foam ebos_gasoil ebos_oilwater ebos_thermal mebos)
     install(TARGETS ${TGT} DESTINATION bin)

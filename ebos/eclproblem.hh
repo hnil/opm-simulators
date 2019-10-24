@@ -29,7 +29,7 @@
 #define EWOMS_ECL_PROBLEM_HH
 
 //#define DISABLE_ALUGRID_SFC_ORDERING 1
-#define EBOS_USE_ALUGRID 1
+//#define EBOS_USE_ALUGRID 1
 
 // make sure that the EBOS_USE_ALUGRID macro. using the preprocessor for this is slightly
 // hacky...
@@ -56,9 +56,7 @@
 #endif
 #include "eclwellmanager.hh"
 #include "eclequilinitializer.hh"
-#if EBOS_USE_ALUGRID
 #include "eclwriter.hh"
-#endif
 #include "ecloutputblackoilmodule.hh"
 #include "ecltransmissibility.hh"
 #include "eclthresholdpressure.hh"
