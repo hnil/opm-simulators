@@ -34,17 +34,8 @@
 // make sure that the EBOS_USE_ALUGRID macro. using the preprocessor for this is slightly
 // hacky...
 #if EBOS_USE_ALUGRID
-//#define DISABLE_ALUGRID_SFC_ORDERING 1
 #define USE_ECLWRITER 0
-#if !HAVE_DUNE_ALUGRID
-#warning "ALUGrid was indicated to be used for the ECL black oil simulator, but this "
-#warning "requires the presence of dune-alugrid >= 2.4. Falling back to Dune::CpGrid"
-#undef EBOS_USE_ALUGRID
-#define EBOS_USE_ALUGRID 0
-#define USE_ECLWRITER 1
-#endif
 #else
-#define EBOS_USE_ALUGRID 0
 #define USE_ECLWRITER 1
 #endif
 

@@ -635,9 +635,22 @@ phasePressures(const Grid& grid,
     //         }
     //     }
     // }
+    const int nd = Grid::dimensionworld;
+    const auto &gridView = grid.leafView();
+    auto elemIt = gridView.template begin</*codim=*/0>();
+    const auto& elemEndIt = gridView.template end</*codim=*/0>();
+    int lc = 0;
+    for (; elemIt != elemEndIt; ++elemIt) {
+        const auto& elem = *elemIt;
+        auto center  = elem.geometry().center();
+        double z = center[nd-1];
+        if (z < span[0]) { span[0] = z; }
+        if (z > span[1]) { span[1] = z; }
+     }
+   
     int ncell = grid.size(0);
-    span[0]=500;
-    span[1]=1000;
+    span[0]=span[0]-1;// just be ensure that the span is not empty
+    span[1]=span[1]+1;
     const int np = FluidSystem::numPhases;  //reg.phaseUsage().numPhases;
 
     typedef std::vector<double> pval;
