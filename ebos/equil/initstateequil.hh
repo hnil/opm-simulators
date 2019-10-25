@@ -636,7 +636,7 @@ phasePressures(const Grid& grid,
     //     }
     // }
     const int nd = Grid::dimensionworld;
-    const auto &gridView = grid.leafView();
+    const auto &gridView = grid.leafGridView();
     auto elemIt = gridView.template begin</*codim=*/0>();
     const auto& elemEndIt = gridView.template end</*codim=*/0>();
     int lc = 0;
