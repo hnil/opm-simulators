@@ -34,7 +34,7 @@
 // make sure that the EBOS_USE_ALUGRID macro. using the preprocessor for this is slightly
 // hacky...
 #if EBOS_USE_ALUGRID
-#define USE_ECLWRITER 0
+#define USE_ECLWRITER 1
 #else
 #define USE_ECLWRITER 1
 #endif

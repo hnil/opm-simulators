@@ -178,10 +178,11 @@ public:
         : simulator_(simulator)
         , collectToIORank_(simulator_.vanguard())
         , eclOutputModule_(simulator, collectToIORank_)
+        , globalGrid_(simulator_.vanguard().grid())  
     {
         if (collectToIORank_.isIORank()) {
-            globalGrid_ = simulator_.vanguard().grid();
-            globalGrid_.switchToGlobalView();
+            //globalGrid_ = simulator_.vanguard().grid();
+            //globalGrid_.switchToGlobalView();
             eclIO_.reset(new Opm::EclipseIO(simulator_.vanguard().eclState(),
                                             Opm::UgGridHelpers::createEclipseGrid(globalGrid_, simulator_.vanguard().eclState().getInputGrid()),
                                             simulator_.vanguard().schedule(),
@@ -480,73 +481,75 @@ private:
             tranz.data[0] = 0.0;
         }
 
-        typedef typename Grid :: LeafGridView  GlobalGridView;
-        const GlobalGridView& globalGridView = globalGrid_.leafGridView();
-#if DUNE_VERSION_NEWER(DUNE_GRID, 2,6)
-        typedef Dune::MultipleCodimMultipleGeomTypeMapper<GlobalGridView> ElementMapper;
-        ElementMapper globalElemMapper(globalGridView, Dune::mcmgElementLayout());
-#else
-        typedef Dune::MultipleCodimMultipleGeomTypeMapper<GlobalGridView, Dune::MCMGElementLayout> ElementMapper;
-        ElementMapper globalElemMapper(globalGridView);
-#endif
+//         typedef typename Grid :: LeafGridView  GlobalGridView;
+//         const GlobalGridView& globalGridView = globalGrid_.leafGridView();
+// #if DUNE_VERSION_NEWER(DUNE_GRID, 2,6)
+//         typedef Dune::MultipleCodimMultipleGeomTypeMapper<GlobalGridView> ElementMapper;
+//         ElementMapper globalElemMapper(globalGridView, Dune::mcmgElementLayout());
+// #else
+//         typedef Dune::MultipleCodimMultipleGeomTypeMapper<GlobalGridView, Dune::MCMGElementLayout> ElementMapper;
+//         ElementMapper globalElemMapper(globalGridView);
+// #endif
 
-        const auto& cartesianCellIdx = globalGrid_.globalCell();
-        const EclTransmissibility<TypeTag>* globalTrans;
+//         //const auto& cartesianCellIdx = globalGrid_.globalCell();
+//         const auto& cartesianCellIdx = Opm::UgGridHelpers::globalCell(globalGrid_);
+            
+//         const EclTransmissibility<TypeTag>* globalTrans;
 
-        if (!collectToIORank_.isParallel())
-        {
-            // in the sequential case we must use the transmissibilites defined by
-            // the problem. (because in the sequential case, the grid manager does
-            // not compute "global" transmissibilities for performance reasons. in
-            // the parallel case, the problem's transmissibilities can't be used
-            // because this object refers to the distributed grid and we need the
-            // sequential version here.)
-            globalTrans = &simulator_.problem().eclTransmissibilities();
-        }
-        else
-        {
-            globalTrans = &(simulator_.vanguard().globalTransmissibility());
-        }
+//         if (!collectToIORank_.isParallel())
+//         {
+//             // in the sequential case we must use the transmissibilites defined by
+//             // the problem. (because in the sequential case, the grid manager does
+//             // not compute "global" transmissibilities for performance reasons. in
+//             // the parallel case, the problem's transmissibilities can't be used
+//             // because this object refers to the distributed grid and we need the
+//             // sequential version here.)
+//             globalTrans = &simulator_.problem().eclTransmissibilities();
+//         }
+//         else
+//         {
+//             globalTrans = &(simulator_.vanguard().globalTransmissibility());
+//         }
 
-        auto elemIt = globalGridView.template begin</*codim=*/0>();
-        const auto& elemEndIt = globalGridView.template end</*codim=*/0>();
-        for (; elemIt != elemEndIt; ++ elemIt) {
-            const auto& elem = *elemIt;
+//         auto elemIt = globalGridView.template begin</*codim=*/0>();
+//         const auto& elemEndIt = globalGridView.template end</*codim=*/0>();
+//         for (; elemIt != elemEndIt; ++ elemIt) {
+//             const auto& elem = *elemIt;
 
-            auto isIt = globalGridView.ibegin(elem);
-            const auto& isEndIt = globalGridView.iend(elem);
-            for (; isIt != isEndIt; ++ isIt) {
-                const auto& is = *isIt;
+//             auto isIt = globalGridView.ibegin(elem);
+//             const auto& isEndIt = globalGridView.iend(elem);
+//             for (; isIt != isEndIt; ++ isIt) {
+//                 const auto& is = *isIt;
 
-                if (!is.neighbor())
-                    continue; // intersection is on the domain boundary
+//                 if (!is.neighbor())
+//                     continue; // intersection is on the domain boundary
 
-                unsigned c1 = globalElemMapper.index(is.inside());
-                unsigned c2 = globalElemMapper.index(is.outside());
+//                 unsigned c1 = globalElemMapper.index(is.inside());
+//                 unsigned c2 = globalElemMapper.index(is.outside());
 
-                if (c1 > c2)
-                    continue; // we only need to handle each connection once, thank you.
+//                 if (c1 > c2)
+//                     continue; // we only need to handle each connection once, thank you.
 
-                // Ordering of compressed and uncompressed index should be the same
-                assert(cartesianCellIdx[c1] <= cartesianCellIdx[c2]);
-                int gc1 = std::min(cartesianCellIdx[c1], cartesianCellIdx[c2]);
-                int gc2 = std::max(cartesianCellIdx[c1], cartesianCellIdx[c2]);
+//                 // Ordering of compressed and uncompressed index should be the same
+//                 assert(cartesianCellIdx[c1] <= cartesianCellIdx[c2]);
+//                 int gc1 = std::min(cartesianCellIdx[c1], cartesianCellIdx[c2]);
+//                 int gc2 = std::max(cartesianCellIdx[c1], cartesianCellIdx[c2]);
 
-                if (gc2 - gc1 == 1) {
-                    tranx.data[gc1] = globalTrans->transmissibility(c1, c2);
-                    continue; // skip other if clauses as they are false, last one needs some computation
-                }
+//                 if (gc2 - gc1 == 1) {
+//                     tranx.data[gc1] = globalTrans->transmissibility(c1, c2);
+//                     continue; // skip other if clauses as they are false, last one needs some computation
+//                 }
 
-                if (gc2 - gc1 == cartDims[0]) {
-                    trany.data[gc1] = globalTrans->transmissibility(c1, c2);
-                    continue; // skipt next if clause as it needs some computation
-                }
+//                 if (gc2 - gc1 == cartDims[0]) {
+//                     trany.data[gc1] = globalTrans->transmissibility(c1, c2);
+//                     continue; // skipt next if clause as it needs some computation
+//                 }
 
-                if ( gc2 - gc1 == cartDims[0]*cartDims[1] ||
-                     directVerticalNeighbors(cartDims, cartesianToActive, gc1, gc2))
-                    tranz.data[gc1] = globalTrans->transmissibility(c1, c2);
-            }
-        }
+//                 if ( gc2 - gc1 == cartDims[0]*cartDims[1] ||
+//                      directVerticalNeighbors(cartDims, cartesianToActive, gc1, gc2))
+//                     tranz.data[gc1] = globalTrans->transmissibility(c1, c2);
+//             }
+//         }
 
         return {{"TRANX", tranx},
                 {"TRANY", trany},
@@ -555,119 +558,119 @@ private:
 
     Opm::NNC exportNncStructure_(const std::unordered_map<int,int>& cartesianToActive) const
     {
-        std::size_t nx = eclState().getInputGrid().getNX();
-        std::size_t ny = eclState().getInputGrid().getNY();
-        auto nncData = sortNncAndApplyEditnnc(eclState().getInputNNC().nncdata(),
-                                              eclState().getInputEDITNNC().data());
-        const auto& unitSystem = simulator_.vanguard().deck().getActiveUnitSystem();
-        std::vector<Opm::NNCdata> outputNnc;
-        std::size_t index = 0;
+   //      std::size_t nx = eclState().getInputGrid().getNX();
+//         std::size_t ny = eclState().getInputGrid().getNY();
+//         auto nncData = sortNncAndApplyEditnnc(eclState().getInputNNC().nncdata(),
+//                                               eclState().getInputEDITNNC().data());
+//         const auto& unitSystem = simulator_.vanguard().deck().getActiveUnitSystem();
+//         std::vector<Opm::NNCdata> outputNnc;
+//         std::size_t index = 0;
 
-        for( const auto& entry : nncData ) {
-            // test whether NNC is not a neighboring connection
-            // cell2>=cell1 holds due to sortNncAndApplyEditnnc
-            assert( entry.cell2 >= entry.cell1 );
-            auto cellDiff = entry.cell2 - entry.cell1;
+//         for( const auto& entry : nncData ) {
+//             // test whether NNC is not a neighboring connection
+//             // cell2>=cell1 holds due to sortNncAndApplyEditnnc
+//             assert( entry.cell2 >= entry.cell1 );
+//             auto cellDiff = entry.cell2 - entry.cell1;
 
-            if (cellDiff != 1 && cellDiff != nx && cellDiff != nx*ny) {
-                auto tt = unitSystem.from_si(Opm::UnitSystem::measure::transmissibility, entry.trans);
-                // Eclipse ignores NNCs (with EDITNNC applied) that are small. Seems like the threshold is 1.0e-6
-                if ( tt >= 1.0e-6 )
-                    outputNnc.emplace_back(entry.cell1, entry.cell2, entry.trans);
-            }
-            ++index;
-        }
+//             if (cellDiff != 1 && cellDiff != nx && cellDiff != nx*ny) {
+//                 auto tt = unitSystem.from_si(Opm::UnitSystem::measure::transmissibility, entry.trans);
+//                 // Eclipse ignores NNCs (with EDITNNC applied) that are small. Seems like the threshold is 1.0e-6
+//                 if ( tt >= 1.0e-6 )
+//                     outputNnc.emplace_back(entry.cell1, entry.cell2, entry.trans);
+//             }
+//             ++index;
+//         }
 
-        auto nncCompare =  []( const Opm::NNCdata& nnc1, const Opm::NNCdata& nnc2){
-                               return nnc1.cell1 < nnc2.cell1 ||
-                                      ( nnc1.cell1 == nnc2.cell1 && nnc1.cell2 < nnc2.cell2);};
-        // Sort the nncData values from the deck as they need to be
-        // Checked when writing NNC transmissibilities from the simulation.
-        std::sort(nncData.begin(), nncData.end(), nncCompare);
+//         auto nncCompare =  []( const Opm::NNCdata& nnc1, const Opm::NNCdata& nnc2){
+//                                return nnc1.cell1 < nnc2.cell1 ||
+//                                       ( nnc1.cell1 == nnc2.cell1 && nnc1.cell2 < nnc2.cell2);};
+//         // Sort the nncData values from the deck as they need to be
+//         // Checked when writing NNC transmissibilities from the simulation.
+//         std::sort(nncData.begin(), nncData.end(), nncCompare);
 
-        typedef typename Grid :: LeafGridView  GlobalGridView;
-        const GlobalGridView& globalGridView = globalGrid_.leafGridView();
-#if DUNE_VERSION_NEWER(DUNE_GRID, 2,6)
-        typedef Dune::MultipleCodimMultipleGeomTypeMapper<GlobalGridView> ElementMapper;
-        ElementMapper globalElemMapper(globalGridView, Dune::mcmgElementLayout());
+//         typedef typename Grid :: LeafGridView  GlobalGridView;
+//         const GlobalGridView& globalGridView = globalGrid_.leafGridView();
+// #if DUNE_VERSION_NEWER(DUNE_GRID, 2,6)
+//         typedef Dune::MultipleCodimMultipleGeomTypeMapper<GlobalGridView> ElementMapper;
+//         ElementMapper globalElemMapper(globalGridView, Dune::mcmgElementLayout());
 
-#else
-        typedef Dune::MultipleCodimMultipleGeomTypeMapper<GlobalGridView, Dune::MCMGElementLayout> ElementMapper;
-        ElementMapper globalElemMapper(globalGridView);
-#endif
+// #else
+//         typedef Dune::MultipleCodimMultipleGeomTypeMapper<GlobalGridView, Dune::MCMGElementLayout> ElementMapper;
+//         ElementMapper globalElemMapper(globalGridView);
+// #endif
 
-        const EclTransmissibility<TypeTag>* globalTrans;
-        if (!collectToIORank_.isParallel()) {
-            // in the sequential case we must use the transmissibilites defined by
-            // the problem. (because in the sequential case, the grid manager does
-            // not compute "global" transmissibilities for performance reasons. in
-            // the parallel case, the problem's transmissibilities can't be used
-            // because this object refers to the distributed grid and we need the
-            // sequential version here.)
-            globalTrans = &simulator_.problem().eclTransmissibilities();
-        }
-        else
-        {
-            globalTrans = &(simulator_.vanguard().globalTransmissibility());
-        }
+//         const EclTransmissibility<TypeTag>* globalTrans;
+//         if (!collectToIORank_.isParallel()) {
+//             // in the sequential case we must use the transmissibilites defined by
+//             // the problem. (because in the sequential case, the grid manager does
+//             // not compute "global" transmissibilities for performance reasons. in
+//             // the parallel case, the problem's transmissibilities can't be used
+//             // because this object refers to the distributed grid and we need the
+//             // sequential version here.)
+//             globalTrans = &simulator_.problem().eclTransmissibilities();
+//         }
+//         else
+//         {
+//             globalTrans = &(simulator_.vanguard().globalTransmissibility());
+//         }
 
-        auto cartDims = simulator_.vanguard().cartesianIndexMapper().cartesianDimensions();
-        auto elemIt = globalGridView.template begin</*codim=*/0>();
-        const auto& elemEndIt = globalGridView.template end</*codim=*/0>();
-        for (; elemIt != elemEndIt; ++ elemIt) {
-            const auto& elem = *elemIt;
+//         auto cartDims = simulator_.vanguard().cartesianIndexMapper().cartesianDimensions();
+//         auto elemIt = globalGridView.template begin</*codim=*/0>();
+//         const auto& elemEndIt = globalGridView.template end</*codim=*/0>();
+//         for (; elemIt != elemEndIt; ++ elemIt) {
+//             const auto& elem = *elemIt;
 
-            auto isIt = globalGridView.ibegin(elem);
-            const auto& isEndIt = globalGridView.iend(elem);
-            for (; isIt != isEndIt; ++ isIt) {
-                const auto& is = *isIt;
+//             auto isIt = globalGridView.ibegin(elem);
+//             const auto& isEndIt = globalGridView.iend(elem);
+//             for (; isIt != isEndIt; ++ isIt) {
+//                 const auto& is = *isIt;
 
-                if (!is.neighbor())
-                    continue; // intersection is on the domain boundary
+//                 if (!is.neighbor())
+//                     continue; // intersection is on the domain boundary
 
-                unsigned c1 = globalElemMapper.index(is.inside());
-                unsigned c2 = globalElemMapper.index(is.outside());
+//                 unsigned c1 = globalElemMapper.index(is.inside());
+//                 unsigned c2 = globalElemMapper.index(is.outside());
 
-                if (c1 > c2)
-                    continue; // we only need to handle each connection once, thank you.
+//                 if (c1 > c2)
+//                     continue; // we only need to handle each connection once, thank you.
 
-                // TODO (?): use the cartesian index mapper to make this code work
-                // with grids other than Dune::CpGrid. The problem is that we need
-                // the a mapper for the sequential grid, not for the distributed one.
-                std::size_t cc1 = globalGrid_.globalCell()[c1];
-                std::size_t cc2 = globalGrid_.globalCell()[c2];
+//                 // TODO (?): use the cartesian index mapper to make this code work
+//                 // with grids other than Dune::CpGrid. The problem is that we need
+//                 // the a mapper for the sequential grid, not for the distributed one.
+//                 std::size_t cc1 = globalGrid_.globalCell()[c1];
+//                 std::size_t cc2 = globalGrid_.globalCell()[c2];
 
-                if ( cc2 < cc1 )
-                    std::swap(cc1, cc2);
+//                 if ( cc2 < cc1 )
+//                     std::swap(cc1, cc2);
 
-                auto cellDiff = cc2 - cc1;
+//                 auto cellDiff = cc2 - cc1;
 
-                if (cellDiff != 1 &&
-                    cellDiff != nx &&
-                    cellDiff != nx*ny &&
-                    ! directVerticalNeighbors(cartDims, cartesianToActive, cc1, cc2)) {
-                    // We need to check whether an NNC for this face was also specified
-                    // via the NNC keyword in the deck (i.e. in the first origNncSize entries.
-                    auto t = globalTrans->transmissibility(c1, c2);
-                    auto candidate = std::lower_bound(nncData.begin(), nncData.end(), Opm::NNCdata(cc1, cc2, 0.0), nncCompare);
+//                 if (cellDiff != 1 &&
+//                     cellDiff != nx &&
+//                     cellDiff != nx*ny &&
+//                     ! directVerticalNeighbors(cartDims, cartesianToActive, cc1, cc2)) {
+//                     // We need to check whether an NNC for this face was also specified
+//                     // via the NNC keyword in the deck (i.e. in the first origNncSize entries.
+//                     auto t = globalTrans->transmissibility(c1, c2);
+//                     auto candidate = std::lower_bound(nncData.begin(), nncData.end(), Opm::NNCdata(cc1, cc2, 0.0), nncCompare);
 
-                    while ( candidate != nncData.end() && candidate->cell1 == cc1
-                         && candidate->cell2 == cc2) {
-                        t -= candidate->trans;
-                        ++candidate;
-                    }
-                    // eclipse ignores NNCs with zero transmissibility (different threshold than for NNC
-                    // with corresponding EDITNNC above). In addition we do set small transmissibilties
-                    // to zero when setting up the simulator. These will be ignored here, too.
-                    auto tt = unitSystem.from_si(Opm::UnitSystem::measure::transmissibility, std::abs(t));
-                    if ( tt > 1e-12 )
-                        outputNnc.push_back({cc1, cc2, t});
-                }
-            }
-        }
-        Opm::NNC ret;
-        for(const auto& nncItem: outputNnc)
-            ret.addNNC(nncItem.cell1, nncItem.cell2, nncItem.trans);
+//                     while ( candidate != nncData.end() && candidate->cell1 == cc1
+//                          && candidate->cell2 == cc2) {
+//                         t -= candidate->trans;
+//                         ++candidate;
+//                     }
+//                     // eclipse ignores NNCs with zero transmissibility (different threshold than for NNC
+//                     // with corresponding EDITNNC above). In addition we do set small transmissibilties
+//                     // to zero when setting up the simulator. These will be ignored here, too.
+//                     auto tt = unitSystem.from_si(Opm::UnitSystem::measure::transmissibility, std::abs(t));
+//                     if ( tt > 1e-12 )
+//                         outputNnc.push_back({cc1, cc2, t});
+//                 }
+//             }
+//         }
+         Opm::NNC ret;
+//         for(const auto& nncItem: outputNnc)
+//             ret.addNNC(nncItem.cell1, nncItem.cell2, nncItem.trans);
         return ret;
     }
 
@@ -723,7 +726,7 @@ private:
     CollectDataToIORankType collectToIORank_;
     EclOutputBlackOilModule<TypeTag> eclOutputModule_;
     std::unique_ptr<Opm::EclipseIO> eclIO_;
-    Grid globalGrid_;
+    const Grid& globalGrid_;
     std::unique_ptr<TaskletRunner> taskletRunner_;
     Scalar restartTimeStepSize_;
 

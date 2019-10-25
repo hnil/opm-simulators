@@ -335,7 +335,7 @@ public:
 
                 // Scatter the global index to local index for lookup during restart
                 ElementIndexScatterHandle<EquilElementMapper,ElementMapper> handle(equilElemMapper, elemMapper, localIdxToGlobalIdx_);
-                vanguard.grid().scatterData(handle);
+                //vanguard.grid().scatterData(handle);
 
                 // loop over all elements (global grid) and store Cartesian index
                 auto elemIt = vanguard.equilGrid().leafGridView().template begin<0>();
@@ -361,13 +361,13 @@ public:
                 // But should work since we only receive, i.e. use the second parameter.
                 ElementIndexScatterHandle<ElementMapper, ElementMapper> handle(elemMapper, elemMapper,
                                                                                    localIdxToGlobalIdx_);
-                vanguard.grid().scatterData(handle);
+                //vanguard.grid().scatterData(handle);
             }
 
             // Sync the global element indices
             ElementIndexHandle<ElementMapper> handle(elemMapper, localIdxToGlobalIdx_);
-            vanguard.grid().communicate(handle, Dune::InteriorBorder_All_Interface,
-                                        Dune::ForwardCommunication);
+            //vanguard.grid().communicate(handle, Dune::InteriorBorder_All_Interface,
+            //                            Dune::ForwardCommunication);
             localIndexMap_.clear();
             const size_t gridSize = vanguard.grid().size(0);
             localIndexMap_.reserve(gridSize);

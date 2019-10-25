@@ -165,6 +165,10 @@ public:
     const EquilCartesianIndexMapper& equilCartesianIndexMapper() const
     { return *equilCartesianIndexMapper_; }
 
+    // const EclTransmissibility<TypeTag>& globalTransmissibility() const
+    // {
+    // }
+    
     void releaseGlobalTransmissibilities(){
     }
 
