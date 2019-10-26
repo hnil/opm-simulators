@@ -35,17 +35,14 @@
 // hacky...
 #if EBOS_USE_ALUGRID
 //#define DISABLE_ALUGRID_SFC_ORDERING 1
-#define USE_ECLWRITER 0
 #if !HAVE_DUNE_ALUGRID
 #warning "ALUGrid was indicated to be used for the ECL black oil simulator, but this "
 #warning "requires the presence of dune-alugrid >= 2.4. Falling back to Dune::CpGrid"
 #undef EBOS_USE_ALUGRID
 #define EBOS_USE_ALUGRID 0
-#define USE_ECLWRITER 1
 #endif
 #else
 #define EBOS_USE_ALUGRID 0
-#define USE_ECLWRITER 1
 #endif
 
 #if EBOS_USE_ALUGRID
@@ -453,9 +450,9 @@ class EclProblem : public GET_PROP_TYPE(TypeTag, BaseProblem)
 
     typedef Opm::MathToolbox<Evaluation> Toolbox;
     typedef Dune::FieldMatrix<Scalar, dimWorld, dimWorld> DimMatrix;
-#if USE_ECLWRITER
+
     typedef EclWriter<TypeTag> EclWriterType;
-#endif
+
     typedef EclTracerModel<TypeTag> TracerModel;
 
     typedef typename GridView::template Codim<0>::Iterator ElementIterator;
@@ -474,9 +471,7 @@ public:
     static void registerParameters()
     {
         ParentType::registerParameters();
- #if USE_ECLWRITER       
         EclWriterType::registerParameters();
-#endif
         VtkEclTracerModule<TypeTag>::registerParameters();
 
         EWOMS_REGISTER_PARAM(TypeTag, bool, EnableWriteAllSolutions,
@@ -615,9 +610,8 @@ public:
         FoamModule::initFromDeck(vanguard.deck(), vanguard.eclState());
 
         // create the ECL writer
-#if USE_ECLWRITER        
         eclWriter_.reset(new EclWriterType(simulator));
-#endif
+
         enableDriftCompensation_ = EWOMS_GET_PARAM(TypeTag, bool, EclEnableDriftCompensation);
 
         enableEclOutput_ = EWOMS_GET_PARAM(TypeTag, bool, EnableEclOutput);
@@ -728,10 +722,9 @@ public:
             checkDeckCompatibility_();
 
         // write the static output files (EGRID, INIT, SMSPEC, etc.)
-#if USE_ECLWRITER        
         if (enableEclOutput_)
             eclWriter_->writeInit();
-#endif
+
         simulator.vanguard().releaseGlobalTransmissibilities();
 
         // after finishing the initialization and writing the initial solution, we move
@@ -1043,11 +1036,10 @@ public:
         ParentType::writeOutput(verbose);
 
         bool isSubStep = !EWOMS_GET_PARAM(TypeTag, bool, EnableWriteAllSolutions) && !this->simulator().episodeWillBeOver();
-#if USE_ECLWRITER
+
         eclWriter_->evalSummaryState(isSubStep);
         if (enableEclOutput_)
             eclWriter_->writeOutput(isSubStep);
-#endif
     }
 
 
@@ -1741,11 +1733,7 @@ public:
     { return initialFluidStates_[globalDofIdx]; }
 
     const Opm::EclipseIO& eclIO() const
-    {
-#if USE_ECLWRITER
-        return eclWriter_->eclIO();
-#endif
-    }
+    { return eclWriter_->eclIO(); }
 
     bool vapparsActive() const
     {
@@ -2500,12 +2488,10 @@ private:
         simulator.startNextEpisode(simulator.startTime() + simulator.time(),
                                    timeMap.getTimeStepLength(episodeIdx));
         simulator.setEpisodeIndex(episodeIdx);
-#if USE_ECLWRITER
+
         eclWriter_->beginRestart();
+
         Scalar dt = std::min(eclWriter_->restartTimeStepSize(), simulator.episodeLength());
-#else
-        Scalar dt = simulator.episodeLength();
-#endif        
         simulator.setTimeStepSize(dt);
 
         size_t numElems = this->model().numGridDof();
@@ -2527,7 +2513,6 @@ private:
         for (size_t elemIdx = 0; elemIdx < numElems; ++elemIdx) {
             auto& elemFluidState = initialFluidStates_[elemIdx];
             elemFluidState.setPvtRegionIndex(pvtRegionIndex(elemIdx));
-#if USE_ECLWRITER            
             eclWriter_->eclOutputModule().initHysteresisParams(simulator, elemIdx);
             eclWriter_->eclOutputModule().assignToFluidState(elemFluidState, elemIdx);
 
@@ -2541,7 +2526,6 @@ private:
 
             if (enablePolymer)
                  polymerConcentration_[elemIdx] = eclWriter_->eclOutputModule().getPolymerConcentration(elemIdx);
-#endif            
             // if we need to restart for polymer molecular weight simulation, we need to add related here
         }
 
@@ -2586,9 +2570,8 @@ private:
         // 100% correctly for such elements, let's play safe and explicitly synchronize
         // using message passing.
         this->model().syncOverlap();
-#if USE_ECLWRITER
+
         eclWriter_->endRestart();
-#endif
     }
 
     void processRestartSaturations_(InitialFluidState& elemFluidState, Scalar& solventSaturation)
@@ -3204,9 +3187,8 @@ private:
     EclAquiferModel aquiferModel_;
 
     bool enableEclOutput_;
-#if USE_ECLWRITER   
     std::unique_ptr<EclWriterType> eclWriter_;
-#endif
+
     PffGridVector<GridView, Stencil, PffDofData_, DofMapper> pffDofData_;
     TracerModel tracerModel_;
 
