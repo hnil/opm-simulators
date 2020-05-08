@@ -24,7 +24,7 @@
 #include <iomanip>
 #include <ostream>
 #include <sstream>
-
+#include <opm/common/OpmLog/OpmLog.hpp>
 namespace Opm
 {
     SimulatorReportBase::SimulatorReportBase(bool verbose)
@@ -216,7 +216,7 @@ namespace Opm
 	    os << std::endl;
 	}
 	if(not(this->linear_solve_time == all.linear_solve_time)){
-	    Opm::debug("Inconsistency between timestep report and total report");
+	    OpmLog::debug("Inconsistency between timestep report and total report");
 	}
     }
     
