@@ -242,15 +242,23 @@ private:
         });
         doAddCreator("amg", [](const O& op, const P& prm, const std::function<Vector()>&, const C& comm) {
             const std::string smoother = prm.get<std::string>("smoother", "ParOverILU0");
-            if (smoother == "ILU0" || smoother == "ParOverILU0") {
+	    auto crit = amgCriterion(prm);
+            if (smoother == "ParOverILU0") {
                 using Smoother = Opm::ParallelOverlappingILU0<M, V, V, C>;
-                auto crit = amgCriterion(prm);
                 auto sargs = amgSmootherArgs<Smoother>(prm);
                 return std::make_shared<Dune::Amg::AMGCPR<O, V, Smoother, C>>(op, crit, sargs, comm);
-            } else {
+	    // } else if (smoother == "ILU0") {
+	    // 	using Smoother = Dune::BlockPreconditioner<V, V, C, Dune::SeqILU0<M, V, V> >;
+            //     auto sargs = amgSmootherArgs<Smoother>(prm);
+            //     return std::make_shared<Dune::Amg::AMGCPR<O, V, Smoother, C>>(op, crit, sargs, comm);
+	    // } else if (smoother == "Jac") {
+	    // 	using Smoother = Dune::BlockPreconditioner<V, V, C, Dune::SeqJac<M, V, V>>;
+            //     auto sargs = amgSmootherArgs<Smoother>(prm);
+            //     return std::make_shared<Dune::Amg::AMGCPR<O, V, Smoother, C>>(op, crit, sargs, comm);
+             } else {
                 OPM_THROW(std::invalid_argument, "Properties: No smoother with name " << smoother <<".");
             }
-        });
+	});
         doAddCreator("cpr", [](const O& op, const P& prm, const std::function<Vector()> weightsCalculator, const C& comm) {
             assert(weightsCalculator);
             return std::make_shared<OwningTwoLevelPreconditioner<O, V, false, Comm>>(op, prm, weightsCalculator, comm);
