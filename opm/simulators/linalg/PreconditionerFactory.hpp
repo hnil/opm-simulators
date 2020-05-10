@@ -242,22 +242,24 @@ private:
         });
         doAddCreator("amg", [](const O& op, const P& prm, const std::function<Vector()>&, const C& comm) {
             const std::string smoother = prm.get<std::string>("smoother", "ParOverILU0");
+	    std::shared_ptr<Dune::PreconditionerWithUpdate<V, V>> ptr_base;
 	    auto crit = amgCriterion(prm);
             if (smoother == "ParOverILU0") {
                 using Smoother = Opm::ParallelOverlappingILU0<M, V, V, C>;
                 auto sargs = amgSmootherArgs<Smoother>(prm);
-                return std::make_shared<Dune::Amg::AMGCPR<O, V, Smoother, C>>(op, crit, sargs, comm);
-	    // } else if (smoother == "ILU0") {
-	    // 	using Smoother = Dune::BlockPreconditioner<V, V, C, Dune::SeqILU0<M, V, V> >;
-            //     auto sargs = amgSmootherArgs<Smoother>(prm);
-            //     return std::make_shared<Dune::Amg::AMGCPR<O, V, Smoother, C>>(op, crit, sargs, comm);
-	    // } else if (smoother == "Jac") {
-	    // 	using Smoother = Dune::BlockPreconditioner<V, V, C, Dune::SeqJac<M, V, V>>;
-            //     auto sargs = amgSmootherArgs<Smoother>(prm);
-            //     return std::make_shared<Dune::Amg::AMGCPR<O, V, Smoother, C>>(op, crit, sargs, comm);
+                ptr_base = std::make_shared<Dune::Amg::AMGCPR<O, V, Smoother, C>>(op, crit, sargs, comm);
+	    } else if (smoother == "ILU0") {
+	    	using Smoother = Dune::BlockPreconditioner<V, V, C, Dune::SeqILU0<M, V, V> >;
+                auto sargs = amgSmootherArgs<Smoother>(prm);
+                ptr_base = std::make_shared<Dune::Amg::AMGCPR<O, V, Smoother, C>>(op, crit, sargs, comm);
+	    } else if (smoother == "Jac") {
+	    	using Smoother = Dune::BlockPreconditioner<V, V, C, Dune::SeqJac<M, V, V>>;
+                auto sargs = amgSmootherArgs<Smoother>(prm);
+                ptr_base = std::make_shared<Dune::Amg::AMGCPR<O, V, Smoother, C>>(op, crit, sargs, comm);
              } else {
                 OPM_THROW(std::invalid_argument, "Properties: No smoother with name " << smoother <<".");
             }
+	    return ptr_base;
 	});
         doAddCreator("cpr", [](const O& op, const P& prm, const std::function<Vector()> weightsCalculator, const C& comm) {
             assert(weightsCalculator);
