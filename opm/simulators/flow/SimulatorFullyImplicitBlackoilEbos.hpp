@@ -232,7 +232,7 @@ public:
                 report += stepReport;
             } else {
                 // solve for complete report step
-                auto stepReport = solver->step(timer);
+                auto stepReport = solver->stepFull(timer);
                 report += stepReport;
                 if (terminalOutput_) {
                     std::ostringstream ss;
