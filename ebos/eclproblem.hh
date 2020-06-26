@@ -691,7 +691,7 @@ public:
         }
         pressure_.resize(numDof);
         totalSaturation_.resize(numDof, 1.0);
-  
+
         updateElementDepths_();
         readRockParameters_();
         readMaterialParameters_();
@@ -1026,7 +1026,7 @@ public:
         std::string output_file(oss.str());
         fs::path full_path = output_dir / output_file;
         std::string prefix = full_path.string() + ".txt";
-        {            
+        {
 #if HAVE_MPI
             //std::string filename = prefix + ename + "matrix_istl";
 #endif
@@ -1038,10 +1038,10 @@ public:
             }
             for(const auto& v : totalSaturation_){
                 file << v << std::endl;
-            }            
+            }
         }
     }
-    
+
     /*!
      * \brief Called by the simulator after the end of an episode.
      */
@@ -1801,7 +1801,7 @@ public:
 
     /*!
      * \brief Returns an element's pressure of the oil phase that was at the begining
-     * of the timestep need for sequential       
+     * of the timestep need for sequential
      *
      */
     Scalar pressure(unsigned globalDofIdx,unsigned phaseIndex) const
@@ -1819,17 +1819,17 @@ public:
         return totalSaturation_;
     }
 
-    void setTotalSaturation(std::vector<Scalar> totSat) 
+    void setTotalSaturation(std::vector<Scalar> totSat)
     {
         totalSaturation_ = totSat;
     }
-    
+
     void totalSaturationOne(){
         for(auto& v : totalSaturation_){
             v=1.0;
         }
     }
-    
+
     Scalar totalFlux(unsigned globalIndex,unsigned loc_index) const{
         //unsigned globalIndx = elemCtx.globalSpaceIndex(/*spaceIdx=*/0, /*timeIdx=*/0);
         //for (unsigned scvfIdx = 0; scvfIdx < numInteriorFaces; scvfIdx++) {
@@ -1984,22 +1984,22 @@ public:
         return overburdenPressure_[elementIdx];
     }
     /*!
-     * \brief update pressure and totalSaturation 
+     * \brief update pressure and totalSaturation
      * update copy of pressure and total saturation for sequential solve
      */
     bool updatePressureAndFluxes(){
         // maybe use simulation type instead
-        std::string simulationtype  = EWOMS_GET_PARAM(TypeTag, std::string, SimulationType); 
+        std::string simulationtype  = EWOMS_GET_PARAM(TypeTag, std::string, SimulationType);
         bool updated = false;
         if(not(simulationtype == "implicit")){
-            this->updatePressure_();               
+            this->updatePressure_();
             this->updateFluxes_();
             updated = true;
         }
         return updated;
     }
     bool updateTotalSaturation(){
-        std::string simulationtype  = EWOMS_GET_PARAM(TypeTag, std::string, SimulationType); 
+        std::string simulationtype  = EWOMS_GET_PARAM(TypeTag, std::string, SimulationType);
         // maybe use simulation type instead
         bool updated = false;
         if(not(simulationtype == "implicit")){
@@ -2271,7 +2271,7 @@ private:
     }
 
     bool updatePressure_()
-    {        
+    {
         ElementContext elemCtx(this->simulator());
         const auto& vanguard = this->simulator().vanguard();
         auto elemIt = vanguard.gridView().template begin</*codim=*/0>();
@@ -2299,7 +2299,7 @@ private:
     }
 
     bool updateTotalSaturation_()
-    {        
+    {
         ElementContext elemCtx(this->simulator());
         const auto& vanguard = this->simulator().vanguard();
         auto elemIt = vanguard.gridView().template begin</*codim=*/0>();
@@ -2312,11 +2312,11 @@ private:
             const auto& iq = elemCtx.intensiveQuantities(/*spaceIdx=*/0, /*timeIdx=*/0);
             const auto& fs = iq.fluidState();
             totalSaturation_[compressedDofIdx] = Opm::getValue(fs.totalSaturation());
-        }       
+        }
         return true;
     }
 
-    
+
     void readRockParameters_()
     {
         const auto& simulator = this->simulator();
@@ -2976,7 +2976,7 @@ private:
     {
         Opm::ConditionalStorage<enableEnergy, Scalar> thermalHalfTrans;
         Scalar transmissibility;
-     };
+    };
 
     // update the prefetch friendly data object
     void updatePffDofData_()
@@ -3002,8 +3002,8 @@ private:
         pffDofData_.update(distFn);
     }
 
-    
-        
+
+
     void updateFluxes_(){
         const auto& vanguard = this->simulator().vanguard();
         unsigned numElems = vanguard.gridView().size(/*codim=*/0);
@@ -3013,7 +3013,7 @@ private:
         const auto& elemEndIt = vanguard.gridView().template end</*codim=*/0>();
         for (; elemIt != elemEndIt; ++elemIt) {
             const Element& elem = *elemIt;
-            
+
             //elemCtx.updatePrimaryStencil(elem);
             //elemCtx.updatePrimaryIntensiveQuantities(/*timeIdx=*/0);
             elemCtx.updateStencil(elem);
@@ -3033,10 +3033,10 @@ private:
                 // this is what I want
                 const auto& totalflux = extQuants.totalFlux();
                 totalFlux_[compressedDofIdx][scvfIdx] = Toolbox::value(totalflux);
-            }   
+            }
         }
     }
-     
+
     void readBoundaryConditions_()
     {
         nonTrivialBoundaryConditions_ = false;
