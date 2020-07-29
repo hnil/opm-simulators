@@ -2455,6 +2455,9 @@ namespace Opm
                                 const WellState& well_state,
                                 Opm::DeferredLogger& deferred_logger)
     {
+        const LinearizationType& linearizationType = ebosSimulator.model().linearizer().getLinearizationType();
+        if(linearizationType.type == Opm::LinearizationType::seqtransport) return; // not updating the explicit quantities
+
         updatePrimaryVariables(well_state, deferred_logger);
         initPrimaryVariablesEvaluation();
         computeWellConnectionPressures(ebosSimulator, well_state);
