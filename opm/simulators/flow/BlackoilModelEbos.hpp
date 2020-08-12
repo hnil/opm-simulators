@@ -895,6 +895,7 @@ namespace Opm {
                         msg += ") ";
                     }
                     OpmLog::debug(msg);
+                    OpmLog::info(msg);
                 }
                 std::ostringstream ss;
                 const std::streamsize oprec = ss.precision(3);
@@ -909,6 +910,7 @@ namespace Opm {
                 ss.precision(oprec);
                 ss.flags(oflags);
                 OpmLog::debug(ss.str());
+                OpmLog::info(ss.str());
             }
 
             return report;
