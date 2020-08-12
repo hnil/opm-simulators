@@ -1010,6 +1010,8 @@ public:
 
 
     void writeExtra(){
+        // Currently, the extra output is only for sequential simulation
+        if ( EWOMS_GET_PARAM(TypeTag, std::string, SimulationType) != "seq" ) return;
         std::string dir = this->simulator().problem().outputDir();
         if (dir == ".") {
             dir = "";
