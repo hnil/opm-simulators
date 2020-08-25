@@ -484,12 +484,7 @@ namespace Opm {
             return ebosSimulator_.model().newtonMethod().linearSolver().iterations ();
         }
 
-        std::unique_ptr<
-            Dune::FlexibleSolver< Dune::BCRSMatrix< Dune::FieldMatrix<double,1,1>>,
-                                  Dune::BlockVector<Dune::FieldVector<double,1>>
-                                  >            
-            >
-        makePressureSolver(Dune::BCRSMatrix< Dune::FieldMatrix<double,1,1>>& pmatrix) {
+        void makePressureSolver(Dune::BCRSMatrix< Dune::FieldMatrix<double,1,1>>& pmatrix) {
             boost::property_tree::ptree prm;
                 if (std::filesystem::exists(param_.pressure_solver_json_) ) {
                     try{
@@ -513,17 +508,9 @@ namespace Opm {
                 }
                 std::any parallelInformation;
                 extractParallelGridInformationToISTL(ebosSimulator_.vanguard().grid(), parallelInformation);
-                using AbstractOperatorType = Dune::AssembledLinearOperator<PressureMatrixType, PressureVectorType, PressureVectorType>;
-                std::unique_ptr<AbstractOperatorType> operator_for_flexiblesolver;
+                
+                
                 std::function<PressureVectorType()> weightsCalculator;// dummy
-                std::unique_ptr<PressureSolverType> pressureSolver;
-#if HAVE_MPI
-                using Communication = Dune::OwnerOverlapCopyCommunication<int, int>;
-#else
-                using Communication = int; // Dummy type
-#endif
-                std::unique_ptr<Communication> comm;
-
 #if HAVE_MPI
                 if (ebosSimulator_.gridView().comm().size() > 1) {
                     // Parallel case.
@@ -531,21 +518,19 @@ namespace Opm {
                     // Parallel case.
                     const ParallelISTLInformation* parinfo = std::any_cast<ParallelISTLInformation>(&parallelInformation);
                     assert(parinfo);
-                    comm = std::make_unique<Communication>(parinfo->communicator());
+                    comm_ = std::make_unique<Communication>(parinfo->communicator());
                     using ParOperatorType = Dune::OverlappingSchwarzOperator<PressureMatrixType, PressureVectorType,
                                                                              PressureVectorType, Communication>;
-                    operator_for_flexiblesolver = std::make_unique<ParOperatorType>(pmatrix, *comm);
-                    pressureSolver = std::make_unique<PressureSolverType>(*operator_for_flexiblesolver, *comm , prm, weightsCalculator);
+                    operator_for_flexiblesolver_ = std::make_unique<ParOperatorType>(pmatrix, *comm_);
+                    pressureSolver_ = std::make_unique<PressureSolverType>(*operator_for_flexiblesolver_, *comm_ , prm, weightsCalculator);
                 } else
 #endif
                 {
                     // Serial case.
                     using SeqLinearOperator = Dune::MatrixAdapter<PressureMatrixType, PressureVectorType, PressureVectorType>;
-                    operator_for_flexiblesolver = std::make_unique<SeqLinearOperator>(pmatrix);
-                    pressureSolver = std::make_unique<PressureSolverType>(*operator_for_flexiblesolver, prm, weightsCalculator);
+                    operator_for_flexiblesolver_ = std::make_unique<SeqLinearOperator>(pmatrix);
+                    pressureSolver_ = std::make_unique<PressureSolverType>(*operator_for_flexiblesolver_, prm, weightsCalculator);
                 }
-                return pressureSolver;
-
         }
         bool shouldCreatePressureSolver(){
             if(!pressureSolver_){
@@ -596,7 +581,7 @@ namespace Opm {
                 PressureVectorType rhs(ebosResid.size(),0);
                 PressureHelper::moveToPressureEqn(ebosResid, rhs, weights);
                 if(this->shouldCreatePressureSolver()){
-                    pressureSolver_ = makePressureSolver(*pmatrix_);
+                    this->makePressureSolver(*pmatrix_);
                 }else{
                     pressureSolver_->preconditioner().update();
                 }
@@ -1146,7 +1131,15 @@ namespace Opm {
         double maxResidualAllowed() const { return param_.max_residual_allowed_; }
         double linear_solve_setup_time_;
         std::unique_ptr<PressureSolverType> pressureSolver_;
+        using AbstractOperatorType = Dune::AssembledLinearOperator<PressureMatrixType, PressureVectorType, PressureVectorType>;
+        std::unique_ptr<AbstractOperatorType> operator_for_flexiblesolver_;
         std::unique_ptr<PressureMatrixType> pmatrix_;
+#if HAVE_MPI
+        using Communication = Dune::OwnerOverlapCopyCommunication<int, int>;
+#else
+        using Communication = int; // Dummy type
+#endif
+        std::unique_ptr<Communication> comm_;
         
     public:
         std::vector<bool> wasSwitched_;
