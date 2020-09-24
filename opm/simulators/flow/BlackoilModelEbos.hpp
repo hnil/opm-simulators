@@ -35,7 +35,9 @@
 #include <opm/simulators/aquifers/BlackoilAquiferModel.hpp>
 #include <opm/simulators/wells/WellConnectionAuxiliaryModule.hpp>
 #include <opm/simulators/flow/countGlobalCells.hpp>
+
 #include <opm/simulators/flow/PressureMatrixHelper.hpp>
+#include <opm/simulators/linalg/findOverlapRowsAndColumns.hpp>
 
 #include <opm/grid/UnstructuredGrid.h>
 #include <opm/simulators/timestepping/SimulatorReport.hpp>
@@ -111,9 +113,10 @@ namespace Opm {
         // ---------  Types and enums  ---------
         typedef WellStateFullyImplicitBlackoil WellState;
         typedef BlackoilModelParametersEbos<TypeTag> ModelParameters;
-
+        
         typedef typename GET_PROP_TYPE(TypeTag, Simulator)         Simulator;
         typedef typename GET_PROP_TYPE(TypeTag, Grid)              Grid;
+        typedef typename GET_PROP_TYPE(TypeTag, GridView)          GridView;
         typedef typename GET_PROP_TYPE(TypeTag, ElementContext)    ElementContext;
         typedef typename GET_PROP_TYPE(TypeTag, SparseMatrixAdapter) SparseMatrixAdapter;
         typedef typename GET_PROP_TYPE(TypeTag, SolutionVector)    SolutionVector ;
@@ -513,6 +516,10 @@ namespace Opm {
                 std::function<PressureVectorType()> weightsCalculator;// dummy
 #if HAVE_MPI
                 if (ebosSimulator_.gridView().comm().size() > 1) {
+                    using ElementMapper =
+                        Dune::MultipleCodimMultipleGeomTypeMapper<GridView>;
+                    ElementMapper elemMapper(ebosSimulator_.vanguard().grid().leafGridView(), Dune::mcmgElementLayout());
+                    detail::findOverlapAndInterior(ebosSimulator_.vanguard().grid(), elemMapper, overlapRows_, interiorRows_);
                     // Parallel case.
                     assert(parallelInformation.type() == typeid(ParallelISTLInformation));
                     // Parallel case.
@@ -521,6 +528,8 @@ namespace Opm {
                     comm_ = std::make_unique<Communication>(parinfo->communicator());
                     using ParOperatorType = Dune::OverlappingSchwarzOperator<PressureMatrixType, PressureVectorType,
                                                                              PressureVectorType, Communication>;
+                   const size_t size = pmatrix.N();
+                    parinfo->copyValuesTo(comm_->indexSet(), comm_->remoteIndices(), size, 1);
                     operator_for_flexiblesolver_ = std::make_unique<ParOperatorType>(pmatrix, *comm_);
                     pressureSolver_ = std::make_unique<PressureSolverType>(*operator_for_flexiblesolver_, *comm_ , prm, weightsCalculator);
                 } else
@@ -544,6 +553,26 @@ namespace Opm {
             assert(false);
             
         }
+        void makeOverlapRowsInvalid(PressureMatrixType& matrix) const
+        {
+            //value to set on diagonal
+            const int numEq = PressureMatrixType::block_type::rows;
+            typename PressureMatrixType::block_type diag_block(0.0);
+            for (int eq = 0; eq < diag_block.N(); ++eq)
+                diag_block[eq][eq] = 1.0;
+            
+            //loop over precalculated overlap rows and columns
+            for (auto row = overlapRows_.begin(); row != overlapRows_.end(); row++ )
+            {
+                int lcell = *row;
+                // Zero out row.
+                matrix[lcell] = 0.0;
+                
+                //diagonal block set to diag(1.0).
+                matrix[lcell][lcell] = diag_block;
+            }
+        }
+        
         /// Solve the Jacobian system Jx = r where J is the Jacobian and
         /// r is the residual.
         void solveJacobianSystem(BVector& x)
@@ -578,14 +607,15 @@ namespace Opm {
                                                                  pressureVarIndex,
                                                                  weights);
                 }
+                // ned to make overlap matrixes invalid
+                this->makeOverlapRowsInvalid(*pmatrix_);
                 PressureVectorType rhs(ebosResid.size(),0);
                 PressureHelper::moveToPressureEqn(ebosResid, rhs, weights);
                 if(this->shouldCreatePressureSolver()){
                     this->makePressureSolver(*pmatrix_);
                 }else{
                     pressureSolver_->preconditioner().update();
-                }
-                
+                }              
                 PressureVectorType xp(x.size(),0);
                 Dune::InverseOperatorResult res;
                 pressureSolver_->apply(xp,rhs, res);
@@ -624,7 +654,8 @@ namespace Opm {
                 ebosSolver.solve(x);
             }
        }
-
+       
+     
         void updateSolution(){
             unsigned numDof = ebosSimulator_.model().numGridDof();
             BVector dx(numDof,0);
@@ -977,7 +1008,8 @@ namespace Opm {
             BVector weights = this->getPressureWeights(pressureVarIndex);
             const auto& ebosResid = ebosSimulator_.model().linearizer().residual();
             double norm=0.0;
-            for(size_t i = 0; i< weights.size(); i++){
+            //for(size_t i = 0; i< weights.size(); i++){
+            for(const int i : interiorRows_){    
                 auto& wb = weights[i];
                 auto& resb= ebosResid[i];
                 double lnorm=0.0;
@@ -986,6 +1018,7 @@ namespace Opm {
                 }
                 norm = std::max(lnorm,norm);
             }
+            norm = ebosSimulator_.vanguard().gridView().comm().sum(norm);
             std::ostringstream ss;
             ss << "Iteration " << iteration << " Norm of pressure equation " << norm;
             OpmLog::info(ss.str());
@@ -1140,7 +1173,8 @@ namespace Opm {
         using Communication = int; // Dummy type
 #endif
         std::unique_ptr<Communication> comm_;
-        
+        std::vector<int> overlapRows_;
+        std::vector<int> interiorRows_;
     public:
         std::vector<bool> wasSwitched_;
     };
