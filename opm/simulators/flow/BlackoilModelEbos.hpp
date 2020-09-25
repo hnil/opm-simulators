@@ -519,7 +519,7 @@ namespace Opm {
                     using ElementMapper =
                         Dune::MultipleCodimMultipleGeomTypeMapper<GridView>;
                     ElementMapper elemMapper(ebosSimulator_.vanguard().grid().leafGridView(), Dune::mcmgElementLayout());
-                    detail::findOverlapAndInterior(ebosSimulator_.vanguard().grid(), elemMapper, overlapRows_, interiorRows_);
+                    detail::findOverlapAndInterior(ebosSimulator_.vanguard().grid(), elemMapper, overlapRows_, interiorRows_);// sems to be wrong in serial
                     // Parallel case.
                     assert(parallelInformation.type() == typeid(ParallelISTLInformation));
                     // Parallel case.
@@ -535,6 +535,8 @@ namespace Opm {
                 } else
 #endif
                 {
+                    interiorRows_.resize(pmatrix.N());
+                    std::iota(interiorRows_.begin(), interiorRows_.end(), 0);
                     // Serial case.
                     using SeqLinearOperator = Dune::MatrixAdapter<PressureMatrixType, PressureVectorType, PressureVectorType>;
                     operator_for_flexiblesolver_ = std::make_unique<SeqLinearOperator>(pmatrix);
