@@ -509,6 +509,7 @@ namespace Opm {
                     boost::property_tree::read_json(ss, prm);
                     */
                 }
+                write_pressure_system_ = prm.get<int>("verbosity") > 30;
                 std::any parallelInformation;
                 extractParallelGridInformationToISTL(ebosSimulator_.vanguard().grid(), parallelInformation);
                 
@@ -617,21 +618,22 @@ namespace Opm {
                     this->makePressureSolver(*pmatrix_);
                 }else{
                     pressureSolver_->preconditioner().update();
-                }              
-                PressureVectorType xp(x.size(),0);
-                Dune::InverseOperatorResult res;
-                pressureSolver_->apply(xp,rhs, res);
-                /*
-                bool write_pressure_system  = false;               
-                if(write_pressure_system){
+                }
+                if(write_pressure_system_){
                     Opm::Helper::writeSystem(this->ebosSimulator_, //simulator is only used to get names
-                                             pmatrix,
+                                             *pmatrix_,
                                              rhs,
-                                             comm.get(),
+                                             comm_.get(),
                                              std::string("pressure_")
                         );
                 }
-                */
+                PressureVectorType xp(x.size(),0);
+                Dune::InverseOperatorResult res;
+                pressureSolver_->apply(xp,rhs, res);
+                
+ 
+                
+                
                 x=0;
                 PressureHelper::movePressureToBlock(x, xp, pressureVarIndex);
                 // set initial guess
@@ -1177,6 +1179,7 @@ namespace Opm {
         std::unique_ptr<Communication> comm_;
         std::vector<int> overlapRows_;
         std::vector<int> interiorRows_;
+        bool write_pressure_system_;
     public:
         std::vector<bool> wasSwitched_;
     };
