@@ -67,7 +67,6 @@
 #include <opm/simulators/wells/WellProdIndexCalculator.hpp>
 #include <opm/simulators/wells/ParallelWellInfo.hpp>
 #include <opm/simulators/timestepping/gatherConvergenceReport.hpp>
-#include <ebos/eclgenerictracermodel.hh>
 #include <dune/common/fmatrix.hh>
 #include <dune/istl/bcrsmatrix.hh>
 #include <dune/istl/matrixmatrix.hh>
@@ -230,7 +229,7 @@ namespace Opm {
                     return this->wasDynamicallyShutThisTimeStep(well_ndex);
                 });
 
-                this->assignWellTracerRates(wsrpt, ebosSimulator_.problem().tracerModel().getWellTracerRates());
+                this->assignWellTracerRates(wsrpt);
 
                 this->assignWellGuideRates(wsrpt);
                 this->assignShutConnections(wsrpt, this->reportStepIndex());
@@ -400,8 +399,7 @@ namespace Opm {
 
             void computeWellTemperature();
 
-            void assignWellTracerRates(data::Wells& wsrpt,
-                                       const std::map<std::pair<std::string, std::string>, double>& wellTracerRates) const;
+            void assignWellTracerRates(data::Wells& wsrpt) const;
 
         private:
             BlackoilWellModel(Simulator& ebosSimulator, const PhaseUsage& pu);
