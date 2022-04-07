@@ -183,6 +183,10 @@ namespace Opm {
         const auto& summaryState = ebosSimulator_.vanguard().summaryState();
         // Make wells_ecl_ contain only this partition's wells.
         wells_ecl_ = getLocalWells(timeStepIdx);
+        if(timeStepIdx ==0) {
+            int endTimeStepIdx = 0; 
+            wells_ecl_end_ = getLocalWells(endTimeStepIdx);
+        }
         this->local_parallel_well_info_ = createLocalParallelWellInfo(wells_ecl_);
 
         // at least initializeWellState might be throw
@@ -193,7 +197,11 @@ namespace Opm {
 
             // The well state initialize bhp with the cell pressure in the top cell.
             // We must therefore provide it with updated cell pressures
-            this->initializeWellPerfData();
+            this->initializeWellPerfData(this->well_perf_data_,this->local_parallel_well_info_,false);
+            if(timeStepIdx == 0){
+                this->initializeWellPerfData(this->well_perf_data_end_,this->local_parallel_well_info_end_,true);
+            }
+                
             this->initializeWellState(timeStepIdx, summaryState);
 
             // Wells are active if they are active wells on at least
@@ -261,7 +269,11 @@ namespace Opm {
 
             // create the well container
             createWellContainer(reportStepIdx);
-
+            if(reportStepIdx == 0){
+                createWellContainerEnd();
+            }
+               
+            
             // do the initialization for all the wells
             // TODO: to see whether we can postpone of the intialization of the well containers to
             // optimize the usage of the following several member variables
@@ -561,7 +573,33 @@ namespace Opm {
     }
 
 
-
+    template<typename TypeTag>
+    void
+    BlackoilWellModel<TypeTag>::
+    createWellContainerEnd()
+    {
+        DeferredLogger local_deferredLogger;
+        const int end_step = schedule_.size()-1;
+        const int nw = numLocalWellsEnd();
+        //std::vector<WellInterfacePtr > well_container;
+        if (nw > 0) {
+            well_container_end_.reserve(nw);
+            for (int w = 0; w < nw; ++w) {
+                //const Well& well_ecl = wells_ecl_end_[w];
+                //int time_step = -1;
+                const auto& perf_data = this->well_perf_data_end_[w];
+                const auto& parallel_well_info = this->local_parallel_well_info_end_[w].get();
+                const auto& well_ecl = wells_ecl_end_[w];
+                well_container_end_.emplace_back(
+                    this->createWellPointer(w,
+                                            end_step,
+                                            perf_data,
+                                            well_ecl,
+                                            parallel_well_info));
+             }
+        }
+        //return well_container;
+    }
 
 
     template<typename TypeTag>
@@ -572,7 +610,7 @@ namespace Opm {
         DeferredLogger local_deferredLogger;
 
         const int nw = numLocalWells();
-
+        
         well_container_.clear();
 
         if (nw > 0) {
@@ -688,8 +726,14 @@ namespace Opm {
                     this->wellState().stopWell(w);
                     wellIsStopped = true;
                 }
-
-                well_container_.emplace_back(this->createWellPointer(w, time_step));
+                const auto& perf_data = this->well_perf_data_[w];
+                const auto& parallel_well_info = this->local_parallel_well_info_[w].get();
+                well_container_.emplace_back(
+                    this->createWellPointer(w,
+                                            time_step,
+                                            perf_data,
+                                            well_ecl,
+                                            parallel_well_info));
 
                 if (wellIsStopped)
                     well_container_.back()->stopWell();
@@ -716,15 +760,29 @@ namespace Opm {
     template <typename TypeTag>
     typename BlackoilWellModel<TypeTag>::WellInterfacePtr
     BlackoilWellModel<TypeTag>::
-    createWellPointer(const int wellID, const int time_step) const
+    createWellPointer(const int wellID,
+                      const int time_step,
+                      const std::vector<PerforationData>& perf_data,
+                      const Well& well_ecl,
+                      const ParallelWellInfo& parallel_well_info) const
     {
         const auto is_multiseg = this->wells_ecl_[wellID].isMultiSegment();
 
         if (! (this->param_.use_multisegment_well_ && is_multiseg)) {
-            return this->template createTypedWellPointer<StandardWell<TypeTag>>(wellID, time_step);
+            return this->template createTypedWellPointer<StandardWell<TypeTag>>(wellID,
+                                                                                time_step,
+                                                                                perf_data,
+                                                                                well_ecl,
+                                                                                parallel_well_info
+                );
         }
         else {
-            return this->template createTypedWellPointer<MultisegmentWell<TypeTag>>(wellID, time_step);
+            return this->template createTypedWellPointer<MultisegmentWell<TypeTag>>(wellID,
+                                                                                    time_step,
+                                                                                    perf_data,
+                                                                                    well_ecl,
+                                                                                    parallel_well_info
+                );
         }
     }
 
@@ -736,19 +794,23 @@ namespace Opm {
     template <typename WellType>
     std::unique_ptr<WellType>
     BlackoilWellModel<TypeTag>::
-    createTypedWellPointer(const int wellID, const int time_step) const
+    createTypedWellPointer(const int wellID,
+                           const int time_step,
+                           const std::vector<PerforationData>& perf_data,
+                           const Well& well_ecl,
+                           const ParallelWellInfo& parallel_well_info) const
     {
         // Use the pvtRegionIdx from the top cell
-        const auto& perf_data = this->well_perf_data_[wellID];
+        //const auto& perf_data = this->well_perf_data_[wellID];
 
         // Cater for case where local part might have no perforations.
         const auto pvtreg = perf_data.empty()
             ? 0 : pvt_region_idx_[perf_data.front().cell_index];
 
-        const auto& parallel_well_info = this->local_parallel_well_info_[wellID].get();
+        //const auto& parallel_well_info = this->local_parallel_well_info_[wellID].get();
         const auto global_pvtreg = parallel_well_info.broadcastFirstPerforationValue(pvtreg);
 
-        return std::make_unique<WellType>(this->wells_ecl_[wellID],
+        return std::make_unique<WellType>(well_ecl,
                                           parallel_well_info,
                                           time_step,
                                           this->param_,
@@ -783,8 +845,10 @@ namespace Opm {
         if (index_well_ecl == nw_wells_ecl) {
             OPM_DEFLOG_THROW(std::logic_error, "Could not find well " << well_name << " in wells_ecl ", deferred_logger);
         }
-
-        return this->createWellPointer(index_well_ecl, report_step);
+        const auto& perf_data = this->well_perf_data_[index_well_ecl];
+        const auto& parallel_well_info = this->local_parallel_well_info_[index_well_ecl].get();
+        const auto& wells_ecl = wells_ecl_[index_well_ecl];
+        return this->createWellPointer(index_well_ecl, report_step, perf_data,wells_ecl, parallel_well_info);
     }
 
 
@@ -1449,8 +1513,16 @@ namespace Opm {
                 continue;
             }
 
+        const auto& perf_data = this->well_perf_data_[shutWell];
+        const auto& parallel_well_info = this->local_parallel_well_info_[shutWell].get();
+        const auto& wells_ecl = wells_ecl_[shutWell];
             auto wellPtr = this->template createTypedWellPointer
-                <StandardWell<TypeTag>>(shutWell, reportStepIdx);
+                <StandardWell<TypeTag>>(shutWell,
+                                        reportStepIdx,
+                                        perf_data,
+                                        wells_ecl,
+                                        parallel_well_info
+                    );
 
             wellPtr->init(&this->phase_usage_, this->depth_, this->gravity_,
                           this->local_num_cells_, this->B_avg_);

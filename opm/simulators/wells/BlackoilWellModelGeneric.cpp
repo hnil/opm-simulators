@@ -363,6 +363,13 @@ numLocalWells() const
 
 int
 BlackoilWellModelGeneric::
+numLocalWellsEnd() const
+{
+    return wells_ecl_end_.size();
+}
+
+int
+BlackoilWellModelGeneric::
 numPhases() const
 {
     return phase_usage_.num_phases;
@@ -638,8 +645,14 @@ initFromRestartFile(const RestartValue& restartValues,
     wells_ecl_ = getLocalWells(report_step);
     this->local_parallel_well_info_ = createLocalParallelWellInfo(wells_ecl_);
 
+    // make informations from well at end
+    wells_ecl_end_ = getLocalWellsEnd();
+    this->local_parallel_well_info_end_ = createLocalParallelWellInfo(wells_ecl_end_);
+   
+    
     this->initializeWellProdIndCalculators();
-    this->initializeWellPerfData();
+    this->initializeWellPerfData(this->well_perf_data_,this->local_parallel_well_info_, false);
+    this->initializeWellPerfData(this->well_perf_data_end_,this->local_parallel_well_info_end_, true);
 
     if (! this->wells_ecl_.empty()) {
         handle_ms_well &= anyMSWellOpenLocal();
@@ -675,6 +688,15 @@ BlackoilWellModelGeneric::
 setWellsActive(const bool wells_active)
 {
     wells_active_ = wells_active;
+}
+
+std::vector<Well>
+BlackoilWellModelGeneric::
+getLocalWellsEnd() const
+{
+    auto w = schedule().getWellsatEnd();
+    w.erase(std::remove_if(w.begin(), w.end(), not_on_process_), w.end());
+    return w;
 }
 
 std::vector<Well>
@@ -718,25 +740,28 @@ initializeWellProdIndCalculators()
 
 void
 BlackoilWellModelGeneric::
-initializeWellPerfData()
+initializeWellPerfData(std::vector<std::vector<PerforationData>>& well_perf_data,
+                       std::vector<std::reference_wrapper<ParallelWellInfo>>& local_parallel_well_info,
+                       bool all_open
+    )
 {
-    well_perf_data_.resize(wells_ecl_.size());
+    well_perf_data.resize(wells_ecl_.size());
     int well_index = 0;
     for (const auto& well : wells_ecl_) {
         int completion_index = 0;
         // INVALID_ECL_INDEX marks no above perf available
         int completion_index_above = ParallelWellInfo::INVALID_ECL_INDEX;
-        well_perf_data_[well_index].clear();
-        well_perf_data_[well_index].reserve(well.getConnections().size());
-        CheckDistributedWellConnections checker(well, local_parallel_well_info_[well_index].get());
+        well_perf_data[well_index].clear();
+        well_perf_data[well_index].reserve(well.getConnections().size());
+        CheckDistributedWellConnections checker(well, local_parallel_well_info[well_index].get());
         bool hasFirstPerforation = false;
         bool firstOpenCompletion = true;
-        auto& parallelWellInfo = this->local_parallel_well_info_[well_index].get();
+        auto& parallelWellInfo = local_parallel_well_info[well_index].get();
         parallelWellInfo.beginReset();
 
         for (const auto& completion : well.getConnections()) {
             const int active_index = compressedIndexForInterior(completion.global_index());
-            if (completion.state() == Connection::State::OPEN) {
+            if (completion.state() == Connection::State::OPEN || all_open) {
                 if (active_index >= 0) {
                     if (firstOpenCompletion)
                     {
@@ -748,7 +773,7 @@ initializeWellPerfData()
                     pd.connection_transmissibility_factor = completion.CF();
                     pd.satnum_id = completion.satTableId();
                     pd.ecl_index = completion_index;
-                    well_perf_data_[well_index].push_back(pd);
+                    well_perf_data[well_index].push_back(pd);
                     parallelWellInfo.pushBackEclIndex(completion_index_above,
                                                       completion_index);
                 }

@@ -226,6 +226,8 @@ namespace Opm {
                                     this->ebosSimulator_.vanguard().transferWTestState(),
                                     UgGridHelpers::numCells(grid()),
                                     param_.use_multisegment_well_);
+                // initialize well container for end state
+                createWellContainerEnd();
             }
 
             data::Wells wellData() const
@@ -298,6 +300,12 @@ namespace Opm {
 
             void addWellPressureEquations(PressureMatrix& jacobian, const BVector& weights) const
             {
+                int nw =  this->numLocalWellsEnd();
+                int rdofs = local_num_cells_;
+                for(int i=0; i < nw; i++){
+                    int wdof = rdofs + i; 
+                    jacobian[wdof][wdof] = 1.0;// better scaling ?
+                }
                 for (const auto& well : well_container_) {
                     well->addWellPressureEquations(jacobian, weights, pressureVarIndex);
                 }
@@ -305,7 +313,10 @@ namespace Opm {
 
             void addWellPressureEquationsStruct(PressureMatrix& jacobian) const
             {
-                for (const auto& well : well_container_) {
+                // should use a full well_containter for all possible wells
+                //this->createWellContainerEnd(); needs to have been called
+                
+                for (const auto& well : well_container_end_) {
                     well->addWellPressureEquationsStruct(jacobian);
                 }
             }
@@ -328,6 +339,8 @@ namespace Opm {
 
             // a vector of all the wells.
             std::vector<WellInterfacePtr > well_container_{};
+            // a vector of with all wells and perforations which can be present on lokal rank
+            std::vector<WellInterfacePtr > well_container_end_{};
 
             std::vector<bool> is_cell_perforated_{};
 
@@ -336,15 +349,22 @@ namespace Opm {
 
             // create the well container
             void createWellContainer(const int time_step) override;
+            void createWellContainerEnd() override;
 
             WellInterfacePtr
             createWellPointer(const int wellID,
-                              const int time_step) const;
+                              const int time_step,
+                              const std::vector<PerforationData>& perf_data,
+                              const Well& well_ecl,
+                              const ParallelWellInfo& parallel_well_info) const;
 
             template <typename WellType>
             std::unique_ptr<WellType>
             createTypedWellPointer(const int wellID,
-                                   const int time_step) const;
+                           const int time_step,
+                           const std::vector<PerforationData>& perf_data,
+                           const Well& well_ecl,
+                           const ParallelWellInfo& parallel_well_info) const;
 
             WellInterfacePtr createWellForWellTest(const std::string& well_name, const int report_step, DeferredLogger& deferred_logger) const;
 

@@ -85,6 +85,7 @@ public:
     virtual ~BlackoilWellModelGeneric() = default;
 
     int numLocalWells() const;
+    int numLocalWellsEnd() const;
     int numPhases() const;
 
     /// return true if wells are available in the reservoir
@@ -97,6 +98,7 @@ public:
 
     const Well& getWellEcl(const std::string& well_name) const;
     std::vector<Well> getLocalWells(const int timeStepIdx) const;
+    std::vector<Well> getLocalWellsEnd() const;
     const Schedule& schedule() const { return schedule_; }
     const PhaseUsage& phaseUsage() const { return phase_usage_; }
     const GroupState& groupState() const { return this->active_wgstate_.group_state; }
@@ -249,7 +251,9 @@ protected:
     std::vector<std::reference_wrapper<ParallelWellInfo>> createLocalParallelWellInfo(const std::vector<Well>& wells);
 
     void initializeWellProdIndCalculators();
-    void initializeWellPerfData();
+    void initializeWellPerfData(std::vector<std::vector<PerforationData>>& well_perf_data,
+                                std::vector<std::reference_wrapper<ParallelWellInfo>>& local_parallel_well_info,
+                                bool all_open);
 
     bool wasDynamicallyShutThisTimeStep(const int well_index) const;
 
@@ -400,6 +404,8 @@ protected:
 
     // create the well container
     virtual void createWellContainer(const int time_step) = 0;
+    virtual void createWellContainerEnd() = 0;
+    
     virtual void initWellContainer() = 0;
 
     virtual void calculateProductivityIndexValuesShutWells(const int reportStepIdx,
@@ -427,7 +433,9 @@ protected:
     std::optional<int> last_run_wellpi_{};
 
     std::vector<Well> wells_ecl_;
+    std::vector<Well> wells_ecl_end_;
     std::vector<std::vector<PerforationData>> well_perf_data_;
+    std::vector<std::vector<PerforationData>> well_perf_data_end_;
     std::function<bool(const Well&)> not_on_process_{};
 
     // a vector of all the wells.
@@ -436,7 +444,9 @@ protected:
     std::vector<int> local_shut_wells_{};
 
     std::vector<ParallelWellInfo> parallel_well_info_;
+    std::vector<ParallelWellInfo> parallel_well_info_end_;
     std::vector<std::reference_wrapper<ParallelWellInfo>> local_parallel_well_info_;
+    std::vector<std::reference_wrapper<ParallelWellInfo>> local_parallel_well_info_end_;
 
     std::vector<WellProdIndexCalculator> prod_index_calc_;
 
