@@ -651,8 +651,8 @@ initFromRestartFile(const RestartValue& restartValues,
    
     
     this->initializeWellProdIndCalculators();
-    this->initializeWellPerfData(this->well_perf_data_,this->local_parallel_well_info_, false);
-    this->initializeWellPerfData(this->well_perf_data_end_,this->local_parallel_well_info_end_, true);
+    this->initializeWellPerfData(this->well_perf_data_,this->local_parallel_well_info_, wells_ecl_, false);
+    this->initializeWellPerfData(this->well_perf_data_end_,this->local_parallel_well_info_end_, wells_ecl_end_,true);
 
     if (! this->wells_ecl_.empty()) {
         handle_ms_well &= anyMSWellOpenLocal();
@@ -742,12 +742,13 @@ void
 BlackoilWellModelGeneric::
 initializeWellPerfData(std::vector<std::vector<PerforationData>>& well_perf_data,
                        std::vector<std::reference_wrapper<ParallelWellInfo>>& local_parallel_well_info,
+                       const std::vector<Well>& wells_ecl,
                        bool all_open
     )
 {
-    well_perf_data.resize(wells_ecl_.size());
+    well_perf_data.resize(wells_ecl.size());
     int well_index = 0;
-    for (const auto& well : wells_ecl_) {
+    for (const auto& well : wells_ecl) {
         int completion_index = 0;
         // INVALID_ECL_INDEX marks no above perf available
         int completion_index_above = ParallelWellInfo::INVALID_ECL_INDEX;

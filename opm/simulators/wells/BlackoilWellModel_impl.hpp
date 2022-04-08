@@ -183,11 +183,13 @@ namespace Opm {
         const auto& summaryState = ebosSimulator_.vanguard().summaryState();
         // Make wells_ecl_ contain only this partition's wells.
         wells_ecl_ = getLocalWells(timeStepIdx);
-        if(timeStepIdx ==0) {
-            int endTimeStepIdx = 0; 
-            wells_ecl_end_ = getLocalWells(endTimeStepIdx);
-        }
         this->local_parallel_well_info_ = createLocalParallelWellInfo(wells_ecl_);
+        if(timeStepIdx ==0) {
+            //int endTimeStepIdx = schedule_.size()-1; 
+            wells_ecl_end_ = getLocalWellsEnd();
+            this->local_parallel_well_info_end_ = createLocalParallelWellInfo(wells_ecl_end_);
+        }
+        
 
         // at least initializeWellState might be throw
         // exception in opm-material (UniformTabulated2DFunction.hpp)
@@ -197,9 +199,9 @@ namespace Opm {
 
             // The well state initialize bhp with the cell pressure in the top cell.
             // We must therefore provide it with updated cell pressures
-            this->initializeWellPerfData(this->well_perf_data_,this->local_parallel_well_info_,false);
+            this->initializeWellPerfData(this->well_perf_data_,this->local_parallel_well_info_,wells_ecl_,false);
             if(timeStepIdx == 0){
-                this->initializeWellPerfData(this->well_perf_data_end_,this->local_parallel_well_info_end_,true);
+                this->initializeWellPerfData(this->well_perf_data_end_,this->local_parallel_well_info_end_,wells_ecl_end_, true);
             }
                 
             this->initializeWellState(timeStepIdx, summaryState);
@@ -269,16 +271,16 @@ namespace Opm {
 
             // create the well container
             createWellContainer(reportStepIdx);
+             // do the initialization for all the wells
+            // TODO: to see whether we can postpone of the intialization of the well containers to
+            // optimize the usage of the following several member variables
+            this->initWellContainer();
             if(reportStepIdx == 0){
                 createWellContainerEnd();
             }
                
             
-            // do the initialization for all the wells
-            // TODO: to see whether we can postpone of the intialization of the well containers to
-            // optimize the usage of the following several member variables
-            this->initWellContainer();
-
+           
             // update the updated cell flag
             std::fill(is_cell_perforated_.begin(), is_cell_perforated_.end(), false);
             for (auto& well : well_container_) {
@@ -598,6 +600,11 @@ namespace Opm {
                                             parallel_well_info));
              }
         }
+        //
+        for (auto& wellPtr : this->well_container_end_) {
+            wellPtr->init(&this->phase_usage_, this->depth_, this->gravity_,
+                          this->local_num_cells_, this->B_avg_);
+        }
         //return well_container;
     }
 
@@ -766,7 +773,7 @@ namespace Opm {
                       const Well& well_ecl,
                       const ParallelWellInfo& parallel_well_info) const
     {
-        const auto is_multiseg = this->wells_ecl_[wellID].isMultiSegment();
+        const auto is_multiseg = well_ecl.isMultiSegment();
 
         if (! (this->param_.use_multisegment_well_ && is_multiseg)) {
             return this->template createTypedWellPointer<StandardWell<TypeTag>>(wellID,

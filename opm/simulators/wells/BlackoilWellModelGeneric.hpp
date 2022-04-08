@@ -253,6 +253,7 @@ protected:
     void initializeWellProdIndCalculators();
     void initializeWellPerfData(std::vector<std::vector<PerforationData>>& well_perf_data,
                                 std::vector<std::reference_wrapper<ParallelWellInfo>>& local_parallel_well_info,
+                                const std::vector<Well>& wells_ecl,                       
                                 bool all_open);
 
     bool wasDynamicallyShutThisTimeStep(const int well_index) const;
@@ -444,7 +445,7 @@ protected:
     std::vector<int> local_shut_wells_{};
 
     std::vector<ParallelWellInfo> parallel_well_info_;
-    std::vector<ParallelWellInfo> parallel_well_info_end_;
+    //std::vector<ParallelWellInfo> parallel_well_info_end;
     std::vector<std::reference_wrapper<ParallelWellInfo>> local_parallel_well_info_;
     std::vector<std::reference_wrapper<ParallelWellInfo>> local_parallel_well_info_end_;
 
