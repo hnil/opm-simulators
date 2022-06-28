@@ -192,21 +192,21 @@ private:
     void updateImpl(const Comm*)
     {
         // Parallel case.
-        auto child = prm_.get_child_optional("finesmoother");
-        finesmoother_ = PrecFactory::create(linear_operator_, child ? *child : Opm::PropertyTree(), *comm_);
+        //auto child = prm_.get_child_optional("finesmoother");
+        finesmoother_->update();// = PrecFactory::create(linear_operator_, child ? *child : Opm::PropertyTree(), *comm_);
         twolevel_method_.updatePreconditioner(finesmoother_, coarseSolverPolicy_);
     }
 
     void updateImpl(const Dune::Amg::SequentialInformation*)
     {
         // Serial case.
-        auto child = prm_.get_child_optional("finesmoother");
-        finesmoother_ = PrecFactory::create(linear_operator_, child ? *child : Opm::PropertyTree());
+        //auto child = prm_.get_child_optional("finesmoother");
+        finesmoother_->update();// = PrecFactory::create(linear_operator_, child ? *child : Opm::PropertyTree());
         twolevel_method_.updatePreconditioner(finesmoother_, coarseSolverPolicy_);
     }
 
     const OperatorType& linear_operator_;
-    std::shared_ptr<Dune::Preconditioner<VectorType, VectorType>> finesmoother_;
+    std::shared_ptr<Dune::PreconditionerWithUpdate<VectorType, VectorType>> finesmoother_;
     const Communication* comm_;
     std::function<VectorType()> weightsCalculator_;
     VectorType weights_;

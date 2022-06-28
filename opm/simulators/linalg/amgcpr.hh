@@ -472,12 +472,12 @@ namespace Dune
     void AMGCPR<M,X,S,PI,A>::update()
     {
       Timer watch;
-      smoothers_.reset(new Hierarchy<Smoother,A>);
+      //smoothers_.reset(new Hierarchy<Smoother,A>);
       solver_.reset();
-      coarseSmoother_.reset();
-      scalarProduct_.reset();
-      buildHierarchy_= true;
-      coarsesolverconverged = true;
+      coarseSmoother_.reset();//NOT needed? using direct solver
+      scalarProduct_.reset();//Not needed? using direct solver
+      buildHierarchy_= true;//Not used
+      coarsesolverconverged = true; // Strange
       smoothers_.reset(new Hierarchy<Smoother,A>);
       recalculateHierarchy();
       matrices_->coarsenSmoother(*smoothers_, smootherArgs_);

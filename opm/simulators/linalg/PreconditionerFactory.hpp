@@ -264,8 +264,12 @@ private:
         using P = PropertyTree;
         using C = Comm;
         doAddCreator("ILU0", [](const O& op, const P& prm, const std::function<Vector()>&, std::size_t, const C& comm) {
-            return createParILU(op, prm, comm, 0);
-        });
+                                 //const int n = prm.get<int>("repeats", 1);
+            const double w = prm.get<double>("relaxation", 1);
+            const int n = prm.get<int>("ilulevel", 0);
+            const bool resort = prm.get<int>("resort", true);
+            
+            return wrapBlockPreconditioner<DummyUpdatePreconditioner<SeqILU<M, V, V>>>(comm, op.getmat(), n, w, resort);                                                  });
         doAddCreator("ParOverILU0", [](const O& op, const P& prm, const std::function<Vector()>&, std::size_t, const C& comm) {
             return createParILU(op, prm, comm, prm.get<int>("ilulevel", 0));
         });
@@ -301,14 +305,23 @@ private:
         if constexpr (std::is_same_v<O, Dune::OverlappingSchwarzOperator<M, V, V, C>>) {
             doAddCreator("amg", [](const O& op, const P& prm, const std::function<Vector()>&, std::size_t, const C& comm) {
                 const std::string smoother = prm.get<std::string>("smoother", "ParOverILU0");
-                if (smoother == "ILU0" || smoother == "ParOverILU0") {
+                std::shared_ptr<Dune::PreconditionerWithUpdate<V, V>> ptr_base;
+                if (smoother == "ParOverILU0") {
                     using Smoother = Opm::ParallelOverlappingILU0<M, V, V, C>;
                     auto crit = amgCriterion(prm);
                     auto sargs = amgSmootherArgs<Smoother>(prm);
-                    return std::make_shared<Dune::Amg::AMGCPR<O, V, Smoother, C>>(op, crit, sargs, comm);
+                    ptr_base = std::make_shared<Dune::Amg::AMGCPR<O, V, Smoother, C>>(op, crit, sargs, comm);
+                }else if(smoother == "ILU0"){
+                    using Smoother = Dune::BlockPreconditioner<V,V,C,SeqILU<M, V, V>>;
+                    //using Smoother = Opm::ParallelOverlappingILU0<M, V, V, C>;
+                    auto crit = amgCriterion(prm);
+                    auto sargs = amgSmootherArgs<Smoother>(prm);
+                    ptr_base =  std::make_shared< Dune::Amg::AMGCPR<O, V, Smoother, C> >(op, crit, sargs, comm);
+                    
                 } else {
                     OPM_THROW(std::invalid_argument, "Properties: No smoother with name " << smoother << ".");
                 }
+                return ptr_base;
             });
         }
 
@@ -340,15 +353,18 @@ private:
         using V = Vector;
         using P = PropertyTree;
         doAddCreator("ILU0", [](const O& op, const P& prm, const std::function<Vector()>&, std::size_t) {
-            const double w = prm.get<double>("relaxation", 1.0);
-            return std::make_shared<Opm::ParallelOverlappingILU0<M, V, V>>(
-                op.getmat(), 0, w, Opm::MILU_VARIANT::ILU);
+            const double w = prm.get<double>("relaxation", 1);
+            const int n = prm.get<int>("ilulevel", 0);
+            const bool resort = prm.get<int>("resort", true);
+            return wrapPreconditioner<SeqILU<M, V, V>>(op.getmat(), n, w, resort);                     
         });
         doAddCreator("ParOverILU0", [](const O& op, const P& prm, const std::function<Vector()>&, std::size_t) {
             const double w = prm.get<double>("relaxation", 1.0);
             const int n = prm.get<int>("ilulevel", 0);
+            const bool redblack = prm.get<int>("redblack", false);
+            const bool reorder_sphere  = prm.get<int>("reorder_sphere", true);
             return std::make_shared<Opm::ParallelOverlappingILU0<M, V, V>>(
-                op.getmat(), n, w, Opm::MILU_VARIANT::ILU);
+                op.getmat(), n, w, Opm::MILU_VARIANT::ILU, redblack, reorder_sphere);
         });
         doAddCreator("ILUn", [](const O& op, const P& prm, const std::function<Vector()>&, std::size_t) {
             const int n = prm.get<int>("ilulevel", 0);
@@ -382,7 +398,7 @@ private:
         if constexpr (std::is_same_v<O, Dune::MatrixAdapter<M, V, V>>) {
             doAddCreator("amg", [](const O& op, const P& prm, const std::function<Vector()>&, std::size_t) {
                 const std::string smoother = prm.get<std::string>("smoother", "ParOverILU0");
-                if (smoother == "ILU0" || smoother == "ParOverILU0") {
+                if (smoother == "ILU0" ) {
 #if DUNE_VERSION_NEWER(DUNE_ISTL, 2, 7)
                     using Smoother = SeqILU<M, V, V>;
 #else
@@ -411,7 +427,7 @@ private:
             });
             doAddCreator("kamg", [](const O& op, const P& prm, const std::function<Vector()>&, std::size_t) {
                 const std::string smoother = prm.get<std::string>("smoother", "ParOverILU0");
-                if (smoother == "ILU0" || smoother == "ParOverILU0") {
+                if (smoother == "ILU0" ) {
 #if DUNE_VERSION_NEWER(DUNE_ISTL, 2, 7)
                     using Smoother = SeqILU<M, V, V>;
 #else

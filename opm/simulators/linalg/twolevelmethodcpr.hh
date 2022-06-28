@@ -447,11 +447,11 @@ public:
     updatePreconditioner(smoother, coarsePolicy);
   }
 
-  void updatePreconditioner(std::shared_ptr<SmootherType> smoother,
+  void updatePreconditioner(std::shared_ptr<SmootherType> /*smoother*/,
                             CoarseLevelSolverPolicy& coarsePolicy)
   {
     //assume new matrix is not reallocated the new precondition should anyway be made
-    smoother_ = smoother;
+    //smoother_ = smoother;
     if (coarseSolver_) {
       policy_->calculateCoarseEntries(*operator_);
       coarsePolicy.setCoarseOperator(*policy_);

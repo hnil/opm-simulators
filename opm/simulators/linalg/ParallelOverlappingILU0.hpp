@@ -587,6 +587,65 @@ namespace Opm
         }
         assert(colcount == numUpper);
       }
+      //! compute ILU decomposition of A. A is overwritten by its decomposition
+      template<class M, class CRS, class InvVector>
+      void fillToCRS(const M& A, CRS& lower, CRS& upper, InvVector& inv )
+      {
+        
+        typedef typename M :: size_type size_type;
+        // implement left looking variant with stored inverse
+        size_type row = 0;
+        size_type colcount = 0;
+        lower.rows_[ 0 ] = colcount;
+        const auto endi = A.end();
+        for (auto i=A.begin(); i!=endi; ++i, ++row)
+        {
+          const size_type iIndex  = i.index();
+
+          // eliminate entries left of diagonal; store L factor
+          for (auto j=(*i).begin(); j.index() < iIndex; ++j )
+          {
+              lower.set(colcount, (*j), j.index() );
+              ++colcount;
+          }
+          lower.rows_[ iIndex+1 ] = colcount;
+        }
+
+        //assert(colcount == numLower);
+
+        const auto rendi = A.beforeBegin();
+        row = 0;
+        colcount = 0;
+        upper.rows_[ 0 ] = colcount ;
+
+        //upper.reserveAdditional( numUpper );
+
+        // NOTE: upper and inv store entries in reverse order, reverse here
+        // relative to ILU
+        for (auto i=A.beforeEnd(); i!=rendi; --i, ++ row )
+        {
+          const size_type iIndex = i.index();
+
+          // store in reverse row order
+          // eliminate entries left of diagonal; store L factor
+          for (auto j=(*i).beforeEnd(); j.index()>=iIndex; --j )
+          {
+            const size_type jIndex = j.index();
+            if( j.index() == iIndex )
+            {
+                inv[ row ] = (*j);
+              break;
+            }
+            else if ( j.index() >= i.index() )
+            {
+                upper.set(colcount, (*j), jIndex );
+                ++colcount ;
+            }
+          }
+          upper.rows_[ row+1 ] = colcount;
+        }
+        //assert(colcount == numUpper);
+      }  
     } // end namespace detail
 
 
@@ -664,6 +723,12 @@ protected:
           cols_.push_back( index );
       }
 
+        void set(size_type ind, const block_type& value, const size_type index )
+      {
+          values_[ind] = value;
+          cols_[ind] = index;
+      }  
+
       void clear()
       {
           rows_.clear();
@@ -714,7 +779,10 @@ public:
         interiorSize_ = A.N();
         // BlockMatrix is a Subclass of FieldMatrix that just adds
         // methods. Therefore this cast should be safe.
-        update();
+        construct();
+        updateILU();
+        // store ILU in simple CRS format
+        detail::convertToCRS( *ILU_, lower_, upper_, inv_ );
     }
 
     /*! \brief Constructor gets all parameters to operate the prec.
@@ -745,7 +813,10 @@ public:
         interiorSize_ = A.N();
         // BlockMatrix is a Subclass of FieldMatrix that just adds
         // methods. Therefore this cast should be safe.
-        update();
+        construct();
+        updateILU();
+        // store ILU in simple CRS format
+        detail::convertToCRS( *ILU_, lower_, upper_, inv_ );
     }
 
     /*! \brief Constructor.
@@ -797,7 +868,10 @@ public:
         interiorSize_ = A.N();
         // BlockMatrix is a Subclass of FieldMatrix that just adds
         // methods. Therefore this cast should be safe.
-        update();
+        construct();
+        updateILU();
+        // store ILU in simple CRS format
+        detail::convertToCRS( *ILU_, lower_, upper_, inv_ );
     }
 
     /*! \brief Constructor.
@@ -831,7 +905,10 @@ public:
     {
         // BlockMatrix is a Subclass of FieldMatrix that just adds
         // methods. Therefore this cast should be safe.
-        update( );
+        construct();
+        updateILU();
+        // store ILU in simple CRS format
+        detail::convertToCRS( *ILU_, lower_, upper_, inv_ );
     }
 
     /*!
@@ -924,12 +1001,118 @@ public:
     {
         DUNE_UNUSED_PARAMETER(x);
     }
-
-    virtual void update() override
+    virtual void update() override{
+        updateILU();
+        detail::fillToCRS( *ILU_, lower_, upper_, inv_ );
+    }
+    
+    virtual void updateILU()
     {
         // (For older DUNE versions the communicator might be
         // invalid if redistribution in AMG happened on the coarset level.
         // Therefore we check for nonzero size
+        int ilu_setup_successful = 1;
+        std::string message;
+        const int rank = ( comm_ ) ? comm_->communicator().rank() : 0;
+ 
+        try
+        {
+            if( iluIteration_ == 0 ) {
+                // create ILU-0 decomposition
+                if ( ordering_.empty() )
+                {
+                    //ILU.reset( new Matrix( *A_ ) );
+                    auto iluIt = ILU_->begin(); 
+                    for(auto iter = A_->begin(), iend = A_->end(); iter != iend; ++iter,++iluIt)
+                    {
+                        auto iluCol = iluIt->begin();
+                        for(auto col = iter->begin(), cend = iter->end(); col != cend; ++col,++iluCol)
+                        {
+                            *iluCol = *col;
+                        }
+                    }
+                }
+                else
+                {
+                    // ILU.reset( new Matrix(A_->N(), A_->M(), A_->nonzeroes(), Matrix::row_wise));
+                    // 
+                    // // Create sparsity pattern
+                    // for(auto iter=newA.createbegin(), iend = newA.createend(); iter != iend; ++iter)
+                    // {
+                    //     const auto& row = (*A_)[inverseOrdering[iter.index()]];
+                    //     for(auto col = row.begin(), cend = row.end(); col != cend; ++col)
+                    //     {
+                    //         iter.insert(ordering_[col.index()]);
+                    //     }
+                    // }
+                    auto& newA = *ILU_;
+                    // Copy values
+                    for(auto iter = A_->begin(), iend = A_->end(); iter != iend; ++iter)
+                    {
+                        auto& newRow = newA[ordering_[iter.index()]];
+                        for(auto col = iter->begin(), cend = iter->end(); col != cend; ++col)
+                        {
+                            newRow[ordering_[col.index()]] = *col;
+                        }
+                    }
+                }
+
+                switch ( milu_ )
+                {
+                case MILU_VARIANT::MILU_1:
+                    detail::milu0_decomposition ( *ILU_);
+                    break;
+                case MILU_VARIANT::MILU_2:
+                    detail::milu0_decomposition ( *ILU_, detail::IdentityFunctor(),
+                                                  detail::SignFunctor() );
+                    break;
+                case MILU_VARIANT::MILU_3:
+                    detail::milu0_decomposition ( *ILU_, detail::AbsFunctor(),
+                                                  detail::SignFunctor() );
+                    break;
+                case MILU_VARIANT::MILU_4:
+                    detail::milu0_decomposition ( *ILU_, detail::IdentityFunctor(),
+                                                  detail::IsPositiveFunctor() );
+                    break;
+                default:
+                    if (interiorSize_ == A_->N())
+#if DUNE_VERSION_LT(DUNE_GRID, 2, 8)
+                        bilu0_decomposition( *ILU_ );
+#else
+                        Dune::ILU::blockILU0Decomposition( *ILU_ );
+#endif
+                    else
+                        detail::ghost_last_bilu0_decomposition(*ILU_, interiorSize_);
+                    break;
+                }
+            }
+            else {
+                // create ILU-n decomposition
+               
+                milun_decomposition( *A_, iluIteration_, milu_, *ILU_, *reorderer_, *inverseReorderer_ );
+            }
+        }
+        catch (const Dune::MatrixBlockError& error)
+        {
+            message = error.what();
+            std::cerr<<"Exception occurred on process " << rank << " during " <<
+                "update of ILU0 preconditioner with message: " <<
+                message<<std::endl;
+            ilu_setup_successful = 0;
+        }
+
+        // Check whether there was a problem on some process
+        const bool parallel_failure = comm_ && comm_->communicator().min(ilu_setup_successful) == 0;
+        const bool local_failure = ilu_setup_successful == 0;
+        if ( local_failure || parallel_failure )
+        {
+            throw Dune::MatrixBlockError();
+        }
+
+        // store ILU in simple CRS format       
+    }
+
+    void construct(){
         if ( comm_ && comm_->communicator().size()<=0 )
         {
             if ( A_->N() > 0 )
@@ -947,7 +1130,7 @@ public:
         std::string message;
         const int rank = ( comm_ ) ? comm_->communicator().rank() : 0;
 
-        std::unique_ptr< Matrix > ILU;
+        
 
         if ( redBlack_ )
         {
@@ -971,23 +1154,21 @@ public:
 
         std::vector<std::size_t> inverseOrdering(ordering_.size());
         std::size_t index = 0;
+
         for( auto newIndex: ordering_)
         {
             inverseOrdering[newIndex] = index++;
         }
-
-        try
-        {
+        try{
             if( iluIteration_ == 0 ) {
-                // create ILU-0 decomposition
                 if ( ordering_.empty() )
                 {
-                    ILU.reset( new Matrix( *A_ ) );
+                    ILU_.reset( new Matrix( *A_ ) );
                 }
                 else
                 {
-                    ILU.reset( new Matrix(A_->N(), A_->M(), A_->nonzeroes(), Matrix::row_wise));
-                    auto& newA = *ILU;
+                    ILU_.reset( new Matrix(A_->N(), A_->M(), A_->nonzeroes(), Matrix::row_wise));
+                    auto& newA = *ILU_;
                     // Create sparsity pattern
                     for(auto iter=newA.createbegin(), iend = newA.createend(); iter != iend; ++iter)
                     {
@@ -997,6 +1178,7 @@ public:
                             iter.insert(ordering_[col.index()]);
                         }
                     }
+                
                     // Copy values
                     for(auto iter = A_->begin(), iend = A_->end(); iter != iend; ++iter)
                     {
@@ -1007,52 +1189,18 @@ public:
                         }
                     }
                 }
-
-                switch ( milu_ )
-                {
-                case MILU_VARIANT::MILU_1:
-                    detail::milu0_decomposition ( *ILU);
-                    break;
-                case MILU_VARIANT::MILU_2:
-                    detail::milu0_decomposition ( *ILU, detail::IdentityFunctor(),
-                                                  detail::SignFunctor() );
-                    break;
-                case MILU_VARIANT::MILU_3:
-                    detail::milu0_decomposition ( *ILU, detail::AbsFunctor(),
-                                                  detail::SignFunctor() );
-                    break;
-                case MILU_VARIANT::MILU_4:
-                    detail::milu0_decomposition ( *ILU, detail::IdentityFunctor(),
-                                                  detail::IsPositiveFunctor() );
-                    break;
-                default:
-                    if (interiorSize_ == A_->N())
-#if DUNE_VERSION_LT(DUNE_GRID, 2, 8)
-                        bilu0_decomposition( *ILU );
-#else
-                        Dune::ILU::blockILU0Decomposition( *ILU );
-#endif
-                    else
-                        detail::ghost_last_bilu0_decomposition(*ILU, interiorSize_);
-                    break;
-                }
-            }
-            else {
-                // create ILU-n decomposition
-                ILU.reset( new Matrix( A_->N(), A_->M(), Matrix::row_wise) );
-                std::unique_ptr<detail::Reorderer> reorderer, inverseReorderer;
+            }else{
+                ILU_.reset( new Matrix( A_->N(), A_->M(), Matrix::row_wise) );               
                 if ( ordering_.empty() )
                 {
-                    reorderer.reset(new detail::NoReorderer());
-                    inverseReorderer.reset(new detail::NoReorderer());
+                    reorderer_.reset(new detail::NoReorderer());
+                    inverseReorderer_.reset(new detail::NoReorderer());
                 }
                 else
                 {
-                    reorderer.reset(new detail::RealReorderer(ordering_));
-                    inverseReorderer.reset(new detail::RealReorderer(inverseOrdering));
+                    reorderer_.reset(new detail::RealReorderer(ordering_));
+                    inverseReorderer_.reset(new detail::RealReorderer(inverseOrdering));
                 }
-
-                milun_decomposition( *A_, iluIteration_, milu_, *ILU, *reorderer, *inverseReorderer );
             }
         }
         catch (const Dune::MatrixBlockError& error)
@@ -1063,19 +1211,14 @@ public:
                 message<<std::endl;
             ilu_setup_successful = 0;
         }
-
-        // Check whether there was a problem on some process
         const bool parallel_failure = comm_ && comm_->communicator().min(ilu_setup_successful) == 0;
         const bool local_failure = ilu_setup_successful == 0;
         if ( local_failure || parallel_failure )
         {
             throw Dune::MatrixBlockError();
         }
-
-        // store ILU in simple CRS format
-        detail::convertToCRS( *ILU, lower_, upper_, inv_ );
+        
     }
-
 protected:
     /// \brief Reorder D if needed and return a reference to it.
     Range& reorderD(const Range& d)
@@ -1148,6 +1291,8 @@ protected:
     const bool relaxation_;
     size_type interiorSize_;
     const Matrix* A_;
+    std::unique_ptr< Matrix > ILU_;
+    std::unique_ptr<detail::Reorderer> reorderer_, inverseReorderer_;
     int iluIteration_;
     MILU_VARIANT milu_;
     bool redBlack_;
