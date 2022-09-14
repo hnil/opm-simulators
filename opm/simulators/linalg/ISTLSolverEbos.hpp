@@ -451,6 +451,12 @@ namespace Opm
                     weightsCalculator = [this, p = pressureIndex]() {
                         return this->getTrueImpesWeights(p);
                     };
+                } else if (weightsType == "trueimpesanalytic") {
+                    // assignment p = pressureIndex prevent compiler warning about
+                    // capturing variable with non-automatic storage duration
+                    weightsCalculator = [this, p = pressureIndex]() {
+                        return this->getTrueImpesWeightsAnalytic(p);
+                    };    
                 } else {
                     OPM_THROW(std::invalid_argument,
                               "Weights type " << weightsType << "not implemented for cpr."
@@ -471,6 +477,16 @@ namespace Opm
             Amg::getTrueImpesWeights(pressureVarIndex, weights, simulator_.vanguard().gridView(),
                                      elemCtx, simulator_.model(),
                                      ThreadManager::threadId());
+            return weights;
+        }
+
+        Vector getTrueImpesWeightsAnalytic(int pressureVarIndex) const
+        {
+            Vector weights(rhs_->size());
+            ElementContext elemCtx(simulator_);
+            Amg::getTrueImpesWeightsAnalytic(pressureVarIndex, weights, simulator_.vanguard().gridView(),
+                                             elemCtx, simulator_.model(),
+                                             ThreadManager::threadId());
             return weights;
         }
 
