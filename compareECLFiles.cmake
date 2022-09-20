@@ -1212,24 +1212,29 @@ add_test_compareECLFiles(CASENAME actionx_wpimult
                          ABS_TOL ${abs_tol}
                          REL_TOL ${rel_tol}
                          DIR actionx)
-                       
+
+#set(cpr_abs_tol ${abs_tol})
+set(cpr_abs_tol 1e99)
+set(cpr_rel_tol ${rel_tol})                       
 set(LINSOLVERS cpr_quasiimpes cpr_trueimpes cpr_trueimpesanalytic cpr)
-foreach(LINSOLVER in LISTS LINSOLVERS)
-   add_test_compareECLFiles(CASENAME spe1_${LINSOLVER}
-                          FILENAME SPE1CASE1
+foreach(LINSOLVER IN LISTS LINSOLVERS)
+   add_test_compareECLFiles(CASENAME spe12
+                          FILENAME SPE1CASE2
                           SIMULATOR flow
                           PREFIX ${LINSOLVER}
-                          ABS_TOL ${abs_tol}
-                          REL_TOL ${rel_tol}
+                          ABS_TOL ${cpr_abs_tol}
+                          REL_TOL ${cpr_rel_tol}
+                          DIR spe1
                           TEST_ARGS --linsolver=${LINSOLVER})
 
 endforeach()
-add_test_compareECLFiles(CASENAME spe1_cpr_addwell
-                         FILENAME SPE1CASE1
+add_test_compareECLFiles(CASENAME spe12
+                         FILENAME SPE1CASE2
                          SIMULATOR flow
                          PREFIX cpr_addwell
-                         ABS_TOL ${abs_tol}
-                         REL_TOL ${rel_tol}
+                         ABS_TOL ${cpr_abs_tol}
+                         REL_TOL ${cpr_rel_tol}
+                         DIR spe1
                          TEST_ARGS --linsolver=cpr --matrix-add-well-contributions=true)
                        
 # Restart tests
