@@ -76,7 +76,7 @@ function(add_test_compareECLFiles)
   if(PARAM_RESTART_SCHED)
    list(APPEND DRIVER_ARGS -h ${PARAM_RESTART_SCHED})
   endif()
-  opm_add_test(${PARAM_PREFIX}_${PARAM_SIMULATOR}+${PARAM_FILENAME}+${PARAM_CASENAME} NO_COMPILE
+  opm_add_test(${PARAM_PREFIX}_${PARAM_SIMULATOR}+${PARAM_FILENAME} NO_COMPILE
                EXE_NAME ${PARAM_SIMULATOR}
                DRIVER_ARGS ${DRIVER_ARGS}
                TEST_ARGS ${TEST_ARGS})
@@ -1212,21 +1212,13 @@ add_test_compareECLFiles(CASENAME actionx_wpimult
                          ABS_TOL ${abs_tol}
                          REL_TOL ${rel_tol}
                          DIR actionx)
-
-
                        
-add_test_compareECLFiles(CASENAME spe1_hei
-                          FILENAME SPE1CASE1
-                          SIMULATOR flow
-                          ABS_TOL ${abs_tol}
-                          REL_TOL ${rel_tol}
-                          TEST_ARGS --linsolver=cpr)
-
 set(LINSOLVERS cpr_quasiimpes cpr_trueimpes cpr_trueimpesanalytic cpr)
 foreach(LINSOLVER in LISTS LINSOLVERS)
    add_test_compareECLFiles(CASENAME spe1_${LINSOLVER}
                           FILENAME SPE1CASE1
                           SIMULATOR flow
+                          PREFIX ${LINSOLVER}
                           ABS_TOL ${abs_tol}
                           REL_TOL ${rel_tol}
                           TEST_ARGS --linsolver=${LINSOLVER})
@@ -1234,10 +1226,11 @@ foreach(LINSOLVER in LISTS LINSOLVERS)
 endforeach()
 add_test_compareECLFiles(CASENAME spe1_cpr_addwell
                          FILENAME SPE1CASE1
-                          SIMULATOR flow
-                          ABS_TOL ${abs_tol}
-                          REL_TOL ${rel_tol}
-                          TEST_ARGS --linsolver=cpr --matrix-add-well-contributions=true)
+                         SIMULATOR flow
+                         PREFIX cpr_addwell
+                         ABS_TOL ${abs_tol}
+                         REL_TOL ${rel_tol}
+                         TEST_ARGS --linsolver=cpr --matrix-add-well-contributions=true)
                        
 # Restart tests
 opm_set_test_driver(${PROJECT_SOURCE_DIR}/tests/run-restart-regressionTest.sh "")
