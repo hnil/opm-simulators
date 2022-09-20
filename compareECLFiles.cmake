@@ -59,6 +59,7 @@ function(add_test_compareECLFiles)
   if(NOT PARAM_PREFIX)
     set(PARAM_PREFIX compareECLFiles)
   endif()
+
   set(RESULT_PATH ${BASE_RESULT_PATH}${PARAM_DIR_PREFIX}/${PARAM_SIMULATOR}+${PARAM_CASENAME})
   set(TEST_ARGS ${PARAM_TEST_ARGS})
   set(DRIVER_ARGS -i ${OPM_TESTS_ROOT}/${PARAM_DIR}
@@ -75,7 +76,7 @@ function(add_test_compareECLFiles)
   if(PARAM_RESTART_SCHED)
    list(APPEND DRIVER_ARGS -h ${PARAM_RESTART_SCHED})
   endif()
-  opm_add_test(${PARAM_PREFIX}_${PARAM_SIMULATOR}+${PARAM_FILENAME} NO_COMPILE
+  opm_add_test(${PARAM_PREFIX}_${PARAM_SIMULATOR}+${PARAM_FILENAME}+${PARAM_CASENAME} NO_COMPILE
                EXE_NAME ${PARAM_SIMULATOR}
                DRIVER_ARGS ${DRIVER_ARGS}
                TEST_ARGS ${TEST_ARGS})
@@ -1212,6 +1213,32 @@ add_test_compareECLFiles(CASENAME actionx_wpimult
                          REL_TOL ${rel_tol}
                          DIR actionx)
 
+
+                       
+add_test_compareECLFiles(CASENAME spe1_hei
+                          FILENAME SPE1CASE1
+                          SIMULATOR flow
+                          ABS_TOL ${abs_tol}
+                          REL_TOL ${rel_tol}
+                          TEST_ARGS --linsolver=cpr)
+
+set(LINSOLVERS cpr_quasiimpes cpr_trueimpes cpr_trueimpesanalytic cpr)
+foreach(LINSOLVER in LISTS LINSOLVERS)
+   add_test_compareECLFiles(CASENAME spe1_${LINSOLVER}
+                          FILENAME SPE1CASE1
+                          SIMULATOR flow
+                          ABS_TOL ${abs_tol}
+                          REL_TOL ${rel_tol}
+                          TEST_ARGS --linsolver=${LINSOLVER})
+
+endforeach()
+add_test_compareECLFiles(CASENAME spe1_cpr_addwell
+                         FILENAME SPE1CASE1
+                          SIMULATOR flow
+                          ABS_TOL ${abs_tol}
+                          REL_TOL ${rel_tol}
+                          TEST_ARGS --linsolver=cpr --matrix-add-well-contributions=true)
+                       
 # Restart tests
 opm_set_test_driver(${PROJECT_SOURCE_DIR}/tests/run-restart-regressionTest.sh "")
 # Cruder tolerances for the restarted tests
