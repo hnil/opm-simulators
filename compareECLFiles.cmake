@@ -1216,7 +1216,7 @@ add_test_compareECLFiles(CASENAME actionx_wpimult
 #set(cpr_abs_tol ${abs_tol})
 set(cpr_abs_tol 1e99)
 set(cpr_rel_tol ${rel_tol})                       
-set(LINSOLVERS cpr_quasiimpes cpr_trueimpes cpr_trueimpesanalytic cpr)
+set(LINSOLVERS cpr_quasiimpes cpr_trueimpes cpr_trueimpesanalytic cpr cprw)
 foreach(LINSOLVER IN LISTS LINSOLVERS)
    add_test_compareECLFiles(CASENAME spe12
                           FILENAME SPE1CASE2
