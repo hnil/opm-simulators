@@ -59,7 +59,7 @@ namespace Opm
 
 
 
-
+  
 
     template<typename TypeTag>
     void
@@ -1995,7 +1995,12 @@ namespace Opm
         this->primary_variables_.checkFinite(deferred_logger);
     }
 
-
+    template<typename TypeTag>
+    void StandardWell<TypeTag>::setScalings(double bhp_scaling, double rate_scaling,double bhp_control_scaling){
+      this->bhp_scaling_ = bhp_scaling;
+      this->rate_scaling_ = rate_scaling;
+      this->bhp_control_scaling_ = bhp_control_scaling;
+    }
 
 
     template<typename TypeTag>

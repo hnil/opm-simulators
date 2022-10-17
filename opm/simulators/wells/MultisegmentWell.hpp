@@ -161,6 +161,8 @@ namespace Opm
                                         const double alq_value,
                                         DeferredLogger& deferred_logger) const override;
 
+        void setScalings(double bhp_scaling, double rate_scaling, double bhp_control_scaling);
+        double bhpControlScaling() const{return this->bhp_control_scaling_;}
     protected:
 
         // regularize msw equation
