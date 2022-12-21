@@ -1061,6 +1061,7 @@ public:
      */
     void beginTimeStep()
     {
+        OPM_TIME_BLOCK(beginTimeStep);
         int episodeIdx = this->episodeIndex();
 
         this->beginTimeStep_(enableExperiments,
@@ -1082,15 +1083,21 @@ public:
 
         // the derivatives may have change
         bool invalidateIntensiveQuantities = invalidateFromMaxWaterSat || invalidateFromMinPressure || invalidateFromHyst || invalidateFromMaxOilSat;
-        if (invalidateIntensiveQuantities)
-            this->model().invalidateAndUpdateIntensiveQuantities(/*timeIdx=*/0);
-
+        if (invalidateIntensiveQuantities){
+            OPM_TIME_BLOCK(BeginTimeStep_updateCachedQuantities);
+            this->updateCachedQuantities();
+            //this->model().invalidateAndUpdateIntensiveQuantities(/*timeIdx=*/0);
+        }    
         if constexpr (getPropValue<TypeTag, Properties::EnablePolymer>())
             updateMaxPolymerAdsorption_();
-
-        wellModel_.beginTimeStep();
-        if (enableAquifers_)
+        {
+            OPM_TIME_BLOCK(WellModelBeginTimeStep);
+            wellModel_.beginTimeStep();
+        }
+        if (enableAquifers_){
+            OPM_TIME_BLOCK(AquiferBeginTimeStep);
             aquiferModel_.beginTimeStep();
+        }
         tracerModel_.beginTimeStep();
 
     }
@@ -1120,8 +1127,10 @@ public:
      */
     void endTimeStep()
     {
+        OPM_TIME_BLOCK(endTimeStep);
 #ifndef NDEBUG
         if constexpr (getPropValue<TypeTag, Properties::EnableDebuggingChecks>()) {
+            OPM_TIME_BLOCK(checkConservative);    
             // in debug mode, we don't care about performance, so we check if the model does
             // the right thing (i.e., the mass change inside the whole reservoir must be
             // equivalent to the fluxes over the grid's boundaries plus the source rates
@@ -1137,14 +1146,22 @@ public:
 
         auto& simulator = this->simulator();
         wellModel_.endTimeStep();
-        if (enableAquifers_)
+        if (enableAquifers_){           
+            OPM_TIME_BLOCK(endTimeStepAquifer);    
             aquiferModel_.endTimeStep();
-        tracerModel_.endTimeStep();
+        }
+        {
+            OPM_TIME_BLOCK(endTimeStepTracer);    
+            tracerModel_.endTimeStep();
+        }
 
         // deal with DRSDT and DRVDT
+       
+        
         updateCompositionChangeLimits_();
-
+        
         if (enableDriftCompensation_) {
+            OPM_TIME_BLOCK(updateDriftCompansation);
             const auto& residual = this->model().linearizer().residual();
             for (unsigned globalDofIdx = 0; globalDofIdx < residual.size(); globalDofIdx ++) {
                 drift_[globalDofIdx] = residual[globalDofIdx];
@@ -1155,8 +1172,10 @@ public:
         }
 
         bool isSubStep = !EWOMS_GET_PARAM(TypeTag, bool, EnableWriteAllSolutions) && !this->simulator().episodeWillBeOver();
+        {
+        OPM_TIME_BLOCK(updateSummary);    
         eclWriter_->evalSummaryState(isSubStep);
-
+        }
         int episodeIdx = this->episodeIndex();
 
         // Re-ordering in case of Alugrid
@@ -1172,10 +1191,12 @@ public:
                 this->transmissibilities_.update(global,gridToEquilGrid);
             };
 
+        {
+        OPM_TIME_BLOCK(applyActions);    
         actionHandler_.applyActions(episodeIdx,
                                     simulator.time() + simulator.timeStepSize(),
                                     transUp);
-
+        }
         // deal with "clogging" for the MICP model
         if constexpr (enableMICP){
           auto& model = this->model();
@@ -1216,6 +1237,7 @@ public:
      */
     void writeOutput(bool verbose = true)
     {
+        OPM_TIME_BLOCK(writeOutput);
         // use the generic code to prepare the output fields and to
         // write the desired VTK files.
         ParentType::writeOutput(verbose);
@@ -1487,6 +1509,7 @@ public:
         FluidState &fluidState,
         unsigned globalSpaceIdx) const
     {
+        OPM_TIME_BLOCK(ProblemUpdateRelperms);
         // calculate relative permeabilities. note that we store the result into the
         // mobility_ class attribute. the division by the phase viscosity happens later.
         const auto& materialParams = materialLawParams(globalSpaceIdx);
@@ -2102,6 +2125,7 @@ private:
     // update the parameters needed for DRSDT and DRVDT
     void updateCompositionChangeLimits_()
     {
+        OPM_TIME_BLOCK(updatecompositionChangeLimits);    
         // update the "last Rs" values for all elements, including the ones in the ghost
         // and overlap regions
         int episodeIdx = this->episodeIndex();

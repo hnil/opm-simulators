@@ -236,6 +236,7 @@ std::unique_ptr<Matrix> blockJacobiAdjacency(const Grid& grid,
               converged_(false),
               matrix_()
         {
+            OPM_TIME_BLOCK(ConstructLinearSolver);
             const bool on_io_rank = (simulator.gridView().comm().rank() == 0);
 #if HAVE_MPI
             comm_.reset( new CommunicationType( simulator_.vanguard().grid().comm() ) );
@@ -310,6 +311,7 @@ std::unique_ptr<Matrix> blockJacobiAdjacency(const Grid& grid,
 
         void prepare(const SparseMatrixAdapter& M, Vector& b)
         {
+            OPM_TIME_BLOCK(ISTLSolverEbosPrepare);
             static bool firstcall = true;
 #if HAVE_MPI
             if (firstcall) {

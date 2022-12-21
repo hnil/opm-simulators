@@ -17,14 +17,16 @@
   along with OPM.  If not, see <http://www.gnu.org/licenses/>.
 */
 #include "config.h"
+#include "tracy/Tracy.hpp"
+#include "tracy/TracyC.h"
+#define OPM_TIME_BLOCK(blockname) ZoneNamedN(blockname, #blockname, true);
+//#define OPM_BEGIN_TIME_BLOCK(blockname) ZoneNamedN(blockname, #blockname, true); {
+//#define OPM_END_TIME_BLOCK(blockname) };
 #include <opm/simulators/flow/Main.hpp>
 #include <opm/models/blackoil/blackoillocalresidualtpfa.hh>
 #include <opm/models/discretization/common/tpfalinearizer.hh>
-#include "tracy/Tracy.hpp"
-#include "tracy/TracyC.h"
 #include <opm/models/blackoil/blackoilintensivequantitiessimple.hh>
 //sudo apt install libcapstone-dev
-#define OPM_TIME_BLOCK(blockname) ZoneNamedN(blockname, #blockname, true);
 namespace Opm {
 namespace Properties {
 namespace TTag {

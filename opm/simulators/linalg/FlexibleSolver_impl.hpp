@@ -69,6 +69,7 @@ namespace Dune
     FlexibleSolver<Operator>::
     apply(VectorType& x, VectorType& rhs, Dune::InverseOperatorResult& res)
     {
+        OPM_TIME_BLOCK(FlexibleSolverApply);
         linsolver_->apply(x, rhs, res);
     }
 
@@ -194,6 +195,7 @@ namespace Dune
          const std::function<VectorType()> weightsCalculator,
          std::size_t pressureIndex)
     {
+        OPM_TIME_BLOCK(FlexibleSolverInit);
         initOpPrecSp(op, prm, weightsCalculator, comm, pressureIndex);
         initSolver(prm, comm.communicator().rank() == 0);
     }

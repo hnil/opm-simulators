@@ -208,9 +208,9 @@ public:
         const auto localWellTestState = simulator_.problem().wellModel().wellTestState();
         this->prepareLocalCellData(isSubStep, reportStepNum);
 
-        if (this->eclOutputModule_->needInterfaceFluxes(isSubStep)) {
-            this->captureLocalFluxData();
-        }
+        // if (this->eclOutputModule_->needInterfaceFluxes(isSubStep)) {
+        //     this->captureLocalFluxData();
+        // }
 
         if (this->collectToIORank_.isParallel()) {
             OPM_BEGIN_PARALLEL_TRY_CATCH()
@@ -491,15 +491,15 @@ private:
         const bool log = this->collectToIORank_.isIORank();
 
         eclOutputModule_->allocBuffers(numElements, reportStepNum,
-                                      isSubStep, log, /*isRestart*/ false);
+                                       isSubStep, log, /*isRestart*/ false);
 
         ElementContext elemCtx(simulator_);
         OPM_BEGIN_PARALLEL_TRY_CATCH();
         for (const auto& elem : elements(gridView)) {
-            elemCtx.updatePrimaryStencil(elem);
-            elemCtx.updatePrimaryIntensiveQuantities(/*timeIdx=*/0);
+            //elemCtx.updatePrimaryStencil(elem);
+            //elemCtx.updatePrimaryIntensiveQuantities(/*timeIdx=*/0);
 
-            eclOutputModule_->processElement(elemCtx);
+            //eclOutputModule_->processElement(elemCtx);
         }
         OPM_END_PARALLEL_TRY_CATCH("EclWriter::prepareLocalCellData() failed: ", simulator_.vanguard().grid().comm());
     }
