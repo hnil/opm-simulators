@@ -108,8 +108,11 @@ applyUMFPack(const MatrixType& D,
     if (!linsolver)
     {
         linsolver = std::make_shared<Dune::UMFPack<MatrixType>>(D, 0);
-    }
-
+        const double* UMF_Decomposition_Info = linsolver->getDecompositionInfo();
+        if(1./UMF_Decomposition_Info[UMFPACK_RCOND]>1e50){    
+            Dune::writeMatrixMarket(D,std::cout);
+        }
+    }    
     // The copy of x seems mandatory for calling UMFPack!
     VectorType y(x.size());
     y = 0.;

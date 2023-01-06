@@ -1747,7 +1747,7 @@ addWellContribution(WellContributions& wellContribs) const
     }
 
     // duneD
-    Dune::UMFPack<DiagMatWell> umfpackMatrix(duneD_, 0);
+    Dune::UMFPack<DiagMatWell> umfpackMatrix(duneD_, 2);
     double *Dvals = umfpackMatrix.getInternalMatrix().getValues();
     auto *Dcols = umfpackMatrix.getInternalMatrix().getColStart();
     auto *Drows = umfpackMatrix.getInternalMatrix().getRowIndex();

@@ -815,7 +815,21 @@ namespace Opm
                 }
             }
         
-            assert(diag_ell > 0.0);
+            if(not(diag_ell > 0.0)){
+                std::cout << this->name() << std::endl;
+                for(auto& v :  this->primary_variables_){
+                    for(auto vv : v){
+                    //std::cout << this->primary_variables_<< std::endl;
+                    std::cout << vv << std::endl;
+                    }
+                }
+                std::cout << well_weight << std::endl;
+                Dune::writeMatrixMarket(this->duneB_,std::cout);
+                Dune::writeMatrixMarket(this->duneD_,std::cout);
+                Dune::writeMatrixMarket(this->duneC_,std::cout);
+                //assert(diag_ell>0.0);
+
+            }
             jacobian[welldof_ind][welldof_ind] = diag_ell;
         }else{
             jacobian[welldof_ind][welldof_ind] = 1.0; // maybe we could have used diag_ell if calculated
