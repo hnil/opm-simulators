@@ -19,7 +19,7 @@
 #include "config.h"
 #include "tracy/Tracy.hpp"
 #include "tracy/TracyC.h"
-#define OPM_TIME_BLOCK(blockname) ZoneNamedN(blockname, #blockname, true);
+#define OPM_TIME_BLOCK(blockname) //ZoneNamedN(blockname, #blockname, true);
 //#define OPM_BEGIN_TIME_BLOCK(blockname) ZoneNamedN(blockname, #blockname, true); {
 //#define OPM_END_TIME_BLOCK(blockname) };
 #include <opm/simulators/flow/Main.hpp>
