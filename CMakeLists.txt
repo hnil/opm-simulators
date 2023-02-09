@@ -510,7 +510,7 @@ if(Damaris_FOUND)
   target_link_libraries(opmsimulators PUBLIC damaris)
 endif()
 
-#target_link_libraries(opmsimulators PRIVATE TracyClient)
+#target_link_libraries(opmsimulators TracyClient)
 
 install(DIRECTORY doc/man1 DESTINATION ${CMAKE_INSTALL_MANDIR}
   FILES_MATCHING PATTERN "*.1")

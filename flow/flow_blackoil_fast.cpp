@@ -19,13 +19,17 @@
 #include "config.h"
 #include "tracy/Tracy.hpp"
 #include "tracy/TracyC.h"
-#define OPM_TIME_BLOCK(blockname) //ZoneNamedN(blockname, #blockname, true);
+#define OPM_TIME_BLOCK_MAIN(blockname) ZoneNamedN(blockname, #blockname, true);
+#define OPM_TIME_BLOCK(blockname);// ZoneNamedN(blockname, #blockname, true);
 //#define OPM_BEGIN_TIME_BLOCK(blockname) ZoneNamedN(blockname, #blockname, true); {
 //#define OPM_END_TIME_BLOCK(blockname) };
 #include <opm/simulators/flow/Main.hpp>
 #include <opm/models/blackoil/blackoillocalresidualtpfa.hh>
 #include <opm/models/discretization/common/tpfalinearizer.hh>
 #include <opm/models/blackoil/blackoilintensivequantitiessimple.hh>
+#include <opm/models/blackoil/blackoilintensivequantitiesdrygas.hh>
+#include <opm/models/blackoil/eclblackoilintensivequantities.hh>
+
 //sudo apt install libcapstone-dev
 namespace Opm {
 namespace Properties {
@@ -43,9 +47,15 @@ struct EclFlowProblemTPFAFast {
     template<class TypeTag>
     struct EnableDiffusion<TypeTag, TTag::EclFlowProblemTPFAFast> { static constexpr bool value = false; };
 
+    // template<class TypeTag>
+    // struct IntensiveQuantities<TypeTag, TTag::EclFlowProblemTPFAFast> {
+    //     using type = BlackOilIntensiveQuantitiesDryGas<TypeTag>;
+    // };
     template<class TypeTag>
     struct IntensiveQuantities<TypeTag, TTag::EclFlowProblemTPFAFast> {
-        using type = BlackOilIntensiveQuantitiesSimple<TypeTag>;
+        using type = EclBlackOilIntensiveQuantities<TypeTag>;
+        //using type = BlackOilIntensiveQuantitiesSimple<TypeTag>;
+        //using type = BlackOilIntensiveQuantitiesDryGas<TypeTag>;
     };
 
 }
@@ -53,7 +63,7 @@ struct EclFlowProblemTPFAFast {
 
 int main(int argc, char** argv)
 {
-    OPM_TIME_BLOCK(FullSimulator);
+    OPM_TIME_BLOCK_MAIN(FullSimulator);
     using TypeTag = Opm::Properties::TTag::EclFlowProblemTPFAFast;
     auto mainObject = Opm::Main(argc, argv);
     return mainObject.runStatic<TypeTag>();
