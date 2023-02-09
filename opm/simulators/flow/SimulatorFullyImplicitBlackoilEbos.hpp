@@ -160,6 +160,7 @@ public:
 
     void init(SimulatorTimer &timer)
     {
+        OPM_TIME_BLOCK_MAIN(initSimulatorFullyImplicit);
         ebosSimulator_.setEpisodeIndex(-1);
 
         // Create timers and file for writing timing info.
@@ -193,6 +194,7 @@ public:
 
     bool runStep(SimulatorTimer& timer)
     {
+        OPM_TIME_BLOCK_MAIN(runStep);
         if (schedule().exitStatus().has_value()) {
             if (terminalOutput_) {
                 OpmLog::info("Stopping simulation since EXIT was triggered by an action keyword.");

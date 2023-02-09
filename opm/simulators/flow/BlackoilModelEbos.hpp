@@ -390,6 +390,7 @@ namespace Opm {
             perfTimer.start();
             // the step is not considered converged until at least minIter iterations is done
             {
+                OPM_TIME_BLOCK_MAIN(Convergence); 
                 auto convrep = getConvergence(timer, iteration,residual_norms);
                 report.converged = convrep.converged()  && iteration > nonlinear_solver.minIter();;
                 ConvergenceReport::Severity severity = convrep.severityOfWorstFailure();
@@ -419,6 +420,7 @@ namespace Opm {
                 // Solve the linear system.
                 linear_solve_setup_time_ = 0.0;
                 try {
+                    OPM_TIME_BLOCK_MAIN(wellLinearization);
                     // apply the Schur compliment of the well model to the reservoir linearized
                     // equations
                     // Note that linearize may throw for MSwells.
@@ -445,10 +447,13 @@ namespace Opm {
                 // handling well state update before oscillation treatment is a decision based
                 // on observation to avoid some big performance degeneration under some circumstances.
                 // there is no theorectical explanation which way is better for sure.
-                wellModel().postSolve(x);
-
+                {
+                  OPM_TIME_BLOCK_MAIN(wellPostSolve);  
+                  wellModel().postSolve(x);
+                }
                 if (param_.use_update_stabilization_) {
                     // Stabilize the nonlinear update.
+                    OPM_TIME_BLOCK_MAIN(OssilationDetection);  
                     bool isOscillate = false;
                     bool isStagnate = false;
                     nonlinear_solver.detectOscillations(residual_norms_history_, iteration, isOscillate, isStagnate);
@@ -486,6 +491,7 @@ namespace Opm {
         /// \param[in] timer                  simulation timer
         SimulatorReportSingle afterStep(const SimulatorTimerInterface&)
         {
+            OPM_TIME_BLOCK_MAIN(afterStep);  
             SimulatorReportSingle report;
             Dune::Timer perfTimer;
             perfTimer.start();
@@ -501,6 +507,7 @@ namespace Opm {
         SimulatorReportSingle assembleReservoir(const SimulatorTimerInterface& /* timer */,
                                                 const int iterationIdx)
         {
+            OPM_TIME_BLOCK_MAIN(assembleReservoir);  
             // -------- Mass balance equations --------
             ebosSimulator_.model().newtonMethod().setIterationIndex(iterationIdx);
             ebosSimulator_.problem().beginIteration();
@@ -513,6 +520,7 @@ namespace Opm {
         // compute the "relative" change of the solution between time steps
         double relativeChange() const
         {
+            OPM_TIME_BLOCK_MAIN(relativeChange);  
             Scalar resultDelta = 0.0;
             Scalar resultDenom = 0.0;
 
@@ -604,7 +612,7 @@ namespace Opm {
         /// r is the residual.
         void solveJacobianSystem(BVector& x)
         {
-
+            OPM_TIME_BLOCK_MAIN(solveJacobianSystem);  
             auto& ebosJac = ebosSimulator_.model().linearizer().jacobian();
             auto& ebosResid = ebosSimulator_.model().linearizer().residual();
 
@@ -630,6 +638,7 @@ namespace Opm {
         /// Apply an update to the primary variables.
         void updateSolution(const BVector& dx)
         {
+            OPM_TIME_BLOCK_MAIN(updateSolution);
             auto& ebosNewtonMethod = ebosSimulator_.model().newtonMethod();
             SolutionVector& solution = ebosSimulator_.model().solution(/*timeIdx=*/0);
 
@@ -659,6 +668,7 @@ namespace Opm {
                                                        std::vector< Scalar >& maxCoeff,
                                                        std::vector< Scalar >& B_avg)
         {
+            OPM_TIME_BLOCK_MAIN(convergenceReduction);
             // Compute total pore volume (use only owned entries)
             double pvSum = pvSumLocal;
             double numAquiferPvSum = numAquiferPvSumLocal;
@@ -1104,11 +1114,13 @@ namespace Opm {
 
         void beginReportStep()
         {
+            OPM_TIME_BLOCK_MAIN(beginReportStep);
             ebosSimulator_.problem().beginEpisode();
         }
 
         void endReportStep()
         {
+            OPM_TIME_BLOCK_MAIN(endReportStep);
             ebosSimulator_.problem().endEpisode();
         }
 

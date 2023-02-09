@@ -21,7 +21,6 @@
 
 #ifndef OPM_ISTLSOLVER_EBOS_HEADER_INCLUDED
 #define OPM_ISTLSOLVER_EBOS_HEADER_INCLUDED
-
 #include <dune/istl/owneroverlapcopy.hh>
 
 #include <ebos/eclbasevanguard.hh>
@@ -236,7 +235,7 @@ std::unique_ptr<Matrix> blockJacobiAdjacency(const Grid& grid,
               converged_(false),
               matrix_()
         {
-            OPM_TIME_BLOCK(ConstructLinearSolver);
+            OPM_TIME_BLOCK_MAIN(ConstructLinearSolver);
             const bool on_io_rank = (simulator.gridView().comm().rank() == 0);
 #if HAVE_MPI
             comm_.reset( new CommunicationType( simulator_.vanguard().grid().comm() ) );
@@ -311,7 +310,7 @@ std::unique_ptr<Matrix> blockJacobiAdjacency(const Grid& grid,
 
         void prepare(const SparseMatrixAdapter& M, Vector& b)
         {
-            OPM_TIME_BLOCK(ISTLSolverEbosPrepare);
+            OPM_TIME_BLOCK_MAIN(ISTLSolverEbosPrepare);
             static bool firstcall = true;
 #if HAVE_MPI
             if (firstcall) {
@@ -397,6 +396,7 @@ std::unique_ptr<Matrix> blockJacobiAdjacency(const Grid& grid,
                                   x, result))
 #endif
             {
+                OPM_TIME_BLOCK_MAIN(flexibleSolverSolve);
                 assert(flexibleSolver_.solver_);
                 flexibleSolver_.solver_->apply(x, *rhs_, result);
             }
@@ -449,7 +449,7 @@ std::unique_ptr<Matrix> blockJacobiAdjacency(const Grid& grid,
 
         void prepareFlexibleSolver()
         {
-
+            OPM_TIME_BLOCK_MAIN(flexibleSolverPrepeare);
             if (shouldCreateSolver()) {
                 std::function<Vector()> trueFunc =
                     [this]
@@ -471,6 +471,7 @@ std::unique_ptr<Matrix> blockJacobiAdjacency(const Grid& grid,
             }
             else
             {
+                OPM_TIME_BLOCK_MAIN(flexibleSolverUpdate);
                 flexibleSolver_.pre_->update();
             }
         }
@@ -528,6 +529,7 @@ std::unique_ptr<Matrix> blockJacobiAdjacency(const Grid& grid,
         // conservation equations, ignoring all other terms.
         Vector getTrueImpesWeights(int pressureVarIndex) const
         {
+            OPM_TIME_BLOCK_MAIN(flexibleSolverTrueImpesWeights);
             Vector weights(rhs_->size());
             ElementContext elemCtx(simulator_);
             Amg::getTrueImpesWeights(pressureVarIndex, weights,

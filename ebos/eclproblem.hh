@@ -1497,9 +1497,15 @@ public:
     { return materialLawManager_; }
 
     void updateCachedQuantities(){
+        OPM_TIME_BLOCK_MAIN(updatedCachedQuantities);
         //this->model().invalidateAndUpdateIntensiveQuantities(0);
         const auto& solution = this->model().solution(/*timeIdx*/0);
-        this->model().invalidateAndUpdateIntensiveQuantitiesSimple(*this,solution,/*timeIdx*/0);    
+        // const auto& waterpvt = FluidSystem::waterPvt().template getRealPvt<Opm::WaterPvtApproach::ConstantCompressibilityWater>();
+        // const auto& gaspvt = FluidSystem::gasPvt().template getRealPvt<Opm::GasPvtApproach::WetGas>();
+        // const auto& oilpvt = FluidSystem::oilPvt().template getRealPvt<Opm::OilPvtApproach::LiveOil>();
+        
+        // this->model().invalidateAndUpdateIntensiveQuantitiesSimple(*this,solution,/*timeIdx*/0, waterpvt, gaspvt, oilpvt);
+        this->model().invalidateAndUpdateIntensiveQuantitiesSimple(*this,solution,/*timeIdx*/0);
     }
     
     template <class FluidState>
