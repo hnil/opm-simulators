@@ -2115,7 +2115,7 @@ protected:
 #pragma omp parallel for
 #endif
         for (unsigned dofIdx = 0; dofIdx < numGridDof; ++dofIdx) {
-                const auto& iq = *model.cachedIntensiveQuantities(dofIdx, /*timeIdx=*/ 0);
+                const auto& iq = model.intensiveQuantities(dofIdx, /*timeIdx=*/ 0);
                 func(dofIdx, iq);
         }
         OPM_END_PARALLEL_TRY_CATCH(failureMsg, vanguard.grid().comm());
