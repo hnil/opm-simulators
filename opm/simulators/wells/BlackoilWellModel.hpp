@@ -359,6 +359,7 @@ namespace Opm {
             double gravity_{};
             std::vector<double> depth_{};
             bool alternative_well_rate_init_{};
+
 	    double bhp_scaling_;
 	    double rate_scaling_;
             double bhp_control_scaling_;

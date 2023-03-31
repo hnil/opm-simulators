@@ -75,20 +75,12 @@ namespace Opm
         this->StdWellEval::init(this->perf_depth_, depth_arg, num_cells, Base::has_polymermw);
     }
 
-
-
-
-
     template<typename TypeTag>
     void StandardWell<TypeTag>::
     initPrimaryVariablesEvaluation()
     {
         this->primary_variables_.init();
     }
-
-
-
-
 
     template<typename TypeTag>
     void

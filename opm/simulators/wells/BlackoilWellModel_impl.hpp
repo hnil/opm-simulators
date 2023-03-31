@@ -88,11 +88,12 @@ namespace Opm {
         extractLegacyDepth_();
 
         gravity_ = ebosSimulator_.problem().gravity()[2];
+
 	// this parameters is registered in BlackoilModelParamtersEbos.hpp
 	// but no need of putting them in to the parameters.
 	bhp_scaling_ = EWOMS_GET_PARAM(TypeTag, double, WellBhpScaling);
 	rate_scaling_ = EWOMS_GET_PARAM(TypeTag, double, WellRateScaling);
-        bhp_control_scaling_ = EWOMS_GET_PARAM(TypeTag, double, BhpControlScaling);  
+        bhp_control_scaling_ = EWOMS_GET_PARAM(TypeTag, double, BhpControlScaling);
         initial_step_ = true;
 
         // add the eWoms auxiliary module for the wells to the list

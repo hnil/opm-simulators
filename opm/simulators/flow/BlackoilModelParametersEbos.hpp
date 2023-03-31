@@ -182,7 +182,7 @@ template<class TypeTag, class MyTypeTag>
 struct BhpControlScaling {
   using type = double;
   static constexpr type value = 1.0;
-};    
+};
   
 template<class TypeTag>
 struct DbhpMaxRel<TypeTag, TTag::FlowModelParameters> {
@@ -288,6 +288,7 @@ template<class TypeTag>
 struct ShutUnsolvableWells<TypeTag, TTag::FlowModelParameters> {
     static constexpr bool value = true;
 };
+
 template<class TypeTag>
 struct AlternativeWellRateInit<TypeTag, TTag::FlowModelParameters> {
     static constexpr bool value = true;
