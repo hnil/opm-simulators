@@ -156,7 +156,6 @@ template<class TypeTag, class MyTypeTag>
 struct MaxInnerIterWells {
     using type = UndefinedProperty;
 };
-  
 template<class TypeTag, class MyTypeTag>
 struct AlternativeWellRateInit {
     using type = UndefinedProperty;
@@ -183,7 +182,6 @@ struct BhpControlScaling {
   using type = double;
   static constexpr type value = 1.0;
 };
-  
 template<class TypeTag>
 struct DbhpMaxRel<TypeTag, TTag::FlowModelParameters> {
     using type = GetPropType<TypeTag, Scalar>;
