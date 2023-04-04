@@ -151,6 +151,7 @@ EclGenericOutputBlackoilModule(const EclipseState& eclState,
                            const SummaryState& summaryState,
                            bool enableEnergy,
                            bool enableTemperature,
+                           bool enableMech,
                            bool enableSolvent,
                            bool enablePolymer,
                            bool enableFoam,
@@ -166,6 +167,7 @@ EclGenericOutputBlackoilModule(const EclipseState& eclState,
     , logOutput_(eclState, schedule, summaryState)
     , enableEnergy_(enableEnergy)
     , enableTemperature_(enableTemperature)
+    , enableMech_(enableMech)
     , enableSolvent_(enableSolvent)
     , enablePolymer_(enablePolymer)
     , enableFoam_(enableFoam)
@@ -444,6 +446,30 @@ assignToSolution(data::Solution& sol)
         DataEntry{"STD_OIL",  UnitSystem::measure::identity,           mFracOil_},
         DataEntry{"TMULT_RC", UnitSystem::measure::identity,           rockCompTransMultiplier_},
         DataEntry{"UREA",     UnitSystem::measure::density,            cUrea_},
+        DataEntry{"MECHPOTF", UnitSystem::measure::pressure,  mechPotentialForce_},
+        DataEntry{"TEMPPOTF", UnitSystem::measure::pressure,  mechPotentialTempForce_},
+        DataEntry{"PRESPOTF", UnitSystem::measure::pressure,  mechPotentialPressForce_},
+        DataEntry{"DISPX", UnitSystem::measure::length,  dispX_},
+        DataEntry{"DISPY", UnitSystem::measure::length,  dispY_},
+        DataEntry{"DISPZ", UnitSystem::measure::length,  dispZ_},
+        DataEntry{"STRESSXX", UnitSystem::measure::pressure,  stressXX_},
+        DataEntry{"STRESSYY", UnitSystem::measure::pressure,  stressYY_},
+        DataEntry{"STRESSZZ", UnitSystem::measure::pressure,  stressZZ_},
+        DataEntry{"STRESSXY", UnitSystem::measure::pressure,  stressXY_},
+        DataEntry{"STRESSXZ", UnitSystem::measure::pressure,  stressXZ_},
+        DataEntry{"STRESSYZ", UnitSystem::measure::pressure,  stressYZ_},
+        DataEntry{"DELSTRXX", UnitSystem::measure::pressure,  delstressXX_},
+        DataEntry{"DELSTRYY", UnitSystem::measure::pressure,  delstressYY_},
+        DataEntry{"DELSTRZZ", UnitSystem::measure::pressure,  delstressZZ_},
+        DataEntry{"DELSTRXY", UnitSystem::measure::pressure,  delstressXY_},
+        DataEntry{"DELSTRXZ", UnitSystem::measure::pressure,  delstressXZ_},
+        DataEntry{"DELSTRYZ", UnitSystem::measure::pressure,  delstressYZ_},
+        DataEntry{"STRAINXX", UnitSystem::measure::identity,  strainXX_},
+        DataEntry{"STRAINYY", UnitSystem::measure::identity,  strainYY_},
+        DataEntry{"STRAINZZ", UnitSystem::measure::identity,  strainZZ_},
+        DataEntry{"STRAINXY", UnitSystem::measure::identity,  strainXY_},
+        DataEntry{"STRAINXZ", UnitSystem::measure::identity,  strainXZ_},
+        DataEntry{"STRAINYZ", UnitSystem::measure::identity,  strainYZ_},
     };
 
     for (const auto& array : baseSolutionArrays) {
@@ -760,9 +786,69 @@ doAllocBuffers(unsigned bufferSize,
     rstKeywords["PRES"] = 0;
     rstKeywords["PRESSURE"] = 0;
 
-    // If TEMP is set in RPTRST we output temperature even if THERMAL
-    // is not activated
-    if (enableEnergy_ || rstKeywords["TEMP"] > 0) {
+    if (enableMech_ && eclState_.runspec().mech()){
+        this->mechPotentialForce_.resize(bufferSize,0.0);
+        rstKeywords["MECHPOTF"] = 0;
+        this->mechPotentialTempForce_.resize(bufferSize,0.0);
+        rstKeywords["TEMPPOTF"] = 0;
+        this->mechPotentialPressForce_.resize(bufferSize,0.0);
+        rstKeywords["PRESPOTF"] = 0;
+
+
+        this->dispX_.resize(bufferSize,0.0);
+        rstKeywords["DISPX"] = 0;
+        this->dispY_.resize(bufferSize,0.0);
+        rstKeywords["DISPY"] = 0;
+        this->dispZ_.resize(bufferSize,0.0);
+        rstKeywords["DISPZ"] = 0;
+        this->stressXX_.resize(bufferSize,0.0);
+        rstKeywords["STRESSXX"] = 0;
+        this->stressYY_.resize(bufferSize,0.0);
+        rstKeywords["STRESSYY"] = 0;
+        this->stressZZ_.resize(bufferSize,0.0);
+        rstKeywords["STRESSZZ"] = 0;
+        this->stressXY_.resize(bufferSize,0.0);
+        rstKeywords["STRESSXY"] = 0;
+        this->stressXZ_.resize(bufferSize,0.0);
+        rstKeywords["STRESSXZ"] = 0;
+        this->stressXY_.resize(bufferSize,0.0);
+        rstKeywords["STRESSXY"] = 0;
+        this->stressYZ_.resize(bufferSize,0.0);
+        rstKeywords["STRESSYZ"] = 0;
+
+        this->strainXX_.resize(bufferSize,0.0);
+        rstKeywords["STRAINXX"] = 0;
+        this->strainYY_.resize(bufferSize,0.0);
+        rstKeywords["STRAINYY"] = 0;
+        this->strainZZ_.resize(bufferSize,0.0);
+        rstKeywords["STRAINZZ"] = 0;
+        this->strainXY_.resize(bufferSize,0.0);
+        rstKeywords["STRAINXY"] = 0;
+        this->strainXZ_.resize(bufferSize,0.0);
+        rstKeywords["STRAINXZ"] = 0;
+        this->strainXY_.resize(bufferSize,0.0);
+        rstKeywords["STRAINXY"] = 0;
+        this->strainYZ_.resize(bufferSize,0.0);
+        rstKeywords["STRAINYZ"] = 0;
+
+        this->delstressXX_.resize(bufferSize,0.0);
+        rstKeywords["DELSTRXX"] = 0;
+        this->delstressYY_.resize(bufferSize,0.0);
+        rstKeywords["DELSTRYY"] = 0;
+        this->delstressZZ_.resize(bufferSize,0.0);
+        rstKeywords["DELSTRZZ"] = 0;
+        this->delstressXY_.resize(bufferSize,0.0);
+        rstKeywords["DELSTRXY"] = 0;
+        this->delstressXZ_.resize(bufferSize,0.0);
+        rstKeywords["DELSTRXZ"] = 0;
+        this->delstressXY_.resize(bufferSize,0.0);
+        rstKeywords["DELSTRXY"] = 0;
+        this->delstressYZ_.resize(bufferSize,0.0);
+        rstKeywords["DELSTRYZ"] = 0;
+    }
+
+    // Allocate memory for temperature
+    if (enableEnergy_ || enableTemperature_) {
         this->temperature_.resize(bufferSize, 0.0);
         rstKeywords["TEMP"] = 0;
     }
