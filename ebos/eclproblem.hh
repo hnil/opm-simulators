@@ -2978,7 +2978,12 @@ private:
                     std::vector<std::tuple<BCComponent, std::optional<double>, std::optional<double>>>& data = dirichlet_(bcface.dir);
                     loopAndApply(bcface,
                                  [&data,component,pressure,temperature](int elemIdx) { data[elemIdx] = {component, pressure, temperature}; });
-                } else {
+                } else if (type == BCTYPE::NONE) {
+                    // no boundary condition for flow may have boundary condition for mechancis
+                    if(!(vanguard.eclState().runSpec().mech())){
+                        throw std::logic_error("For solve without mechanics you need to specify invalid type for BC. Use FREE or RATE: current value NONE");
+                    }
+                } else {    
                     throw std::logic_error("invalid type for BC. Use FREE or RATE");
                 }
             }
