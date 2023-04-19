@@ -134,8 +134,33 @@ public:
 
     //! \brief Returns scaled rate for a component.
     EvalWell getQs(const int compIdx) const;
+  
 
+    EvalWell getBhp() const
+    {
+        primary_variables_evaluation_[Bhp] * this->pressureScaling();
+    }
+
+
+    EvalWell getWQtotal() const{
+        evaluation_[WQTotal]*this->rateScale;
+    }
+
+    EvalWell getWQtotal() const{
+        evaluation_[WQTotal]*this->rateScale;
+    }
+    EvalWell setScaledWQtotal(EvalWell& wqtotal) const{
+        evaluation_[WQTotal]  = wqtotal/this->rateScale;
+    }
+    void setScaledBhp(Scalar Bhp)
+    {
+        value_[Bhp] = ws.bhp / this->bhp_scaling;
+    }
+
+    double pressureScaling() {return 1};
+    double rateScaling() {return 1};
     //! \brief Returns a const ref to an evaluation.
+private:    
     Scalar value(const int idx) const
     { return value_[idx]; }
 
@@ -143,7 +168,6 @@ public:
     const EvalWell& eval(const int idx) const
     { return evaluation_[idx]; }
 
-private:
     //! \brief Calculate a relaxation factor for producers.
     //! \details To avoid overshoot of the fractions which might result in negative rates.
     double relaxationFactorFractionsProducer(const BVectorWell& dwells) const;

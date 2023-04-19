@@ -144,13 +144,13 @@ update(const WellState& well_state,
     if (well_.isInjector()) {
         switch (well_.wellEcl().injectorType()) {
         case InjectorType::WATER:
-            value_[WQTotal] = ws.surface_rates[pu.phase_pos[Water]];
+            this->setScaledWQTotal(ws.surface_rates[pu.phase_pos[Water]]);
             break;
         case InjectorType::GAS:
-            value_[WQTotal] = ws.surface_rates[pu.phase_pos[Gas]];
+            this->setScaledWQTotal(ws.surface_rates[pu.phase_pos[Gas]]);
             break;
         case InjectorType::OIL:
-            value_[WQTotal] = ws.surface_rates[pu.phase_pos[Oil]];
+            this->setScaledWQTotal(ws.surface_rates[pu.phase_pos[Oil]]);
             break;
         case InjectorType::MULTI:
             // Not supported.
@@ -159,9 +159,9 @@ update(const WellState& well_state,
             break;
         }
     } else {
-            value_[WQTotal] = total_well_rate;
+            this->setScaledWQTotal(total_well_rate);
             if (stop_or_zero_rate_target) {
-                value_[WQTotal] = 0.;
+                this->setScaledWQTotal(0.0);
             }
     }
 
@@ -223,7 +223,8 @@ update(const WellState& well_state,
     }
 
     // BHP
-    value_[Bhp] = ws.bhp;
+    this->setScaledBhp(ws.bhp);
+    //value_[Bhp] = ws.bhp;
 }
 
 template<class FluidSystem, class Indices, class Scalar>
@@ -236,8 +237,8 @@ updatePolyMW(const WellState& well_state)
         const auto& water_velocity = perf_data.water_velocity;
         const auto& skin_pressure = perf_data.skin_pressure;
         for (int perf = 0; perf < well_.numPerfs(); ++perf) {
-            value_[Bhp + 1 + perf] = water_velocity[perf];
-            value_[Bhp + 1 + well_.numPerfs() + perf] = skin_pressure[perf];
+            value_[Bhp + 1 + perf] = this->setScaledRate(water_velocity[perf],perf);
+            value_[Bhp + 1 + well_.numPerfs() + perf] = this->setScaledPressure(skin_pressure[perf],perf)
         }
     }
 }
@@ -291,7 +292,7 @@ updateNewton(const BVectorWell& dwells,
     const double dx1_limited = sign1 * std::min(std::abs(dwells[0][Bhp]),
                                                 std::abs(value_[Bhp]) * dBHPLimit);
     // 1e5 to make sure bhp will not be below 1bar
-    value_[Bhp] = std::max(value_[Bhp] - dx1_limited, 1e5);
+    value_[Bhp] = std::max(value_[Bhp] - dx1_limited, 1e5/this->pressureScale());
 }
 
 template<class FluidSystem, class Indices, class Scalar>
@@ -381,7 +382,7 @@ copyToWellState(WellState& well_state,
     }
 
     auto& ws = well_state.well(well_.indexOfWell());
-    ws.bhp = value_[Bhp];
+    ws.bhp = this->getBhp();
 
     // calculate the phase rates based on the primary variables
     // for producers, this is not a problem, while not sure for injectors here
@@ -423,8 +424,8 @@ copyToWellStatePolyMW(WellState& well_state) const
         auto& perf_water_velocity = perf_data.water_velocity;
         auto& perf_skin_pressure = perf_data.skin_pressure;
         for (int perf = 0; perf < well_.numPerfs(); ++perf) {
-            perf_water_velocity[perf] = value_[Bhp + 1 + perf];
-            perf_skin_pressure[perf] = value_[Bhp + 1 + well_.numPerfs() + perf];
+            perf_water_velocity[perf] = this->getRate(perf);
+            perf_skin_pressure[perf] = this->getPressure(perf);//value_[Bhp + 1 + well_.numPerfs() + perf];
         }
     }
 }
@@ -550,9 +551,9 @@ getQs(const int comp_idx) const
             //                         "Multi phase injectors are not supported, requested for well " + name());
             break;
         }
-        return inj_frac * evaluation_[WQTotal];
+        return inj_frac * this->getWQTotal();
     } else { // producers
-        return evaluation_[WQTotal] * this->volumeFractionScaled(comp_idx);
+        return this->getWQtotal() * this->volumeFractionScaled(comp_idx);
     }
 }
 
