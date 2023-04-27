@@ -2972,7 +2972,7 @@ private:
                 } else if (type == BCType::NONE) {
                     // no boundary condition for flow may have boundary condition for mechancis
                     if(!(vanguard.eclState().runspec().mech())){
-                        throw std::logic_error("For solve without mechanics you need to specify invalid type for BC. Use FREE or RATE: current value NONE");
+                        OpmLog::warning("BConfig","NONE as bc conditions for flow without mechanics: Use FREE or RATE: current value NONE");
                     }
                 } else {    
                     throw std::logic_error("invalid type for BC. Use FREE or RATE");
