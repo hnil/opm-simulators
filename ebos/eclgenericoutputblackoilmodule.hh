@@ -489,7 +489,6 @@ protected:
     ScalarBuffer pressureTimesHydrocarbonVolume_;
     ScalarBuffer dynamicPoreVolume_;
     ScalarBuffer fluidPressure_;
-    ScalarBuffer fluidPresDiff_;
     ScalarBuffer temperature_;
     ScalarBuffer rs_;
     ScalarBuffer rsw_;
@@ -533,6 +532,18 @@ protected:
     ScalarBuffer pcow_;
     ScalarBuffer pcog_;
 
+    //buffers for mechanical output
+    ScalarBuffer mechPotentialForce_;
+    ScalarBuffer dispX_;
+    ScalarBuffer dispY_;
+    ScalarBuffer dispZ_;
+    ScalarBuffer stressXX_;
+    ScalarBuffer stressYY_;
+    ScalarBuffer stressZZ_;
+    ScalarBuffer stressXY_;
+    ScalarBuffer stressXZ_;
+    ScalarBuffer stressYZ_;
+    
     std::array<ScalarBuffer, numPhases> saturation_;
     std::array<ScalarBuffer, numPhases> invB_;
     std::array<ScalarBuffer, numPhases> density_;
