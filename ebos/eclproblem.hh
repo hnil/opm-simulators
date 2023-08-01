@@ -28,15 +28,8 @@
 #ifndef EWOMS_ECL_PROBLEM_HH
 #define EWOMS_ECL_PROBLEM_HH
 
-#if USE_ALUGRID
-#define DISABLE_ALUGRID_SFC_ORDERING 1
-#include "eclalugridvanguard.hh"
-#elif USE_POLYHEDRALGRID
-#include "eclpolyhedralgridvanguard.hh"
-#else
-#include "eclcpgridvanguard.hh"
-#endif
 
+#include "eclcpgridvanguard.hh"
 #include "eclactionhandler.hh"
 #include "eclequilinitializer.hh"
 #include "eclwriter.hh"
@@ -108,19 +101,9 @@ namespace Opm::Properties {
 
 namespace TTag {
 
-#if USE_ALUGRID
-struct EclBaseProblem {
-  using InheritsFrom = std::tuple<VtkEclTracer, EclOutputBlackOil, EclAluGridVanguard>;
-};
-#elif USE_POLYHEDRALGRID
-struct EclBaseProblem {
-  using InheritsFrom = std::tuple<VtkEclTracer, EclOutputBlackOil, EclPolyhedralGridVanguard>;
-};
-#else
 struct EclBaseProblem {
   using InheritsFrom = std::tuple<VtkEclTracer, EclOutputBlackOil, EclCpGridVanguard>;
 };
-#endif
 }
 
 // The class which deals with ECL wells
@@ -205,6 +188,7 @@ template<class TypeTag, class MyTypeTag>
 struct NumPressurePointsEquil {
     using type = UndefinedProperty;
 };
+
 
 
 // Set the problem property
@@ -531,6 +515,10 @@ struct EnableTemperature<TypeTag, TTag::EclBaseProblem> {
     static constexpr bool value = true;
 };
 
+template<class TypeTag>
+struct EnableMech<TypeTag, TTag::EclBaseProblem> {
+    static constexpr bool value = false;
+};
 // disable all extensions supported by black oil model. this should not really be
 // necessary but it makes things a bit more explicit
 template<class TypeTag>
@@ -891,12 +879,9 @@ public:
         readThermalParameters_();
 
         // Re-ordering in case of ALUGrid
-        std::function<unsigned int(unsigned int)> gridToEquilGrid;
-        #if USE_ALUGRID
-        gridToEquilGrid = [&simulator](unsigned int i) {
+        std::function<unsigned int(unsigned int)> gridToEquilGrid = [&simulator](unsigned int i) {
             return simulator.vanguard().gridIdxToEquilGridIdx(i);
         };
-        #endif // USE_ALUGRID
         transmissibilities_.finishInit(gridToEquilGrid);
 
         const auto& initconfig = eclState.getInitConfig();
@@ -936,12 +921,9 @@ public:
                 eclWriter_->setTransmissibilities(&simulator.problem().eclTransmissibilities());
 
             // Re-ordering in case of ALUGrid
-            std::function<unsigned int(unsigned int)> equilGridToGrid;
-            #if USE_ALUGRID
-            equilGridToGrid = [&simulator](unsigned int i) {
+            std::function<unsigned int(unsigned int)> equilGridToGrid = [&simulator](unsigned int i) {
                 return simulator.vanguard().gridEquilIdxToGridIdx(i);
             };
-            #endif // USE_ALUGRID
             eclWriter_->writeInit(equilGridToGrid);
         }
 
@@ -1030,12 +1012,9 @@ public:
             eclBroadcast(cc, eclState.getTransMult() );
 
             // Re-ordering in case of ALUGrid
-            std::function<unsigned int(unsigned int)> equilGridToGrid;
-            #if USE_ALUGRID
-            equilGridToGrid = [&simulator](unsigned int i) {
+            std::function<unsigned int(unsigned int)> equilGridToGrid = [&simulator](unsigned int i) {
                   return simulator.vanguard().gridEquilIdxToGridIdx(i);
             };
-            #endif // USE_ALUGRID
 
             // re-compute all quantities which may possibly be affected.
             transmissibilities_.update(true, equilGridToGrid);
@@ -1177,12 +1156,9 @@ public:
         int episodeIdx = this->episodeIndex();
 
         // Re-ordering in case of Alugrid
-        std::function<unsigned int(unsigned int)> gridToEquilGrid;
-        #if USE_ALUGRID
-        gridToEquilGrid = [&simulator](unsigned int i) {
+        std::function<unsigned int(unsigned int)> gridToEquilGrid = [&simulator](unsigned int i) {
             return simulator.vanguard().gridIdxToEquilGridIdx(i);
         };
-        #endif // USE_ALUGRID
 
         std::function<void(bool)> transUp =
             [this,gridToEquilGrid](bool global) {
