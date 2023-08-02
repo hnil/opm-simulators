@@ -28,16 +28,21 @@ namespace Opm {
 template class EclGenericTracerModel<Dune::CpGrid,
                                      Dune::GridView<Dune::Fem::GridPart2GridViewTraits<Dune::Fem::AdaptiveLeafGridPart<Dune::CpGrid, Dune::PartitionIteratorType(4), false>>>,
                                      Dune::MultipleCodimMultipleGeomTypeMapper<Dune::GridView<Dune::Fem::GridPart2GridViewTraits<Dune::Fem::AdaptiveLeafGridPart<Dune::CpGrid, Dune::PartitionIteratorType(4), false>>>>,
-                                     Opm::EcfvStencil<double,Dune::GridView<Dune::Fem::GridPart2GridViewTraits<Dune::Fem::AdaptiveLeafGridPart<Dune::CpGrid, Dune::PartitionIteratorType(4), false>>>,false,false>,
+                                     EcfvStencil<double,Dune::GridView<Dune::Fem::GridPart2GridViewTraits<Dune::Fem::AdaptiveLeafGridPart<Dune::CpGrid, Dune::PartitionIteratorType(4), false>>>,false,false>,
                                      double>;
 template class EclGenericTracerModel<Dune::CpGrid,
                                      Dune::Fem::GridPart2GridViewImpl<Dune::Fem::AdaptiveLeafGridPart<Dune::CpGrid, (Dune::PartitionIteratorType)4, false> >,
                                      Dune::MultipleCodimMultipleGeomTypeMapper<
                                          Dune::Fem::GridPart2GridViewImpl<
                                              Dune::Fem::AdaptiveLeafGridPart<Dune::CpGrid, Dune::PartitionIteratorType(4), false> > >,
-                                     Opm::EcfvStencil<double, Dune::Fem::GridPart2GridViewImpl<
+                                     EcfvStencil<double, Dune::Fem::GridPart2GridViewImpl<
                                                                   Dune::Fem::AdaptiveLeafGridPart<Dune::CpGrid, Dune::PartitionIteratorType(4), false> >,
                                                       false, false>,
+                                     double>;
+template class EclGenericTracerModel<Dune::PolyhedralGrid<3, 3, double>,
+                                     Dune::Fem::GridPart2GridViewImpl<Dune::Fem::AdaptiveLeafGridPart<Dune::PolyhedralGrid<3, 3, double>, (Dune::PartitionIteratorType)4, false> >,
+                                     Dune::MultipleCodimMultipleGeomTypeMapper<Dune::Fem::GridPart2GridViewImpl<Dune::Fem::AdaptiveLeafGridPart<Dune::PolyhedralGrid<3, 3, double>, (Dune::PartitionIteratorType)4, false> > >,
+                                     EcfvStencil<double, Dune::Fem::GridPart2GridViewImpl<Dune::Fem::AdaptiveLeafGridPart<Dune::PolyhedralGrid<3, 3, double>, (Dune::PartitionIteratorType)4, false> >, false, false>,
                                      double>;
 #if HAVE_DUNE_ALUGRID
 
@@ -81,12 +86,12 @@ template class EclGenericTracerModel<ALUGrid3CN,
                                         Dune::PartitionIteratorType(4)>>,false,false>,
                                      double>;
 #endif //HAVE_DUNE_ALUGRID
-#endif //HAVE_DUNE_FEM
 
 template class EclGenericTracerModel<Dune::PolyhedralGrid<3,3,double>,
                                      Dune::GridView<Dune::PolyhedralGridViewTraits<3,3,double,Dune::PartitionIteratorType(4)>>,
                                      Dune::MultipleCodimMultipleGeomTypeMapper<Dune::GridView<Dune::PolyhedralGridViewTraits<3,3,double,Dune::PartitionIteratorType(4)>>>,
                                      Opm::EcfvStencil<double, Dune::GridView<Dune::PolyhedralGridViewTraits<3,3,double,Dune::PartitionIteratorType(4)>>,false,false>,
                                      double>;
+#endif //HAVE_DUNE_FEM
 
 } // namespace Opm

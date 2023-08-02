@@ -841,6 +841,11 @@ operator==(const EclGenericProblem& rhs) const
 template class EclGenericProblem<Dune::GridView<Dune::Fem::GridPart2GridViewTraits<Dune::Fem::AdaptiveLeafGridPart<Dune::CpGrid, Dune::PartitionIteratorType(4), false>>>,
                                  BlackOilFluidSystem<double,BlackOilDefaultIndexTraits>,
                                  double>;
+
+template class EclGenericProblem<Dune::Fem::GridPart2GridViewImpl<Dune::Fem::AdaptiveLeafGridPart<Dune::PolyhedralGrid<3, 3, double>, (Dune::PartitionIteratorType)4, false> >,
+                                 BlackOilFluidSystem<double, BlackOilDefaultIndexTraits>,
+                                 double>;
+
 template class EclGenericProblem<Dune::Fem::GridPart2GridViewImpl<
                                      Dune::Fem::AdaptiveLeafGridPart<
                                          Dune::CpGrid,
@@ -850,6 +855,7 @@ template class EclGenericProblem<Dune::Fem::GridPart2GridViewImpl<
                                      double,
                                      Opm::BlackOilDefaultIndexTraits>,
                                                         double>;
+
 #if HAVE_DUNE_ALUGRID
 
 #if HAVE_MPI
@@ -876,6 +882,11 @@ template class EclGenericProblem<Dune::Fem::GridPart2GridViewImpl<
 template class EclGenericProblem<Dune::GridView<Dune::DefaultLeafGridViewTraits<Dune::CpGrid>>,
                                  BlackOilFluidSystem<double,BlackOilDefaultIndexTraits>,
                                  double>;
+
+template class EclGenericProblem<Dune::GridView<Dune::PolyhedralGridViewTraits<3,3,double,Dune::PartitionIteratorType(4)>>,
+                                 BlackOilFluidSystem<double,BlackOilDefaultIndexTraits>,
+                                 double>;
+
 #if HAVE_DUNE_ALUGRID
 #if HAVE_MPI
     using ALUGrid3CN = const Dune::ALUGrid<3, 3, Dune::cube, Dune::nonconforming, Dune::ALUGridMPIComm>;
@@ -889,9 +900,5 @@ template class EclGenericProblem<Dune::GridView<Dune::ALU3dLeafGridViewTraits<AL
 
 #endif //HAVE_DUNE_ALUGRID
 #endif //HAVE_DUNE_FEM
-
-template class EclGenericProblem<Dune::GridView<Dune::PolyhedralGridViewTraits<3,3,double,Dune::PartitionIteratorType(4)>>,
-                                 BlackOilFluidSystem<double,BlackOilDefaultIndexTraits>,
-                                 double>;
 
 } // namespace Opm

@@ -1150,6 +1150,10 @@ template class CollectDataToIORank<Dune::CpGrid,
                                            Dune::PartitionIteratorType(4),
                                            false> > >;
 
+template class CollectDataToIORank<Dune::PolyhedralGrid<3, 3, double>,
+                                   Dune::PolyhedralGrid<3, 3, double>,
+                                   Dune::Fem::GridPart2GridViewImpl<Dune::Fem::AdaptiveLeafGridPart<Dune::PolyhedralGrid<3, 3, double>, (Dune::PartitionIteratorType)4, false>>>;
+
 #ifdef HAVE_DUNE_ALUGRID
 #if HAVE_MPI
     using ALUGrid3CN = Dune::ALUGrid<3, 3, Dune::cube, Dune::nonconforming, Dune::ALUGridMPIComm>;
@@ -1187,9 +1191,11 @@ template class CollectDataToIORank<ALUGrid3CN,
                                    Dune::GridView<Dune::ALU3dLeafGridViewTraits<const ALUGrid3CN,Dune::PartitionIteratorType(4)>>>;
 
 #endif //HAVE_DUNE_ALUGRID
-#endif // ! HAVE_DUNE_FEM
+
 template class CollectDataToIORank<Dune::PolyhedralGrid<3,3,double>,
                                    Dune::PolyhedralGrid<3,3,double>,
                                    Dune::GridView<Dune::PolyhedralGridViewTraits<3,3,double,Dune::PartitionIteratorType(4)>>>;
+
+#endif // ! HAVE_DUNE_FEM
 
 } // end namespace Opm

@@ -1122,8 +1122,13 @@ template class EclTransmissibility<Dune::CpGrid,
                                                Dune::CpGrid,
                                                Dune::PartitionIteratorType(4),
                                                false> > >,
-                                   Dune::CartesianIndexMapper<Dune::CpGrid>,             
+                                   Dune::CartesianIndexMapper<Dune::CpGrid>,
                                    double>;
+template class EclTransmissibility<Dune::PolyhedralGrid<3, 3, double>, Dune::Fem::GridPart2GridViewImpl<Dune::Fem::AdaptiveLeafGridPart<Dune::PolyhedralGrid<3, 3, double>, (Dune::PartitionIteratorType)4, false> >,
+                                   Dune::MultipleCodimMultipleGeomTypeMapper<Dune::Fem::GridPart2GridViewImpl<Dune::Fem::AdaptiveLeafGridPart<Dune::PolyhedralGrid<3, 3, double>, (Dune::PartitionIteratorType)4, false> > >,
+                                   Dune::CartesianIndexMapper<Dune::PolyhedralGrid<3, 3, double> >,
+                                   double>;
+
 #if HAVE_DUNE_ALUGRID
 #if HAVE_MPI
     using ALUGrid3CN = Dune::ALUGrid<3, 3, Dune::cube, Dune::nonconforming, Dune::ALUGridMPIComm>;
@@ -1148,7 +1153,7 @@ template class EclTransmissibility<ALUGrid3CN,
                                                Dune::PartitionIteratorType(4),
                                                false> > >,
                                    Dune::CartesianIndexMapper<ALUGrid3CN>,
-                                  double>;                                   
+                                   double>;
 #endif //HAVE_DUNE_ALUGRID
 
 #else // !DUNE_FEM
@@ -1176,11 +1181,12 @@ EclTransmissibility<ALUGrid3CN,
                     Dune::CartesianIndexMapper<ALUGrid3CN>,
                     double>;
 #endif //HAVE_DUNE_ALUGRID
-#endif //HAVE_DUNE_FEM
 
 template class EclTransmissibility<Dune::PolyhedralGrid<3,3,double>,
-Dune::GridView<Dune::PolyhedralGridViewTraits<3, 3, double, Dune::PartitionIteratorType(4)>>, Dune::MultipleCodimMultipleGeomTypeMapper<Dune::GridView<Dune::PolyhedralGridViewTraits<3,3,double,Dune::PartitionIteratorType(4)>>>,
-Dune::CartesianIndexMapper<Dune::PolyhedralGrid<3,3,double>>,
+                                   Dune::GridView<Dune::PolyhedralGridViewTraits<3, 3, double, Dune::PartitionIteratorType(4)>>, Dune::MultipleCodimMultipleGeomTypeMapper<Dune::GridView<Dune::PolyhedralGridViewTraits<3,3,double,Dune::PartitionIteratorType(4)>>>,
+                                   Dune::CartesianIndexMapper<Dune::PolyhedralGrid<3,3,double>>,
                                    double>;
+
+#endif //HAVE_DUNE_FEM
 
 } // namespace Opm

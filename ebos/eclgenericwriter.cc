@@ -621,6 +621,11 @@ template class EclGenericWriter<Dune::CpGrid,
                                             false>>>,
                                 double>;
 
+template class EclGenericWriter<Dune::PolyhedralGrid<3, 3, double>,
+                                Dune::PolyhedralGrid<3, 3, double>,
+                                Dune::Fem::GridPart2GridViewImpl<Dune::Fem::AdaptiveLeafGridPart<Dune::PolyhedralGrid<3, 3, double>, (Dune::PartitionIteratorType)4, false> >,
+                                Dune::MultipleCodimMultipleGeomTypeMapper<Dune::Fem::GridPart2GridViewImpl<Dune::Fem::AdaptiveLeafGridPart<Dune::PolyhedralGrid<3, 3, double>, (Dune::PartitionIteratorType)4, false> > >,
+                                double>;
 
 #ifdef HAVE_DUNE_ALUGRID
 #if HAVE_MPI
@@ -668,11 +673,12 @@ template class EclGenericWriter<ALUGrid3CN,
                                 double>;
 
 #endif // HAVE_DUNE_ALUGRID
-#endif // !HAVE_DUNE_FEM
 
 template class EclGenericWriter<Dune::PolyhedralGrid<3,3,double>,
                                 Dune::PolyhedralGrid<3,3,double>,
                                 Dune::GridView<Dune::PolyhedralGridViewTraits<3, 3, double, Dune::PartitionIteratorType(4)>>,                              Dune::MultipleCodimMultipleGeomTypeMapper<Dune::GridView<Dune::PolyhedralGridViewTraits<3,3,double,Dune::PartitionIteratorType(4)>>>,
                                 double>;
+
+#endif // !HAVE_DUNE_FEM
                                                                   
 } // namespace Opm

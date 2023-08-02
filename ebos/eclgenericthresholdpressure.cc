@@ -331,6 +331,10 @@ template class EclGenericThresholdPressure<Dune::CpGrid,
                                                         Dune::PartitionIteratorType(4),
                                                         false>>>,
                                             double>;
+template class EclGenericThresholdPressure<Dune::PolyhedralGrid<3, 3, double>, Dune::Fem::GridPart2GridViewImpl<Dune::Fem::AdaptiveLeafGridPart<Dune::PolyhedralGrid<3, 3, double>, (Dune::PartitionIteratorType)4, false> >,
+                                           Dune::MultipleCodimMultipleGeomTypeMapper<Dune::Fem::GridPart2GridViewImpl<Dune::Fem::AdaptiveLeafGridPart<Dune::PolyhedralGrid<3, 3, double>, (Dune::PartitionIteratorType)4, false> > >,
+                                           double>;
+
 #if HAVE_DUNE_ALUGRID
 #if HAVE_MPI
     using ALUGrid3CN = Dune::ALUGrid<3, 3, Dune::cube, Dune::nonconforming, Dune::ALUGridMPIComm>;
@@ -364,6 +368,12 @@ template class EclGenericThresholdPressure<Dune::CpGrid,
                                            Dune::GridView<Dune::DefaultLeafGridViewTraits<Dune::CpGrid>>,
                                            Dune::MultipleCodimMultipleGeomTypeMapper<Dune::GridView<Dune::DefaultLeafGridViewTraits<Dune::CpGrid>>>,
                                            double>;
+
+template class EclGenericThresholdPressure<Dune::PolyhedralGrid<3,3,double>,
+                                           Dune::GridView<Dune::PolyhedralGridViewTraits<3,3,double,Dune::PartitionIteratorType(4)>>,
+                                           Dune::MultipleCodimMultipleGeomTypeMapper<Dune::GridView<Dune::PolyhedralGridViewTraits<3,3,double,Dune::PartitionIteratorType(4)>>>,
+                                           double>;
+
 #if HAVE_DUNE_ALUGRID
 
 #if HAVE_MPI
@@ -378,10 +388,5 @@ template class EclGenericThresholdPressure<ALUGrid3CN,
 #endif //HAVE_DUNE_ALUGRID
 
 #endif
-
-template class EclGenericThresholdPressure<Dune::PolyhedralGrid<3,3,double>,
-                                           Dune::GridView<Dune::PolyhedralGridViewTraits<3,3,double,Dune::PartitionIteratorType(4)>>,
-                                           Dune::MultipleCodimMultipleGeomTypeMapper<Dune::GridView<Dune::PolyhedralGridViewTraits<3,3,double,Dune::PartitionIteratorType(4)>>>,
-                                           double>;
 
 } // namespace Opm

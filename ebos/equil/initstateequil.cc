@@ -66,7 +66,11 @@ using ALUGridComm = Dune::ALUGridMPIComm;
 using ALUGridComm = Dune::ALUGridNoComm;
 #endif //HAVE_MPI
 using ALUGrid3CN = Dune::ALUGrid<3, 3, Dune::cube, Dune::nonconforming, ALUGridComm>;
+#if HAVE_DUNE_FEM
+using ALUGridView = Dune::Fem::GridPart2GridViewImpl<Dune::Fem::AdaptiveLeafGridPart<Dune::ALUGrid<3, 3, (Dune::ALUGridElementType)1, (Dune::ALUGridRefinementType)1, Dune::ALUGridMPIComm>, (Dune::PartitionIteratorType)4, false>>;
+#else
 using ALUGridView = Dune::GridView<Dune::ALU3dLeafGridViewTraits<const ALUGrid3CN, Dune::PartitionIteratorType(4)>>;
+#endif
 using ALUGridMapper = Dune::MultipleCodimMultipleGeomTypeMapper<ALUGridView>;
 template class InitialStateComputer<BlackOilFluidSystem<double>,
                                     ALUGrid3CN,
