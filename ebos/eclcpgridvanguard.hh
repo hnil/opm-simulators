@@ -26,6 +26,7 @@
  */
 #ifndef EWOMS_ECL_CP_GRID_VANGUARD_HH
 #define EWOMS_ECL_CP_GRID_VANGUARD_HH
+
 #include <ebos/eclbasevanguard.hh>
 #include <ebos/eclgenericcpgridvanguard.hh>
 #include <ebos/ecltransmissibility.hh>
@@ -48,7 +49,6 @@ class EclCpGridVanguard;
 }
 
 namespace Opm::Properties {
-
 
 namespace TTag {
 struct EclCpGridVanguard {
@@ -125,53 +125,53 @@ public:
         // check for correct module setup
         if (config.isThermal()) {
             if (getPropValue<TypeTag, Properties::EnableEnergy>() == false) {
-                throw std::runtime_error("Input spesify energy while simulator has disabled try xxx_energy");
+                throw std::runtime_error("Input specifies energy while simulator has disabled it, try xxx_energy");
             }
         } else {
             if (getPropValue<TypeTag, Properties::EnableEnergy>() == true) {
-                throw std::runtime_error("Input spesify no energy while simulator has energy try xxx_energy");
+                throw std::runtime_error("Input specifies no energy while simulator has energy, try run without _energy");
             }
         }
 
         if (config.isDiffusive()) {
             if (getPropValue<TypeTag, Properties::EnableDiffusion>() == false) {
-                throw std::runtime_error("Input spesify diffusion while simulator has disabled it try xxx_diffusion");
+                throw std::runtime_error("Input specifies diffusion while simulator has disabled it, try xxx_diffusion");
             }
         }
 
         if (runspec.micp()) {
             if (getPropValue<TypeTag, Properties::EnableMICP>() == false) {
-                throw std::runtime_error("Input spesify MICP while simulator has it disabled");
+                throw std::runtime_error("Input specifies MICP while simulator has it disabled");
             }
         }
 
         if (phases.active(Phase::BRINE)) {
             if (getPropValue<TypeTag, Properties::EnableBrine>() == false) {
-                throw std::runtime_error("Input spesify Brine while simulator has it disabled");
+                throw std::runtime_error("Input specifies Brine while simulator has it disabled");
             }
         }
 
         if (phases.active(Phase::POLYMER)) {
             if (getPropValue<TypeTag, Properties::EnablePolymer>() == false) {
-                throw std::runtime_error("Input spesify Polymer while simulator has it disabled");
+                throw std::runtime_error("Input specifies Polymer while simulator has it disabled");
             }
         }
 
         // checking for correct phases is more difficult TODO!
         if (phases.active(Phase::ZFRACTION)) {
             if (getPropValue<TypeTag, Properties::EnableExtbo>() == false) {
-                throw std::runtime_error("Input spesify ExBo while simulator has it disabled");
+                throw std::runtime_error("Input specifies ExBo while simulator has it disabled");
             }
         }
         if (phases.active(Phase::FOAM)) {
             if (getPropValue<TypeTag, Properties::EnableFoam>() == false) {
-                throw std::runtime_error("Input spesify Foam while simulator has it disabled");
+                throw std::runtime_error("Input specifies Foam while simulator has it disabled");
             }
         }
 
         if (phases.active(Phase::SOLVENT)) {
             if (getPropValue<TypeTag, Properties::EnableSolvent>() == false) {
-                throw std::runtime_error("Input spesify Solvent while simulator has it disabled");
+                throw std::runtime_error("Input specifies Solvent while simulator has it disabled");
             }
         }
     }

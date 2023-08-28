@@ -31,15 +31,6 @@ struct EclFlowEnergyProblem {
 };
 }
 
-// template<class TypeTag>
-// struct Linearizer<TypeTag, TTag::EclFlowEnergyProblem> { using type = TpfaLinearizer<TypeTag>; };
-
-// template<class TypeTag>
-// struct LocalResidual<TypeTag, TTag::EclFlowEnergyProblem> { using type = BlackOilLocalResidualTPFA<TypeTag>; };
-
-// template<class TypeTag>
-// struct EnableDiffusion<TypeTag, TTag::EclFlowEnergyProblem> { static constexpr bool value = false; };
-
 template<class TypeTag>
 struct EnableEnergy<TypeTag, TTag::EclFlowEnergyProblem> {
     static constexpr bool value = true;

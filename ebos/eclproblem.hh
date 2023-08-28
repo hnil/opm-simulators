@@ -777,8 +777,6 @@ public:
         return transmissibilities_.transmissibility(globalCenterElemIdx, globalElemIdx);
     }
 
-
-
     /*!
      * \copydoc EclTransmissiblity::diffusivity
      */
@@ -792,7 +790,7 @@ public:
     }
 
     /*!
-     * give the transissibility for a face i.e. pair. should be symmetic?
+     * give the transmissibility for a face i.e. pair. should be symmetric?
      */
     Scalar diffusivity(const unsigned globalCellIn, const unsigned globalCellOut) const{
         return transmissibilities_.diffusivity(globalCellIn, globalCellOut);
