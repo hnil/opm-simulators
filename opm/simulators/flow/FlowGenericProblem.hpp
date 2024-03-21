@@ -289,7 +289,7 @@ public:
         serializer(solventSaturation_);
         serializer(solventRsw_);
         serializer(micp_);
-        serializer(mixControls_);
+        //serializer(mixControls_);
     }
 
 protected:
@@ -372,13 +372,13 @@ protected:
     std::vector<Scalar> solventRsw_;
     MICPSolutionContainer<Scalar> micp_;
 
-    MixingRateControls<FluidSystem> mixControls_;
+    //MixingRateControls<FluidSystem> mixControls_;
 
     // time stepping parameters
     bool enableTuning_;
     Scalar initialTimeStepSize_;
     Scalar maxTimeStepAfterWellEvent_;
-    
+
     // equilibration parameters
     int numPressurePointsEquil_;
 

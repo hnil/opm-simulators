@@ -44,7 +44,7 @@
 #include <opm/simulators/flow/NewTranFluxModule.hpp>
 #include <opm/simulators/flow/OutputBlackoilModule.hpp>
 #include <opm/simulators/flow/VtkTracerModule.hpp>
-
+#include <opm/simulators/flow/TracerModel.hpp>
 #if HAVE_DAMARIS
 #include <opm/simulators/flow/DamarisWriter.hpp>
 #endif
@@ -68,6 +68,12 @@ struct FlowBaseProblem {
 // The class which deals with wells
 template<class TypeTag, class MyTypeTag>
 struct WellModel {
+    using type = UndefinedProperty;
+};
+
+
+template<class TypeTag, class MyTypeTag>
+struct TracerModelDef {
     using type = UndefinedProperty;
 };
 
@@ -146,7 +152,10 @@ template<class TypeTag>
 struct Model<TypeTag, TTag::FlowBaseProblem> {
     using type = FIBlackOilModel<TypeTag>;
 };
-
+template<class TypeTag>
+struct TracerModelDef<TypeTag, TTag::FlowBaseProblem> {
+    using type = ::Opm::TracerModel<TypeTag>;
+};
 // Select the element centered finite volume method as spatial discretization
 template<class TypeTag>
 struct SpatialDiscretizationSplice<TypeTag, TTag::FlowBaseProblem> {
@@ -354,15 +363,15 @@ struct DamarisSimName<TypeTag, TTag::FlowBaseProblem> {
 // Specify the number of Damaris cores (dc) to create (per-node). Must divide into the remaining ranks
 // equally, e.g. mpirun -np 16 ... -> (if running on one node)
 // The following are allowed:
-// 1 dc + 15 sim ranks 
-// or 2 dc + 14 sim 
-// or 4 dc + 12 sim 
+// 1 dc + 15 sim ranks
+// or 2 dc + 14 sim
+// or 4 dc + 12 sim
 // *not* 3 dc + 13 sim ranks
 template<class TypeTag>
 struct DamarisDedicatedCores<TypeTag, TTag::FlowBaseProblem> {
     static constexpr int value = 1;
 };
-// Specify the number of Damaris nodes to create 
+// Specify the number of Damaris nodes to create
 template<class TypeTag>
 struct DamarisDedicatedNodes<TypeTag, TTag::FlowBaseProblem> {
     static constexpr int value = 0;
