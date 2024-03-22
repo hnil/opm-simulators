@@ -194,6 +194,8 @@ class FlowProblem : public GetPropType<TypeTag, Properties::BaseProblem>
     //using TracerModel = ::Opm::TracerModel<TypeTag>;
     using TracerModel = GetPropType<TypeTag, Properties::TracerModelDef>;
     using DirectionalMobilityPtr = Utility::CopyablePtr<DirectionalMobility<TypeTag, Evaluation>>;
+    using ComponentVector = Dune::FieldVector<Evaluation, numComponents>;
+    //using FlashSolver = GetPropType<TypeTag, Properties::FlashSolver>;
 
 public:
     using BaseType::briefDescription;
@@ -629,20 +631,20 @@ public:
     void endTimeStep()
     {
         OPM_TIMEBLOCK(endTimeStep);
-#ifndef NDEBUG
-        if constexpr (getPropValue<TypeTag, Properties::EnableDebuggingChecks>()) {
-            // in debug mode, we don't care about performance, so we check if the model does
-            // the right thing (i.e., the mass change inside the whole reservoir must be
-            // equivalent to the fluxes over the grid's boundaries plus the source rates
-            // specified by the problem)
-            int rank = this->simulator().gridView().comm().rank();
-            if (rank == 0)
-                std::cout << "checking conservativeness of solution\n";
-            this->model().checkConservativeness(/*tolerance=*/-1, /*verbose=*/true);
-            if (rank == 0)
-                std::cout << "solution is sufficiently conservative\n";
-        }
-#endif // NDEBUG
+// #ifndef NDEBUG
+//         if constexpr (getPropValue<TypeTag, Properties::EnableDebuggingChecks>()) {
+//             // in debug mode, we don't care about performance, so we check if the model does
+//             // the right thing (i.e., the mass change inside the whole reservoir must be
+//             // equivalent to the fluxes over the grid's boundaries plus the source rates
+//             // specified by the problem)
+//             int rank = this->simulator().gridView().comm().rank();
+//             if (rank == 0)
+//                 std::cout << "checking conservativeness of solution\n";
+//             //this->model().checkConservativeness(/*tolerance=*/-1, /*verbose=*/true);
+//             if (rank == 0)
+//                 std::cout << "solution is sufficiently conservative\n";
+//         }
+// #endif // NDEBUG
 
         auto& simulator = this->simulator();
         wellModel_.endTimeStep();
@@ -1281,6 +1283,9 @@ public:
     template <class Context>
     void initial(PrimaryVariables& values, const Context& context, unsigned spaceIdx, unsigned timeIdx) const
     {
+        Opm::CompositionalFluidState<Evaluation, FluidSystem> fs;
+        initialFluidState(fs, context, spaceIdx, timeIdx);
+        values.assignNaive(fs);
         /*
         unsigned globalDofIdx = context.globalSpaceIndex(spaceIdx, timeIdx);
 
@@ -2095,8 +2100,83 @@ protected:
         }
     }
 
+
+    template <class FluidState, class Context>
+    void initialFluidState(FluidState& fs, const Context& context, unsigned spaceIdx, unsigned timeIdx) const
+    {
+        // z0 = [0.5, 0.3, 0.2]
+        // zi = [0.99, 0.01-1e-3, 1e-3]
+        // p0 = 75e5
+        // T0 = 423.25
+        int inj = 0;
+        int prod = EWOMS_GET_PARAM(TypeTag, unsigned, CellsX) - 1;
+        int spatialIdx = context.globalSpaceIndex(spaceIdx, timeIdx);
+        ComponentVector comp;
+        comp[0] = Evaluation::createVariable(0.5, 1);
+        comp[1] = Evaluation::createVariable(0.3, 2);
+        comp[2] = 1. - comp[0] - comp[1];
+        if (spatialIdx == inj) {
+            comp[0] = Evaluation::createVariable(0.99, 1);
+            comp[1] = Evaluation::createVariable(0.01 - 1e-3, 2);
+            comp[2] = 1. - comp[0] - comp[1];
+        }
+        ComponentVector sat;
+        sat[0] = 1.0;
+        sat[1] = 1.0 - sat[0];
+
+        Scalar p0 = EWOMS_GET_PARAM(TypeTag, Scalar, Initialpressure);
+
+        //\Note, for an AD variable, if we multiply it with 2, the derivative will also be scalced with 2,
+        //\Note, so we should not do it.
+        if (spatialIdx == inj) {
+            p0 *= 2.0;
+        }
+        if (spatialIdx == prod) {
+            p0 *= 0.5;
+        }
+        Evaluation p_init = Evaluation::createVariable(p0, 0);
+
+        fs.setPressure(FluidSystem::oilPhaseIdx, p_init);
+        fs.setPressure(FluidSystem::gasPhaseIdx, p_init);
+
+        for (unsigned compIdx = 0; compIdx < numComponents; ++compIdx) {
+            fs.setMoleFraction(FluidSystem::oilPhaseIdx, compIdx, comp[compIdx]);
+            fs.setMoleFraction(FluidSystem::gasPhaseIdx, compIdx, comp[compIdx]);
+        }
+
+        // It is used here only for calculate the z
+        fs.setSaturation(FluidSystem::oilPhaseIdx, sat[0]);
+        fs.setSaturation(FluidSystem::gasPhaseIdx, sat[1]);
+
+        fs.setTemperature(/*temperature_*/ 423.25);
+
+        // ParameterCache paramCache;
+        {
+            typename FluidSystem::template ParameterCache<Evaluation> paramCache;
+            paramCache.updatePhase(fs, FluidSystem::oilPhaseIdx);
+            paramCache.updatePhase(fs, FluidSystem::gasPhaseIdx);
+            fs.setDensity(FluidSystem::oilPhaseIdx, FluidSystem::density(fs, paramCache, FluidSystem::oilPhaseIdx));
+            fs.setDensity(FluidSystem::gasPhaseIdx, FluidSystem::density(fs, paramCache, FluidSystem::gasPhaseIdx));
+            fs.setViscosity(FluidSystem::oilPhaseIdx, FluidSystem::viscosity(fs, paramCache, FluidSystem::oilPhaseIdx));
+            fs.setViscosity(FluidSystem::gasPhaseIdx, FluidSystem::viscosity(fs, paramCache, FluidSystem::gasPhaseIdx));
+        }
+
+        // Set initial K and L
+        for (unsigned compIdx = 0; compIdx < numComponents; ++compIdx) {
+            const Evaluation Ktmp = fs.wilsonK_(compIdx);
+            fs.setKvalue(compIdx, Ktmp);
+        }
+
+        const Evaluation& Ltmp = -1.0;
+        fs.setLvalue(Ltmp);
+    }
+
+
     void readInitialCondition_()
     {
+        this->applyInitialSolution();
+
+
         /*
         const auto& simulator = this->simulator();
         const auto& vanguard = simulator.vanguard();

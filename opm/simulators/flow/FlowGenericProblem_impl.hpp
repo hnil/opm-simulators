@@ -504,7 +504,7 @@ template<class GridView, class FluidSystem>
 void FlowGenericProblem<GridView,FluidSystem>::
 initFluidSystem_()
 {
-    //FluidSystem::initFromState(eclState_, schedule_);
+    FluidSystem::initFromState(eclState_, schedule_);
 }
 
 template<class GridView, class FluidSystem>
