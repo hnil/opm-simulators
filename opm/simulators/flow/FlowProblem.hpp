@@ -96,6 +96,11 @@
 #include <set>
 #include <string>
 #include <vector>
+namespace Opm::Properties {
+template <class TypeTag, class MyTypeTag>
+struct ProdCell { static constexpr int  value = 1;};
+}
+
 
 namespace Opm {
 
@@ -212,6 +217,8 @@ public:
     static void registerParameters()
     {
         ParentType::registerParameters();
+        EWOMS_REGISTER_PARAM(TypeTag, int, ProdCell,
+                            "ProdCell");
         //EclWriterType::registerParameters();
 #if HAVE_DAMARIS
         DamarisWriterType::registerParameters();
@@ -2109,7 +2116,7 @@ protected:
         // p0 = 75e5
         // T0 = 423.25
         int inj = 0;
-        int prod = EWOMS_GET_PARAM(TypeTag, unsigned, CellsX) - 1;
+        int prod = EWOMS_GET_PARAM(TypeTag, int, ProdCell) - 1;
         int spatialIdx = context.globalSpaceIndex(spaceIdx, timeIdx);
         ComponentVector comp;
         comp[0] = Evaluation::createVariable(0.5, 1);
@@ -2124,8 +2131,8 @@ protected:
         sat[0] = 1.0;
         sat[1] = 1.0 - sat[0];
 
-        Scalar p0 = EWOMS_GET_PARAM(TypeTag, Scalar, Initialpressure);
-
+        Scalar p0 = 75.5;//EWOMS_GET_PARAM(TypeTag, Scalar, Initialpressure);
+        Scalar temperature0 = 423.5; //EWOMS_GET_PARAM(TypeTag, Scalar, Temperature);
         //\Note, for an AD variable, if we multiply it with 2, the derivative will also be scalced with 2,
         //\Note, so we should not do it.
         if (spatialIdx == inj) {
@@ -2148,7 +2155,7 @@ protected:
         fs.setSaturation(FluidSystem::oilPhaseIdx, sat[0]);
         fs.setSaturation(FluidSystem::gasPhaseIdx, sat[1]);
 
-        fs.setTemperature(/*temperature_*/ 423.25);
+        fs.setTemperature(/*temperature_*/ temperature0);
 
         // ParameterCache paramCache;
         {
@@ -2174,38 +2181,36 @@ protected:
 
     void readInitialCondition_()
     {
-        this->applyInitialSolution();
+        this->model().applyInitialSolution();
 
+        // const auto& simulator = this->simulator();
+        // const auto& vanguard = simulator.vanguard();
+        // const auto& eclState = vanguard.eclState();
 
-        /*
-        const auto& simulator = this->simulator();
-        const auto& vanguard = simulator.vanguard();
-        const auto& eclState = vanguard.eclState();
+        // if (eclState.getInitConfig().hasEquil())
+        //     readEquilInitialCondition_();
+        // else
+        //     readExplicitInitialCondition_();
 
-        if (eclState.getInitConfig().hasEquil())
-            readEquilInitialCondition_();
-        else
-            readExplicitInitialCondition_();
+        // if constexpr (enableSolvent || enablePolymer || enablePolymerMolarWeight || enableMICP)
+        //     this->readBlackoilExtentionsInitialConditions_(this->model().numGridDof(),
+        //                                                    enableSolvent,
+        //                                                    enablePolymer,
+        //                                                    enablePolymerMolarWeight,
+        //                                                    enableMICP);
 
-        if constexpr (enableSolvent || enablePolymer || enablePolymerMolarWeight || enableMICP)
-            this->readBlackoilExtentionsInitialConditions_(this->model().numGridDof(),
-                                                           enableSolvent,
-                                                           enablePolymer,
-                                                           enablePolymerMolarWeight,
-                                                           enableMICP);
+        // //initialize min/max values
+        // std::size_t numElems = this->model().numGridDof();
+        // for (std::size_t elemIdx = 0; elemIdx < numElems; ++elemIdx) {
+        //     const auto& fs = initialFluidStates_[elemIdx];
+        //     if (!this->maxWaterSaturation_.empty())
+        //         this->maxWaterSaturation_[elemIdx] = std::max(this->maxWaterSaturation_[elemIdx], fs.saturation(waterPhaseIdx));
+        //     if (!this->maxOilSaturation_.empty())
+        //         this->maxOilSaturation_[elemIdx] = std::max(this->maxOilSaturation_[elemIdx], fs.saturation(oilPhaseIdx));
+        //     if (!this->minRefPressure_.empty())
+        //         this->minRefPressure_[elemIdx] = std::min(this->minRefPressure_[elemIdx], fs.pressure(refPressurePhaseIdx_()));
+        // }
 
-        //initialize min/max values
-        std::size_t numElems = this->model().numGridDof();
-        for (std::size_t elemIdx = 0; elemIdx < numElems; ++elemIdx) {
-            const auto& fs = initialFluidStates_[elemIdx];
-            if (!this->maxWaterSaturation_.empty())
-                this->maxWaterSaturation_[elemIdx] = std::max(this->maxWaterSaturation_[elemIdx], fs.saturation(waterPhaseIdx));
-            if (!this->maxOilSaturation_.empty())
-                this->maxOilSaturation_[elemIdx] = std::max(this->maxOilSaturation_[elemIdx], fs.saturation(oilPhaseIdx));
-            if (!this->minRefPressure_.empty())
-                this->minRefPressure_[elemIdx] = std::min(this->minRefPressure_[elemIdx], fs.pressure(refPressurePhaseIdx_()));
-        }
-        */
 
 
     }
