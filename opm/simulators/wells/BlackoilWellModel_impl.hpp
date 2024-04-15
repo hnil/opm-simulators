@@ -40,6 +40,9 @@
 #include <opm/simulators/utils/MPISerializer.hpp>
 #endif
 
+
+#include <opm/common/utility/numeric/RootFinders.hpp>
+
 #include <algorithm>
 #include <cassert>
 #include <iomanip>
@@ -2504,9 +2507,13 @@ namespace Opm {
         const int nw = numLocalWells();
         for (auto wellID = 0*nw; wellID < nw; ++wellID) {
             const Well& well = wells_ecl_[wellID];
-            if (well.isInjector())
+            if (well.isInjector()){
+                this->wellState().well(wellID).temperature = well.temperature();
                 continue;
+            }
 
+            std::array<double,FluidSystem::numPhases> phase_weights{};
+            double inflow_enthalpy(0.0);
             std::array<double,2> weighted{0.0,0.0};
             auto& [weighted_temperature, total_weight] = weighted;
 
@@ -2514,7 +2521,8 @@ namespace Opm {
             auto& ws = this->wellState().well(wellID);
             auto& perf_data = ws.perf_data;
             auto& perf_phase_rate = perf_data.phase_rates;
-
+            double max_temp=1e99;
+            double min_temp=0;
             using int_type = decltype(well_perf_data_[wellID].size());
             for (int_type perf = 0, end_perf = well_perf_data_[wellID].size(); perf < end_perf; ++perf) {
                 const int cell_idx = well_perf_data_[wellID][perf].cell_index;
@@ -2523,7 +2531,8 @@ namespace Opm {
 
                 // we on only have one temperature pr cell any phaseIdx will do
                 double cellTemperatures = fs.temperature(/*phaseIdx*/0).value();
-
+                min_temp = std::min(min_temp,cellTemperatures);
+                max_temp = std::min(max_temp,cellTemperatures);
                 double weight_factor = 0.0;
                 for (unsigned phaseIdx = 0; phaseIdx < FluidSystem::numPhases; ++phaseIdx)
                 {
@@ -2535,12 +2544,72 @@ namespace Opm {
                     cellDensity = fs.density(phaseIdx).value();
                     perfPhaseRate = perf_phase_rate[ perf*np + phaseIdx ];
                     weight_factor += cellDensity  * perfPhaseRate/cellBinv * cellInternalEnergy/cellTemperatures;
+                    //NB weighs and values are negative
+                    if(perfPhaseRate < 0){
+                        phase_weights[phaseIdx] += perfPhaseRate;
+                        inflow_enthalpy += cellDensity*fs.enthalpy(phaseIdx).value()*perfPhaseRate;
+                    }
                 }
                 total_weight += weight_factor;
                 weighted_temperature += weight_factor * cellTemperatures;
             }
+            // if wells is distributed ned to to this
+            well_info.communication().sum(inflow_enthalpy);
+            well_info.communication().sum(phase_weights.data(), FluidSystem::numPhases);
             well_info.communication().sum(weighted.data(), 2);
-            this->wellState().well(wellID).temperature = weighted_temperature/total_weight;
+            // Do simplest approach to solve energy, probably more things could be reused
+            double bhp = ws.bhp;
+            ScalarFluidState well_fluidstate;
+            // For now assume no mixing of fluids in wellbore
+            // well_fluidstate should be part of wells
+
+            if(has_dissolution){
+                well_fluidstate.setRs(0.0);
+                well_fluidstate.setRv(0.0);
+            }
+            if(has_vapwat){
+                well_fluidstate.setRvw(0.0);
+            }
+            if(has_disgas_in_water){
+                well_fluidstate.setTemperature(300);
+            }
+
+            int regionIndex = 0;//NB need to be obtained
+            // all pressures is equal in well string
+            for (unsigned phaseIdx = 0; phaseIdx < FluidSystem::numPhases; ++phaseIdx)
+            {
+                if (!FluidSystem::phaseIsActive(phaseIdx)) {
+                    continue;
+                }
+                well_fluidstate.setPressure(phaseIdx, bhp);
+            }
+            std::function<double(double)> f = [&phase_weights,&inflow_enthalpy, &well_fluidstate,&regionIndex](double temp){
+                double sum_enthalpy_flow = 0.0;
+                for (unsigned phaseIdx = 0; phaseIdx < FluidSystem::numPhases; ++phaseIdx)
+                {
+                    if (!FluidSystem::phaseIsActive(phaseIdx)) {
+                        continue;
+                    }
+                    well_fluidstate.setTemperature(temp);
+                    // outpflow entalpy assume mass conservation of each fphase
+                    sum_enthalpy_flow += phase_weights[phaseIdx]*
+                        FluidSystem::enthalpy(well_fluidstate, phaseIdx, regionIndex)*
+                        FluidSystem::density(well_fluidstate, phaseIdx, regionIndex);
+                }
+                sum_enthalpy_flow -= inflow_enthalpy;
+                return sum_enthalpy_flow;
+            };
+            int iter = 0;
+            RegulaFalsiBisection<ThrowOnError> solver;
+            double wtemp_new = solver.solve(f,273,max_temp+100, 1e-10, iter);
+            double wtemp = weighted_temperature/total_weight;
+            {
+                std::cout << "iterations "<< iter << std::endl;
+                std::cout << "New temperature " << wtemp_new << std::endl;
+                std::cout << "old temperature " << wtemp << std::endl;
+
+            }
+            this->wellState().well(wellID).temperature = wtemp;
         }
     }
 

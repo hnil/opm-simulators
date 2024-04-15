@@ -125,6 +125,26 @@ namespace Opm {
             static constexpr bool has_energy_ = getPropValue<TypeTag, Properties::EnableEnergy>();
             static constexpr bool has_micp_ = getPropValue<TypeTag, Properties::EnableMICP>();
 
+            static constexpr bool has_temperature = getPropValue<TypeTag, Properties::EnableTemperature>();
+            static constexpr bool has_dissolution = Indices::compositionSwitchIdx >= 0;
+            static constexpr bool has_brine = getPropValue<TypeTag, Properties::EnableBrine>();
+            static constexpr bool has_vapwat = getPropValue<TypeTag, Properties::EnableVapwat>();
+            static constexpr bool has_salt_precipitation = getPropValue<TypeTag, Properties::EnableSaltPrecipitation>();
+            static constexpr bool has_disgas_in_water = getPropValue<TypeTag, Properties::EnableDisgasInWater>();
+
+            using ScalarFluidState = BlackOilFluidState<Scalar,
+                                                        FluidSystem,
+                                                        has_temperature,
+                                                        has_energy_,
+                                                        has_dissolution,
+                                                        has_vapwat,
+                                                        has_brine,
+                                                        has_salt_precipitation,
+                                                        has_disgas_in_water,
+                                                        Indices::numPhases>;
+
+
+
             // TODO: where we should put these types, WellInterface or Well Model?
             // or there is some other strategy, like TypeTag
             typedef Dune::FieldVector<Scalar, numEq    > VectorBlockType;
