@@ -210,7 +210,7 @@ namespace Opm
                                         const Well::ProductionControls& prod_controls,
                                         WellState<Scalar>& well_state,
                                         const GroupState<Scalar>& group_state,
-                                        DeferredLogger& deferred_logger, 
+                                        DeferredLogger& deferred_logger,
                                         const bool fixed_control = false,
                                         const bool fixed_status = false) override;
 
@@ -325,7 +325,7 @@ namespace Opm
 
         bool computeWellPotentialsImplicit(const Simulator& simulator,
                                            std::vector<double>& well_potentials,
-                                           DeferredLogger& deferred_logger) const;               
+                                           DeferredLogger& deferred_logger) const;
 
         double getRefDensity() const override;
 
@@ -371,6 +371,7 @@ namespace Opm
                                  WellState<Scalar>& well_state,
                                  std::vector<RateVector>& connectionRates,
                                  std::vector<EvalWell>& cq_s,
+                                 EvalWell& energy_flux,
                                  EvalWell& water_flux_s,
                                  EvalWell& cq_s_zfrac_effective,
                                  DeferredLogger& deferred_logger) const;
@@ -464,7 +465,7 @@ namespace Opm
                                 DeferredLogger& deferred_logger) const;
 
     private:
-        Eval connectionRateEnergy(const double maxOilSaturation,
+        EvalWell connectionRateEnergy(const double maxOilSaturation,
                                   const std::vector<EvalWell>& cq_s,
                                   const IntensiveQuantities& intQuants,
                                   DeferredLogger& deferred_logger) const;

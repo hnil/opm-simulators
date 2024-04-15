@@ -73,6 +73,14 @@ public:
                                StandardWellEquations<Scalar,Indices::numEq>& eqns) const;
 
     //! \brief Assemble equation for a perforation.
+    void assemblePerforationEqEnergy(const EvalWell& energy_flux,
+                                     const int cell_idx,
+                                     const int numWellEq,
+                                     StandardWellEquations<Scalar,Indices::numEq>& eqns) const;
+
+
+
+    //! \brief Assemble equation for a perforation.
     void assemblePerforationEq(const EvalWell& cq_s_effective,
                                const int componentIdx,
                                const int cell_idx,

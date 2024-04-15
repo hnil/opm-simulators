@@ -206,6 +206,22 @@ assembleInjectivityEq(const EvalWell& eq_pskin,
 
 template<class FluidSystem, class Indices>
 void StandardWellAssemble<FluidSystem,Indices>::
+assemblePerforationEqEnergy(const EvalWell& energy_flux,
+                            const int cell_idx,
+                            const int numWellEq,
+                            StandardWellEquations<Scalar,Indices::numEq>& eqns1) const
+{
+    StandardWellEquationAccess eqns(eqns1);
+    // assemble the jacobians
+    for (int pvIdx = 0; pvIdx < numWellEq; ++pvIdx) {
+        // also need to consider the efficiency factor when manipulating the jacobians.
+        eqns.C()[0][cell_idx][pvIdx][Indices::contiEnergyEqIdx] -= energy_flux.derivative(pvIdx+Indices::numEq);
+    }
+}
+
+
+template<class FluidSystem, class Indices>
+void StandardWellAssemble<FluidSystem,Indices>::
 assemblePerforationEq(const EvalWell& cq_s_effective,
                       const int componentIdx,
                       const int cell_idx,
@@ -221,6 +237,7 @@ assemblePerforationEq(const EvalWell& cq_s_effective,
     for (int pvIdx = 0; pvIdx < numWellEq; ++pvIdx) {
         // also need to consider the efficiency factor when manipulating the jacobians.
         eqns.C()[0][cell_idx][pvIdx][componentIdx] -= cq_s_effective.derivative(pvIdx+Indices::numEq); // intput in transformed matrix
+        // NB we do so far not have thermal equations or d
         eqns.D()[0][0][componentIdx][pvIdx] += cq_s_effective.derivative(pvIdx+Indices::numEq);
     }
 
