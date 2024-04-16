@@ -2545,8 +2545,9 @@ namespace Opm {
                     perfPhaseRate = perf_phase_rate[ perf*np + phaseIdx ];
                     weight_factor += cellDensity  * perfPhaseRate/cellBinv * cellInternalEnergy/cellTemperatures;
                     //NB weighs and values are negative
+                    // probably better with component weights
                     if(perfPhaseRate < 0){
-                        phase_weights[phaseIdx] += perfPhaseRate;
+                        phase_weights[phaseIdx] += perfPhaseRate*cellDensity;
                         inflow_enthalpy += cellDensity*fs.enthalpy(phaseIdx).value()*perfPhaseRate;
                     }
                 }
@@ -2585,23 +2586,41 @@ namespace Opm {
             }
             std::function<double(double)> f = [&phase_weights,&inflow_enthalpy, &well_fluidstate,&regionIndex](double temp){
                 double sum_enthalpy_flow = 0.0;
+                well_fluidstate.setTemperature(temp);
                 for (unsigned phaseIdx = 0; phaseIdx < FluidSystem::numPhases; ++phaseIdx)
                 {
-                    if (!FluidSystem::phaseIsActive(phaseIdx)) {
-                        continue;
-                    }
-                    well_fluidstate.setTemperature(temp);
-                    // outpflow entalpy assume mass conservation of each fphase
+
+                //     if (!FluidSystem::phaseIsActive(phaseIdx)) {
+                //         continue;
+                //     }
+                //     if (FluidSystem::enableDissolvedGas()) { // Add So > 0? i.e. if only water set rs = 0)
+                //         const double& RsSat =
+                //             FluidSystem::saturatedDissolutionFactor(well_fluidstate,
+                //                                                     FluidSystem::oilPhaseIdx,
+                //                                                     regionIndex,
+                //                                                     /*SoMax*/ 1.0);
+                //         well_fluidstate.setRs(RsSat);
+                //     }
+                //     if (FluidSystem::enableVaporizedOil() ) {
+                //         const double& RvSat =
+                //             FluidSystem::saturatedDissolutionFactor(well_fluidstate,
+                //                                                     FluidSystem::gasPhaseIdx,
+                //                                                     regionIndex,
+                //                                                     /*SoMax*/ 1.0);
+                //         well_fluidstate.setRv(RvSat);
+                //     }
+
+                //     // outpflow entalpy assume mass conservation of each fphase
                     sum_enthalpy_flow += phase_weights[phaseIdx]*
-                        FluidSystem::enthalpy(well_fluidstate, phaseIdx, regionIndex)*
-                        FluidSystem::density(well_fluidstate, phaseIdx, regionIndex);
+                    FluidSystem::enthalpy(well_fluidstate, phaseIdx, regionIndex);
+                    //FluidSystem::density(well_fluidstate, phaseIdx, regionIndex);
                 }
                 sum_enthalpy_flow -= inflow_enthalpy;
                 return sum_enthalpy_flow;
             };
             int iter = 0;
             RegulaFalsiBisection<ThrowOnError> solver;
-            double wtemp_new = solver.solve(f,273,max_temp+100, 1e-10, iter);
+            double wtemp_new = solver.solve(f,273.0,373.0, 56, 1e-14, iter);
             double wtemp = weighted_temperature/total_weight;
             {
                 std::cout << "iterations "<< iter << std::endl;
