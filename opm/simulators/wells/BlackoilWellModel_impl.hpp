@@ -2551,8 +2551,11 @@ namespace Opm {
                         inflow_enthalpy += cellDensity*fs.enthalpy(phaseIdx).value()*perfPhaseRate;
                     }
                 }
-                total_weight += weight_factor;
-                weighted_temperature += weight_factor * cellTemperatures;
+                // temperature whould only be weighted with inflow zero flow may be a problem
+                if(weight_factor < 0){
+                    total_weight += weight_factor;
+                    weighted_temperature += weight_factor * cellTemperatures;
+                }
             }
             // if wells is distributed ned to to this
             well_info.communication().sum(inflow_enthalpy);
