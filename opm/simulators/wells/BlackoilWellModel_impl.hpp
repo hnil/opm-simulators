@@ -2505,11 +2505,16 @@ namespace Opm {
         double cellDensity;
         double perfPhaseRate;
         const int nw = numLocalWells();
+        // NEED to be checked if indexing in of wells_ecl_ and wellState().well(wellID) is ok
         for (auto wellID = 0*nw; wellID < nw; ++wellID) {
             const Well& well = wells_ecl_[wellID];
+            auto& ws = this->wellState().well(wellID);
             if (well.isInjector()){
-                this->wellState().well(wellID).temperature = well.temperature();
-                continue;
+                //if( !well.getStatus() == WellStatus::STOP){
+                if( !(ws.status == WellStatus::STOP)){
+                    this->wellState().well(wellID).temperature = well.temperature();
+                    continue;
+                }
             }
 
             std::array<double,FluidSystem::numPhases> phase_weights{};
@@ -2518,7 +2523,6 @@ namespace Opm {
             auto& [weighted_temperature, total_weight] = weighted;
 
             auto& well_info = local_parallel_well_info_[wellID].get();
-            auto& ws = this->wellState().well(wellID);
             auto& perf_data = ws.perf_data;
             auto& perf_phase_rate = perf_data.phase_rates;
             double max_temp=1e99;
