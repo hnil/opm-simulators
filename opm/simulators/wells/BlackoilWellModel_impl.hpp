@@ -2597,25 +2597,27 @@ namespace Opm {
                 for (unsigned phaseIdx = 0; phaseIdx < FluidSystem::numPhases; ++phaseIdx)
                 {
 
-                //     if (!FluidSystem::phaseIsActive(phaseIdx)) {
-                //         continue;
-                //     }
-                //     if (FluidSystem::enableDissolvedGas()) { // Add So > 0? i.e. if only water set rs = 0)
-                //         const double& RsSat =
-                //             FluidSystem::saturatedDissolutionFactor(well_fluidstate,
-                //                                                     FluidSystem::oilPhaseIdx,
-                //                                                     regionIndex,
-                //                                                     /*SoMax*/ 1.0);
-                //         well_fluidstate.setRs(RsSat);
-                //     }
-                //     if (FluidSystem::enableVaporizedOil() ) {
-                //         const double& RvSat =
-                //             FluidSystem::saturatedDissolutionFactor(well_fluidstate,
-                //                                                     FluidSystem::gasPhaseIdx,
-                //                                                     regionIndex,
-                //                                                     /*SoMax*/ 1.0);
-                //         well_fluidstate.setRv(RvSat);
-                //     }
+                    if (!FluidSystem::phaseIsActive(phaseIdx)) {
+                        continue;
+                    }
+
+                    // NB:need to check for understurated case
+                    if (FluidSystem::enableDissolvedGas()) { // Add So > 0? i.e. if only water set rs = 0)
+                        const double& RsSat =
+                            FluidSystem::saturatedDissolutionFactor(well_fluidstate,
+                                                                    FluidSystem::oilPhaseIdx,
+                                                                    regionIndex,
+                                                                    /*SoMax*/ 1.0);
+                        well_fluidstate.setRs(RsSat);
+                    }
+                    if (FluidSystem::enableVaporizedOil() ) {
+                        const double& RvSat =
+                            FluidSystem::saturatedDissolutionFactor(well_fluidstate,
+                                                                    FluidSystem::gasPhaseIdx,
+                                                                    regionIndex,
+                                                                    /*SoMax*/ 1.0);
+                        well_fluidstate.setRv(RvSat);
+                    }
 
                 //     // outpflow entalpy assume mass conservation of each fphase
                     sum_enthalpy_flow += phase_weights[phaseIdx]*
