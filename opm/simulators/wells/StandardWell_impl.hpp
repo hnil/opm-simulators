@@ -395,11 +395,17 @@ namespace Opm
             if constexpr (has_energy) {
                 // NB should well_efficiency_factor be included?
                 const int cell_idx = this->well_cells_[perf];
-                StandardWellAssemble<FluidSystem,Indices>(*this).
-                    assemblePerforationEqEnergy(energy_flux,
-                                                cell_idx,
-                                                this->primary_variables_.numWellEq(),
-                                                this->linSys_);
+                // Correct code ? but make worse convergence
+                if(false){
+                    auto scaled_energy_flux = energy_flux;
+                    scaled_energy_flux *= getPropValue<TypeTag, Properties::BlackOilEnergyScalingFactor>();
+                    StandardWellAssemble<FluidSystem,Indices>(*this).
+                        assemblePerforationEqEnergy(scaled_energy_flux,
+                                                    cell_idx,
+                                                    this->primary_variables_.numWellEq(),
+                                                    this->linSys_);
+                }
+                // NB maybe better to take value for injector
                 connectionRates[perf][Indices::contiEnergyEqIdx] = Base::restrictEval(energy_flux);
             }
 
@@ -2576,15 +2582,15 @@ namespace Opm
             if (this->isInjector() && cq_s[activeCompIdx] > 0.0){
                 // only handles single phase injection now
                 assert(this->well_ecl_.injectorType() != InjectorType::MULTI);
-                //NB care full use of fs Maybe better with clean ?
-                auto dens_perf=  fs.density(phaseIdx);//NB probably use b_cellsperf*rhoS
+                //NB care full use of fs Maybe better with clean for well variables
+                //NB probably use b_cellsperf*rhoS but this should give the same
+                auto dens_perf=  fs.density(phaseIdx);
                 fs.setTemperature(this->well_ecl_.temperature());
 
                 // loose some of the derivatives
                 //const EvalWell& bhp = getValue(this->primary_variables_.eval(Bhp));
                 // miss derivatives of energy with respect to bhp
                 const auto bhp = getValue(this->primary_variables_.eval(Bhp));
-                //const Value well_pressure = bhp + this->connections_.pressure_diff(perf);
                 fs.setPressure(phaseIdx,bhp);
                 typedef typename std::decay<decltype(fs)>::type::Scalar FsScalar;
                 typename FluidSystem::template ParameterCache<FsScalar> paramCache;
@@ -2598,7 +2604,6 @@ namespace Opm
                 const auto& h = FluidSystem::enthalpy(fs, paramCache, phaseIdx);
                 fs.setEnthalpy(phaseIdx, h);
                 cq_r_thermal *= this->extendEval(fs.enthalpy(phaseIdx)) * this->extendEval(dens_perf);
-                //result += getValue(cq_r_thermal);
                 result += cq_r_thermal;
             } else {
                 // compute the thermal flux

@@ -206,7 +206,7 @@ assembleInjectivityEq(const EvalWell& eq_pskin,
 
 template<class FluidSystem, class Indices>
 void StandardWellAssemble<FluidSystem,Indices>::
-assemblePerforationEqEnergy(const EvalWell& energy_flux,
+assemblePerforationEqEnergy(const EvalWell& scaled_energy_flux,
                             const int cell_idx,
                             const int numWellEq,
                             StandardWellEquations<Scalar,Indices::numEq>& eqns1) const
@@ -215,7 +215,8 @@ assemblePerforationEqEnergy(const EvalWell& energy_flux,
     // assemble the jacobians
     for (int pvIdx = 0; pvIdx < numWellEq; ++pvIdx) {
         // also need to consider the efficiency factor when manipulating the jacobians.
-        eqns.C()[0][cell_idx][pvIdx][Indices::contiEnergyEqIdx] -= energy_flux.derivative(pvIdx+Indices::numEq);
+
+        eqns.C()[0][cell_idx][pvIdx][Indices::contiEnergyEqIdx] -= scaled_energy_flux.derivative(pvIdx+Indices::numEq);
     }
 }
 
