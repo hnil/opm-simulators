@@ -183,6 +183,7 @@ public:
 
     void resetWellOperability();
 
+    void addPerforations(const std::vector<std::tuple<int,double,double>>& perfs);
 protected:
     bool getAllowCrossFlow() const;
 
