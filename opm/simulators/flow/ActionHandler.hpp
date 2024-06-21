@@ -68,6 +68,12 @@ public:
     void evalUDQAssignments(const unsigned episodeIdx,
                             UDQState& udq_state);
 
+    void applySimulatorUpdate(int report_step,
+                              const SimulatorUpdate& sim_update,
+                              bool& commit_wellstate,
+                              const TransFunc& updateTrans);
+
+
   private:
     /*
        This function is run after applyAction has been completed in the Schedule
@@ -75,10 +81,6 @@ public:
        the simulator properties which need to be updated. This functionality is
        probably not complete.
     */
-    void applySimulatorUpdate(int report_step,
-                              const SimulatorUpdate& sim_update,
-                              bool& commit_wellstate,
-                              const TransFunc& updateTrans);
 
     std::unordered_map<std::string, Scalar>
     fetchWellPI(int reportStep,
