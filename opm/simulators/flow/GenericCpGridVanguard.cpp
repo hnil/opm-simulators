@@ -144,6 +144,8 @@ template<class ElementMapper, class GridView, class Scalar>
 void GenericCpGridVanguard<ElementMapper, GridView, Scalar>::
 doLoadBalance_(const Dune::EdgeWeightMethod             edgeWeightsMethod,
                const bool                               ownersFirst,
+               const bool                               addCorners,
+               const int                                numOverlap,
                const Dune::PartitionMethod              partitionMethod,
                const bool                               serialPartitioning,
                const bool                               enableDistributedWells,
@@ -204,7 +206,9 @@ doLoadBalance_(const Dune::EdgeWeightMethod             edgeWeightsMethod,
         const auto& possibleFutureConnections = schedule.getPossibleFutureConnections();
         // Distribute the grid and switch to the distributed view.
         if (mpiSize > 1) {
-            this->distributeGrid(edgeWeightsMethod, ownersFirst, partitionMethod,
+            this->distributeGrid(edgeWeightsMethod, ownersFirst, 
+                                 addCorners, numOverlap, 
+                                 partitionMethod,
                                  serialPartitioning, enableDistributedWells,
                                  imbalanceTol, loadBalancerSet != 0,
                                  faceTrans, wells,
@@ -332,6 +336,8 @@ void
 GenericCpGridVanguard<ElementMapper, GridView, Scalar>::
 distributeGrid(const Dune::EdgeWeightMethod                          edgeWeightsMethod,
                const bool                                            ownersFirst,
+               const bool                                            addCorners,
+               const int                                             numOverlap,
                const Dune::PartitionMethod                           partitionMethod,
                const bool                                            serialPartitioning,
                const bool                                            enableDistributedWells,
@@ -346,7 +352,7 @@ distributeGrid(const Dune::EdgeWeightMethod                          edgeWeights
     if (auto* eclState = dynamic_cast<ParallelEclipseState*>(&eclState1);
         eclState != nullptr)
     {
-        this->distributeGrid(edgeWeightsMethod, ownersFirst, partitionMethod,
+        this->distributeGrid(edgeWeightsMethod, ownersFirst, addCorners, numOverlap, partitionMethod,
                              serialPartitioning, enableDistributedWells,
                              imbalanceTol, loadBalancerSet, faceTrans,
                              wells, possibleFutureConnections, eclState, parallelWells);
@@ -370,6 +376,8 @@ void
 GenericCpGridVanguard<ElementMapper, GridView, Scalar>::
 distributeGrid(const Dune::EdgeWeightMethod                          edgeWeightsMethod,
                const bool                                            ownersFirst,
+               const bool                                            addCorners,
+               const int                                             numOverlap,
                const Dune::PartitionMethod                           partitionMethod,
                const bool                                            serialPartitioning,
                const bool                                            enableDistributedWells,
@@ -388,8 +396,8 @@ distributeGrid(const Dune::EdgeWeightMethod                          edgeWeights
         *this->grid_, *eclState
     };
 
-    const auto addCornerCells = false;
-    const auto overlapLayers = 1;
+    const auto addCornerCells = addCorners;
+    const auto overlapLayers = numOverlap;
 
     if (loadBalancerSet) {
         auto parts = isIORank
