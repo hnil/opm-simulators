@@ -128,6 +128,7 @@ public:
 #if HAVE_MPI
         numOverlap_ = Parameters::Get<Parameters::NumOverlap>();
         addCorners_ = Parameters::Get<Parameters::AddCorners>();
+        edgeConformal_ = Parameters::Get<Parameters::EdgeConformal>();
         partitionMethod_   = Dune::PartitionMethod(Parameters::Get<Parameters::PartitionMethod>());
         serialPartitioning_ = Parameters::Get<Parameters::SerialPartitioning>();
         imbalanceTol_ = Parameters::Get<Parameters::ImbalanceTol<Scalar>>();
