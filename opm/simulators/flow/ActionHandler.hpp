@@ -125,18 +125,6 @@ public:
                               bool& commit_wellstate);
 
   private:
-    /*
-       This function is run after applyAction has been completed in the Schedule
-       implementation. The sim_update argument should have members & flags for
-       the simulator properties which need to be updated. This functionality is
-       probably not complete.
-    */
-
-    std::unordered_map<std::string, Scalar>
-    fetchWellPI(int reportStep,
-                const Action::ActionX& action,
-                const std::vector<std::string>& matching_wells) const;
-
 
     /// Static properties such as permeability and transmissibility.
     EclipseState& ecl_state_;

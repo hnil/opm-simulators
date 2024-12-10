@@ -842,7 +842,7 @@ public:
         OPM_TIMEBLOCK_LOCAL(processElementBlockData);
         if (!std::is_same<Discretization, EcfvDiscretization<TypeTag>>::value)
             return;
-
+        
         const auto& problem = elemCtx.simulator().problem();
         for (unsigned dofIdx = 0; dofIdx < elemCtx.numPrimaryDof(/*timeIdx=*/0); ++dofIdx) {
             // Adding block data
@@ -881,42 +881,54 @@ public:
                             val.second = getValue(fs.temperature(gasPhaseIdx));
                         else if (FluidSystem::phaseIsActive(waterPhaseIdx))
                             val.second = getValue(fs.temperature(waterPhaseIdx));
-                    }
+                    } 
                     else if (key.first == "BSTRSSXX")
                         {
+                            if constexpr (getPropValue<TypeTag, Properties::EnableMech>()) {
                             const auto& model = problem.geoMechModel();
                             auto stress = model.stress(globalDofIdx,/*include_fracture*/true);
                             val.second = stress[0];
+                            }
                         }
                     else if (key.first == "BSTRSSYY")
                         {
+                            if constexpr (getPropValue<TypeTag, Properties::EnableMech>()) {
                             const auto& model = problem.geoMechModel();
                             auto stress = model.stress(globalDofIdx,/*include_fracture*/true);
                             val.second = stress[1];
+                            }
                         }
                     else if (key.first == "BSTRSSZZ")
                         {
+                            if constexpr (getPropValue<TypeTag, Properties::EnableMech>()) {
                             const auto& model = problem.geoMechModel();
                             auto stress = model.stress(globalDofIdx,/*include_fracture*/true);
                             val.second = stress[2];
+                            }
                         }
                     else if (key.first == "BSTRSSXY")
                         {
+                            if constexpr (getPropValue<TypeTag, Properties::EnableMech>()) {
                             const auto& model = problem.geoMechModel();
                             auto stress = model.stress(globalDofIdx,/*include_fracture*/true);
                             val.second = stress[5];
+                            }
                         }
                     else if (key.first == "BSTRSSXZ")
                         {
+                            if constexpr (getPropValue<TypeTag, Properties::EnableMech>()) {
                             const auto& model = problem.geoMechModel();
                             auto stress = model.stress(globalDofIdx,/*include_fracture*/true);
                             val.second = stress[4];
+                            }
                         }
                     else if (key.first == "BSTRSSYZ")
                         {
+                            if constexpr (getPropValue<TypeTag, Properties::EnableMech>()) {
                             const auto& model = problem.geoMechModel();
                             auto stress = model.stress(globalDofIdx,/*include_fracture*/true);
                             val.second = stress[3];
+                            }
                         }
                     else if (key.first == "BWKR" || key.first == "BKRW")
                         val.second = getValue(intQuants.relativePermeability(waterPhaseIdx));
