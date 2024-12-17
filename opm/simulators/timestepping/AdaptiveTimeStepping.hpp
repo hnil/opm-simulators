@@ -279,6 +279,12 @@ void registerAdaptiveParameters();
                     logException_(e, solverVerbose_);
                     // this can be thrown by ISTL's ILU0 in block mode, yet is not an ISTLError
                 }
+		    //     catch (const Dune::RestartStepForIteration& e) {
+            //         substepReport = solver.failureReport();
+		    // // need to set something which prevent timestep cuts
+            //         logException_(e, solverVerbose_);
+            //         // this can be thrown by ISTL's ILU0 in block mode, yet is not an ISTLError
+            //     }
 
                 //Pass substep to eclwriter for summary output
                 simulator.problem().setSubStepReport(substepReport);

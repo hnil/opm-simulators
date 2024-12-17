@@ -41,6 +41,7 @@
 #include <opm/simulators/flow/FlowProblemBlackoilProperties.hpp>
 
 #include <opm/simulators/linalg/ISTLSolver.hpp>
+#include <opm/simulators/linalg/parallelistlbackend.hh>
 
 #include <opm/simulators/timestepping/EclTimeSteppingParams.hpp>
 
@@ -57,7 +58,7 @@ namespace TTag {
 
 struct FlowExpTypeTag
 {
-    using InheritsFrom = std::tuple<FlowBaseProblemBlackoil, BlackOilModel>;
+    using InheritsFrom = std::tuple<FlowBaseProblemBlackoil, BlackOilModel,ParallelIstlLinearSolver>;
 };
 
 }
@@ -106,20 +107,23 @@ struct AquiferModel<TypeTag, TTag::FlowExpTypeTag> {
 };
 
 // use flow's linear solver backend for now
-template<class TypeTag>
-struct LinearSolverSplice<TypeTag, TTag::FlowExpTypeTag> {
-    using type = TTag::FlowIstlSolver;
-};
+// template<class TypeTag>
+// struct LinearSolverSplice<TypeTag, TTag::FlowExpTypeTag> {
+//     //using type = TTag::FlowIstlSolver;
+//     using TTag::ParallelIstlLinearSolver;
+// };
 
-template<>
-struct LinearSolverBackend<TTag::FlowExpTypeTag, TTag::FlowIstlSolverParams> {
-    using type = ISTLSolver<TTag::FlowExpTypeTag>;
-};
+// template<>
+// struct LinearSolverBackend<TTag::FlowExpTypeTag, TTag::FlowIstlSolverParams> {
+//     //using type = ISTLSolver<TTag::FlowExpTypeTag>;
+//     using type = Opm::Linear::ParallelIstlSolverBackend<TTag::FlowExpTypeTag>;
+// };
 
-template<class TypeTag>
-struct LinearSolverBackend<TypeTag, TTag::FlowExpTypeTag> {
-    using type = ISTLSolver<TypeTag>;
-};
+// template<class TypeTag>
+// struct LinearSolverBackend<TypeTag, TTag::FlowExpTypeTag> {
+//     //using type = ISTLSolver<TypeTag>;
+//     using type = Opm::Linear::ParallelIstlSolverBackend<TypeTag>;
+// };
 
 } // namespace Opm::Properties
 
