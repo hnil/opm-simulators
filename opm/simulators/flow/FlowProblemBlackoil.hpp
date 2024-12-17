@@ -566,7 +566,7 @@ public:
         // the initial solution.
         this->thresholdPressures_.finishInit();
 
-        if (this->simulator().episodeIndex() == 0) {
+        if (this->simulator().episodeIndex() == 0 && enableEclOutput_) {
             eclWriter_->writeInitialFIPReport();
         }
     }
