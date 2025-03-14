@@ -162,6 +162,11 @@ public:
      * If the grid changes between two calls of beginWrite(), this
      * method _must_ be called before the second beginWrite()!
      */
+
+    void gridViewChanged(const GridView& gridView){
+        gridView_ = gridView;
+        gridChanged();
+    }
     void gridChanged()
     {
         elementMapper_.update(gridView_);
@@ -538,7 +543,8 @@ private:
         }
     }
 
-    const GridView gridView_;
+    //const GridView gridView_;
+    GridView gridView_;
     ElementMapper elementMapper_;
     VertexMapper vertexMapper_;
 
