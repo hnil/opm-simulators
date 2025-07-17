@@ -36,6 +36,7 @@
 
 #include <vector>
 #include <numeric>
+#include <type_traits>
 
 namespace Hypre {
 
@@ -49,7 +50,7 @@ namespace Hypre {
  * @tparam X The type of the update vector.
  * @tparam Y The type of the defect vector.
  */
-template<class M, class X, class Y>
+template<class M, class X, class Y,class Comm>
 class HyprePreconditioner : public Dune::PreconditionerWithUpdate<X,Y> {
 public:
 
@@ -61,8 +62,15 @@ public:
      * @param A The matrix for which the preconditioner is constructed.
      * @param prm The property tree containing configuration parameters.
      */
-    HyprePreconditioner (const M& A, const Opm::PropertyTree prm)
-        : A_(A)
+    template <typename Prm = std::enable_if_t<std::is_same_v<Comm, Dune::Amg::SequentialInformation>, ::Opm::PropertyTree>>
+    HyprePreconditioner (const M& A, const Prm& prm)
+        : HyprePreconditioner(A, prm, Dune::Amg::SequentialInformation())
+    {
+        //NB if this is used comm_ can never be used
+    }
+
+    HyprePreconditioner (const M& A, const Opm::PropertyTree prm,const Comm& comm)
+        : A_(A),comm_(comm)
     {
         OPM_TIMEBLOCK(prec_construct);
 
@@ -121,8 +129,9 @@ public:
         }
 
         // Create Hypre vectors
-        N_ = A_.N();
-        nnz_ = A_.nonzeroes();
+        setupHypreParallelInfo(comm_);
+        //N_ = A_.N();
+        //nnz_ = A_.nonzeroes();
         HYPRE_IJVectorCreate(MPI_COMM_SELF, 0, N_-1, &x_hypre_);
         HYPRE_IJVectorCreate(MPI_COMM_SELF, 0, N_-1, &b_hypre_);
         HYPRE_IJVectorSetObjectType(x_hypre_, HYPRE_PARCSR);
@@ -222,6 +231,9 @@ public:
 
         // Copy result back
         copyVectorFromHypre(v);
+        // NB do we need ot sync values to be consiten to unique?
+        //comm_.project(v)
+        // comm_.copyOwnerToAll(v,v);
     }
 
     /**
@@ -257,41 +269,133 @@ public:
     }
 
 private:
-    /**
-     * @brief Sets up the sparsity pattern for the Hypre matrix.
-     *
-     * Allocates and initializes arrays required by Hypre.
-     */
-    void setupSparsityPattern() {
-        // Allocate arrays required by Hypre
-        ncols_.resize(N_);
-        rows_.resize(N_);
-        cols_.resize(nnz_);
+  void setupHypreParallelInfo(const Dune::Amg::SequentialInformation& /*comm*/)
+    {
+        N_ = A_.N();
+        M_ = A_.M();
+        assert(N_ == M_);
+        nnz_ = A_.nonzeroes();
 
-        // Setup arrays and fill column indices
-        int pos = 0;
-        for (auto row = A_.begin(); row != A_.end(); ++row) {
-            const int rowIdx = row.index();
-            rows_[rowIdx] = rowIdx;
-            ncols_[rowIdx] = row->size();
-
-            for (auto col = row->begin(); col != row->end(); ++col) {
-                cols_[pos++] = col.index();
+        local_hypre_.resize(N_);
+        hypre_local_.resize(N_);
+        for (int i = 0; i < N_; ++i) {
+            local_hypre_[i] = i;
+            hypre_local_[i] = i;
+        }
+        dof_offset_ = 0;
+    }
+  
+    template <class Commun>
+    void setupHypreParallelInfo(const Commun& comm)
+    {
+        bool owner_first = true;
+        bool visited_copy = false;  
+        const auto& collective_comm = comm.communicator();
+        // make global numbering and mapping for matrix
+        size_t count = 0;
+        local_hypre_.resize(comm.indexSet().size(), -1);
+        for (const auto& ind : comm.indexSet()) {
+            int local_ind = ind.local().local();
+            if (ind.local().attribute() == Dune::OwnerOverlapCopyAttributeSet::owner) {
+                local_hypre_[local_ind] = count;
+                hypre_local_.push_back(local_ind);
+                // hypre_local_[count] = local_ind;
+                count += 1;
+                owner_first = owner_first && !visited_copy;
+            } else {
+               visited_copy = true;
+               local_hypre_[local_ind] = -1;
+            }
+            // local_global_[ind.local().local()] = ind.global();
+        }
+        N_ = count - 1;
+        assert(owner_first);// this simplify all of values in vectors
+        // get sizes of all other ranks
+        std::vector<int> sizes(comm.size(), 0);
+        for (int i = 0; i < comm.size(); ++i) {
+            if (comm.rank() == i) {
+                sizes[i] = N_;
             }
         }
-        if (use_gpu_) {
-            // Allocate device arrays
-            ncols_device_ = hypre_CTAlloc(HYPRE_Int, N_, HYPRE_MEMORY_DEVICE);
-            rows_device_ = hypre_CTAlloc(HYPRE_BigInt, N_, HYPRE_MEMORY_DEVICE);
-            cols_device_ = hypre_CTAlloc(HYPRE_BigInt, nnz_, HYPRE_MEMORY_DEVICE);
-            values_device_ = hypre_CTAlloc(HYPRE_Real, nnz_, HYPRE_MEMORY_DEVICE);
+        collective_comm.barrier(); // need?
+        // collective_comm.sum(&sizes[i], sizes.size());
+        for (int i = 0; i < comm.size(); ++i) {
+            collective_comm.sum(sizes[i]);
+        }
+        // get offset
+        dof_offset_ = 0;
+        for (int i = 0; i < comm.rank(); ++i) {
+            dof_offset_ += sizes[i];
+        }
 
-            // Copy to device
-            hypre_TMemcpy(ncols_device_, ncols_.data(), HYPRE_Int, N_, HYPRE_MEMORY_DEVICE, HYPRE_MEMORY_HOST);
-            hypre_TMemcpy(rows_device_, rows_.data(), HYPRE_BigInt, N_, HYPRE_MEMORY_DEVICE, HYPRE_MEMORY_HOST);
-            hypre_TMemcpy(cols_device_, cols_.data(), HYPRE_BigInt, nnz_, HYPRE_MEMORY_DEVICE, HYPRE_MEMORY_HOST);
+        // find off set.
+        // find nnc
+        // N_ = A_.N();
+        // nnz_ = A_.nonzeroes();
+        int nnz = 0;
+        int nnz_diag = 0;
+        int nnz_offdiag = 0;
+        for (auto row = A_.begin(); row != A_.end(); ++row) {
+            const int rowIdx = row.index();
+            for (auto col = row->begin(); col != row->end(); ++col) {
+                if (!(local_hypre_[rowIdx] < 0) ){
+                    nnz++;
+                    if(!(local_hypre_[col.index()] < 0)) {
+                        nnz_diag++;
+                    } else {
+                        nnz_offdiag++;
+                    }
+                }
+            }
+        }
+        nnz_ = nnz;
+        nnz_diag_ = nnz_diag;
+        nnz_offdiag_ = nnz_offdiag;
+     }
+  
+/**
+ * @brief Sets up the sparsity pattern for the Hypre matrix.
+ *
+ * Allocates and initializes arrays required by Hypre.
+ */
+
+  int localToHypreGlobal(int index){
+    return local_hypre_[index] + dof_offset_;
+  }
+  
+void
+setupSparsityPattern()
+{
+    // Allocate arrays required by Hypre
+    ncols_.resize(M_);
+    rows_.resize(N_);
+    cols_.resize(nnz_);
+
+    // Setup arrays and fill column indices
+    int pos = 0;
+    for (auto row = A_.begin(); row != A_.end(); ++row) {
+        const int rowIdx = localToHypreGlobal(row.index());
+        rows_[rowIdx] = rowIdx;
+        ncols_[rowIdx] = row->size();
+
+        for (auto col = row->begin(); col != row->end(); ++col) {
+            const int colIdx = localToHypreGlobal(col.index());
+            cols_[pos++] =  colIdx;
         }
     }
+    if (use_gpu_) {
+        // Allocate device arrays
+        ncols_device_ = hypre_CTAlloc(HYPRE_Int, N_, HYPRE_MEMORY_DEVICE);
+        rows_device_ = hypre_CTAlloc(HYPRE_BigInt, N_, HYPRE_MEMORY_DEVICE);
+        cols_device_ = hypre_CTAlloc(HYPRE_BigInt, nnz_, HYPRE_MEMORY_DEVICE);
+        values_device_ = hypre_CTAlloc(HYPRE_Real, nnz_, HYPRE_MEMORY_DEVICE);
+
+        // Copy to device
+        hypre_TMemcpy(ncols_device_, ncols_.data(), HYPRE_Int, N_, HYPRE_MEMORY_DEVICE, HYPRE_MEMORY_HOST);
+        hypre_TMemcpy(rows_device_, rows_.data(), HYPRE_BigInt, N_, HYPRE_MEMORY_DEVICE, HYPRE_MEMORY_HOST);
+        hypre_TMemcpy(cols_device_, cols_.data(), HYPRE_BigInt, nnz_, HYPRE_MEMORY_DEVICE, HYPRE_MEMORY_HOST);
+    }
+}
 
     /**
      * @brief Copies the matrix values to the Hypre matrix.
@@ -333,6 +437,7 @@ private:
      */
     void copyVectorsToHypre(const X& v, const Y& d) {
         OPM_TIMEBLOCK(prec_copy_vectors_to_hypre);
+        // need to be owner first to make this valid
         const HYPRE_Real* x_vals = &(v[0][0]);
         const HYPRE_Real* b_vals = &(d[0][0]);
 
@@ -375,7 +480,13 @@ private:
     }
 
     const M& A_; //!< The matrix for which the preconditioner is constructed.
+    const Comm& comm_; //!< The communication object for parallel operations.
     bool use_gpu_ = false; //!< Flag indicating whether to use GPU acceleration.
+
+    // mappings between dune and hypre use int to have negative values as not owned
+    std::vector<int> local_hypre_;
+    std::vector<int> hypre_local_;// will only be needed if not owner first
+    int dof_offset_;
 
     HYPRE_Solver solver_ = nullptr; //!< The Hypre solver object.
     HYPRE_IJMatrix A_hypre_ = nullptr; //!< The Hypre matrix object.
@@ -396,7 +507,10 @@ private:
     std::vector<HYPRE_BigInt> indices_; //!< Indices vector for copying vectors to/from Hypre.
     HYPRE_BigInt* indices_device_ = nullptr; //!< Device array for indices.
     HYPRE_Int N_ = -1; //!< Number of rows in the matrix.
+    HYPRE_Int M_ = -1; //!< Number of rows in the matrix.
     HYPRE_Int nnz_ = -1; //!< Number of non-zero elements in the matrix.
+    HYPRE_Int nnz_diag_ = -1; //!< Number of non-zero diagonal elements in the matrix.
+    HYPRE_Int nnz_offdiag_ = -1; //!< Number of non-zero off-diagonal elements in the matrix.
 
     HYPRE_Real* x_values_device_ = nullptr; //!< Device array for solution vector values.
     HYPRE_Real* b_values_device_ = nullptr; //!< Device array for right-hand side vector values.
