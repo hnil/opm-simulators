@@ -62,12 +62,12 @@ public:
      * @param A The matrix for which the preconditioner is constructed.
      * @param prm The property tree containing configuration parameters.
      */
-    template <typename Prm = std::enable_if_t<std::is_same_v<Comm, Dune::Amg::SequentialInformation>, ::Opm::PropertyTree>>
-    HyprePreconditioner (const M& A, const Prm& prm)
-        : HyprePreconditioner(A, prm, Dune::Amg::SequentialInformation())
-    {
-        //NB if this is used comm_ can never be used
-    }
+    // template <typename Prm = std::enable_if_t<std::is_same_v<Comm, Dune::Amg::SequentialInformation>, ::Opm::PropertyTree>>
+    // HyprePreconditioner (const M& A, const Prm& prm)
+    //     : HyprePreconditioner(A, prm, Dune::Amg::SequentialInformation())
+    // {
+    //     //NB if this is used comm_ can never be used
+    // }
 
     HyprePreconditioner (const M& A, const Opm::PropertyTree prm,const Comm& comm)
         : A_(A),comm_(comm)
@@ -76,8 +76,10 @@ public:
 
         int size;
         MPI_Comm_size(MPI_COMM_WORLD, &size);
+        
         if (size > 1) {
-            OPM_THROW(std::runtime_error, "HyprePreconditioner is currently only implemented for sequential runs");
+            assert(size == comm.communicator().size());
+            //OPM_THROW(std::runtime_error, "HyprePreconditioner is currently only implemented for sequential runs");
         }
 
         use_gpu_ = prm.get<bool>("use_gpu", false);
@@ -288,43 +290,62 @@ private:
     template <class Commun>
     void setupHypreParallelInfo(const Commun& comm)
     {
-        bool owner_first = true;
-        bool visited_copy = false;  
+        
         const auto& collective_comm = comm.communicator();
         // make global numbering and mapping for matrix
+        
         size_t count = 0;
         local_hypre_.resize(comm.indexSet().size(), -1);
+        assert(A_.N() == comm.indexSet().size());// assume index set is full dune may only have the dofs need to communicate in indexSet.
+        // NB iterations in index set is not in order of indexes
+        // first find owners
         for (const auto& ind : comm.indexSet()) {
             int local_ind = ind.local().local();
             if (ind.local().attribute() == Dune::OwnerOverlapCopyAttributeSet::owner) {
-                local_hypre_[local_ind] = count;
-                hypre_local_.push_back(local_ind);
+                local_hypre_[local_ind] = 1;//count;
+                //hypre_local_.push_back(local_ind);
                 // hypre_local_[count] = local_ind;
                 count += 1;
-                owner_first = owner_first && !visited_copy;
+                
             } else {
-               visited_copy = true;
                local_hypre_[local_ind] = -1;
             }
             // local_global_[ind.local().local()] = ind.global();
         }
         N_ = count - 1;
+        // make order of variables
+        bool owner_first = true;
+        bool visited_copy = false;
+        count = 0;
+        for(size_t i=0; i < local_hypre_.size(); ++i) {
+            if (local_hypre_[i] < 0) {
+                visited_copy = true;
+                assert(hypre_local_[i] == -1);
+            } else {
+                local_hypre_[i] = count;
+                hypre_local_.push_back(i);
+                owner_first = owner_first && !visited_copy;
+                count +=1;
+            }
+        }
+        
+        
         assert(owner_first);// this simplify all of values in vectors
         // get sizes of all other ranks
-        std::vector<int> sizes(comm.size(), 0);
-        for (int i = 0; i < comm.size(); ++i) {
-            if (comm.rank() == i) {
+        std::vector<int> sizes(collective_comm.size(), 0);
+        for (int i = 0; i < collective_comm.size(); ++i) {
+            if (collective_comm.rank() == i) {
                 sizes[i] = N_;
             }
         }
         collective_comm.barrier(); // need?
         // collective_comm.sum(&sizes[i], sizes.size());
-        for (int i = 0; i < comm.size(); ++i) {
+        for (int i = 0; i < collective_comm.size(); ++i) {
             collective_comm.sum(sizes[i]);
         }
         // get offset
         dof_offset_ = 0;
-        for (int i = 0; i < comm.rank(); ++i) {
+        for (int i = 0; i < collective_comm.rank(); ++i) {
             dof_offset_ += sizes[i];
         }
 
