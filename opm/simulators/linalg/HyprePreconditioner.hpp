@@ -152,7 +152,11 @@ public:
         }
 
         // Create Hypre matrix
-        HYPRE_IJMatrixCreate(MPI_COMM_SELF, 0, N_-1, 0, N_-1, &A_hypre_);
+        //HYPRE_IJMatrixCreate(MPI_COMM_SELF, 0, N_-1, 0, N_-1, &A_hypre_);
+        HYPRE_IJMatrixCreate(MPI_COMM_SELF, 
+                            dof_offset_, dof_offset_ +(N_-1),
+                            dof_offset_, dof_offset_ +(N_-1),  
+                            &A_hypre_);
         HYPRE_IJMatrixSetObjectType(A_hypre_, HYPRE_PARCSR);
         HYPRE_IJMatrixInitialize(A_hypre_);
 
@@ -279,10 +283,12 @@ private:
         nnz_ = A_.nonzeroes();
 
         local_hypre_.resize(N_);
+        local_hypre_global_.resize(N_);
         hypre_local_.resize(N_);
         for (int i = 0; i < N_; ++i) {
             local_hypre_[i] = i;
             hypre_local_[i] = i;
+            local_hypre_global_[i] = i;
         }
         dof_offset_ = 0;
     }
@@ -296,6 +302,7 @@ private:
         
         size_t count = 0;
         local_hypre_.resize(comm.indexSet().size(), -1);
+        local_hypre_global_.resize(comm.indexSet().size(), -1);
         assert(A_.N() == comm.indexSet().size());// assume index set is full dune may only have the dofs need to communicate in indexSet.
         // NB iterations in index set is not in order of indexes
         // first find owners
@@ -313,14 +320,16 @@ private:
             // local_global_[ind.local().local()] = ind.global();
         }
         N_ = count - 1;
+        M_ = N_;// not sure needed
         // make order of variables
+        //NB owner first will fail for cprw...
         bool owner_first = true;
         bool visited_copy = false;
         count = 0;
         for(size_t i=0; i < local_hypre_.size(); ++i) {
             if (local_hypre_[i] < 0) {
                 visited_copy = true;
-                assert(hypre_local_[i] == -1);
+                assert(local_hypre_[i] == -1);
             } else {
                 local_hypre_[i] = count;
                 hypre_local_.push_back(i);
@@ -328,7 +337,6 @@ private:
                 count +=1;
             }
         }
-        
         
         assert(owner_first);// this simplify all of values in vectors
         // get sizes of all other ranks
@@ -339,15 +347,26 @@ private:
             }
         }
         collective_comm.barrier(); // need?
-        // collective_comm.sum(&sizes[i], sizes.size());
-        for (int i = 0; i < collective_comm.size(); ++i) {
-            collective_comm.sum(sizes[i]);
-        }
+        collective_comm.sum(sizes.data(), sizes.size());
+        // for (int i = 0; i < collective_comm.size(); ++i) {
+        //     sizes[i] = collective_comm.sum(sizes[i]);
+        // }
         // get offset
         dof_offset_ = 0;
         for (int i = 0; i < collective_comm.rank(); ++i) {
             dof_offset_ += sizes[i];
         }
+
+        for(size_t i=0; i < local_hypre_.size(); ++i) {
+            if (local_hypre_[i] >= 0) {
+                local_hypre_global_[i] = local_hypre_[i] + dof_offset_;
+            }
+        }
+        if(collective_comm.rank() > 0) {
+            assert(dof_offset_>0);
+        }
+        // communicate global numbering of dofs
+        comm.copyOwnerToAll(local_hypre_global_, local_hypre_global_);
 
         // find off set.
         // find nnc
@@ -381,28 +400,46 @@ private:
  */
 
   int localToHypreGlobal(int index){
-    return local_hypre_[index] + dof_offset_;
+    if( local_hypre_[index] < 0) {
+        // This is a ghost dof, return -1
+        assert(local_hypre_[index] == -1);
+    } else{
+        assert((local_hypre_[index] + dof_offset_) == local_hypre_global_[index]);
+    }
+    return local_hypre_global_[index];
   }
   
 void
 setupSparsityPattern()
 {
     // Allocate arrays required by Hypre
-    ncols_.resize(M_);
+    assert(M_ == N_);
+    ncols_.resize(N_);
     rows_.resize(N_);
     cols_.resize(nnz_);
 
     // Setup arrays and fill column indices
     int pos = 0;
+    int rowpos = 0;
     for (auto row = A_.begin(); row != A_.end(); ++row) {
-        const int rowIdx = localToHypreGlobal(row.index());
-        rows_[rowIdx] = rowIdx;
-        ncols_[rowIdx] = row->size();
+        const int rind = row.index();
+        if(local_hypre_[rind] < 0) {
+            // This is a ghost dof, skip it
+            continue;
+        }
+        
+        const int local_rowIdx = local_hypre_[rind];
+        const int global_rowIdx = localToHypreGlobal(rind);
+        assert(local_rowIdx == rowpos);
+        assert(rind == local_rowIdx);// valid for owner first
+        rows_[local_rowIdx] = global_rowIdx;
+        ncols_[local_rowIdx] = row->size();
 
         for (auto col = row->begin(); col != row->end(); ++col) {
             const int colIdx = localToHypreGlobal(col.index());
             cols_[pos++] =  colIdx;
         }
+        rowpos++;
     }
     if (use_gpu_) {
         // Allocate device arrays
@@ -506,6 +543,7 @@ setupSparsityPattern()
 
     // mappings between dune and hypre use int to have negative values as not owned
     std::vector<int> local_hypre_;
+    std::vector<int> local_hypre_global_;
     std::vector<int> hypre_local_;// will only be needed if not owner first
     int dof_offset_;
 
