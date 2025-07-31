@@ -21,6 +21,8 @@
 #ifndef OPM_HYPRE_PRECONDITIONER_HEADER_INCLUDED
 #define OPM_HYPRE_PRECONDITIONER_HEADER_INCLUDED
 
+#define PRINT_HYPRE_MATRIX 0
+
 #include <opm/common/ErrorMacros.hpp>
 #include <opm/common/TimingMacros.hpp>
 #include <opm/simulators/linalg/PreconditionerWithUpdate.hpp>
@@ -37,6 +39,8 @@
 #include <vector>
 #include <numeric>
 #include <type_traits>
+#include <string>
+#include <sstream>
 
 namespace Hypre {
 
@@ -75,10 +79,13 @@ public:
         OPM_TIMEBLOCK(prec_construct);
 
         int size;
+        int rank;
         MPI_Comm_size(MPI_COMM_WORLD, &size);
-        
+        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+        HYPRE_Init();//ialize();
         if (size > 1) {
             assert(size == comm.communicator().size());
+            assert(rank == comm.communicator().rank());
             //OPM_THROW(std::runtime_error, "HyprePreconditioner is currently only implemented for sequential runs");
         }
 
@@ -108,6 +115,7 @@ public:
 
         // Set parameters from property tree with defaults
         HYPRE_BoomerAMGSetPrintLevel(solver_, prm.get<int>("print_level", 0));
+        //HYPRE_BoomerAMGSetPrintLevel(solver_, 10);
         HYPRE_BoomerAMGSetMaxIter(solver_, prm.get<int>("max_iter", 1));
         HYPRE_BoomerAMGSetStrongThreshold(solver_, prm.get<double>("strong_threshold", 0.5));
         HYPRE_BoomerAMGSetAggTruncFactor(solver_, prm.get<double>("agg_trunc_factor", 0.3));
@@ -134,15 +142,15 @@ public:
         setupHypreParallelInfo(comm_);
         //N_ = A_.N();
         //nnz_ = A_.nonzeroes();
-        HYPRE_IJVectorCreate(MPI_COMM_SELF, 0, N_-1, &x_hypre_);
-        HYPRE_IJVectorCreate(MPI_COMM_SELF, 0, N_-1, &b_hypre_);
+        HYPRE_IJVectorCreate(MPI_COMM_WORLD, dof_offset_, dof_offset_ +(N_-1), &x_hypre_);
+        HYPRE_IJVectorCreate(MPI_COMM_WORLD, dof_offset_, dof_offset_ +(N_-1), &b_hypre_);
         HYPRE_IJVectorSetObjectType(x_hypre_, HYPRE_PARCSR);
         HYPRE_IJVectorSetObjectType(b_hypre_, HYPRE_PARCSR);
         HYPRE_IJVectorInitialize(x_hypre_);
         HYPRE_IJVectorInitialize(b_hypre_);
         // Create indices vector
         indices_.resize(N_);
-        std::iota(indices_.begin(), indices_.end(), 0);
+        std::iota(indices_.begin(), indices_.end(), dof_offset_);
         if (use_gpu_) {
             indices_device_ = hypre_CTAlloc(HYPRE_BigInt, N_, HYPRE_MEMORY_DEVICE);
             hypre_TMemcpy(indices_device_, indices_.data(), HYPRE_BigInt, N_, HYPRE_MEMORY_DEVICE, HYPRE_MEMORY_HOST);
@@ -152,8 +160,9 @@ public:
         }
 
         // Create Hypre matrix
-        //HYPRE_IJMatrixCreate(MPI_COMM_SELF, 0, N_-1, 0, N_-1, &A_hypre_);
-        HYPRE_IJMatrixCreate(MPI_COMM_SELF, 
+        //HYPRE_IJMatrixCreate(MPI_COMM_WORLD, 0, N_-1, 0, N_-1, &A_hypre_);
+        //HYPRE_IJMatrixSetPrintLevel (A_hypre_, 10);
+        HYPRE_IJMatrixCreate(MPI_COMM_WORLD, 
                             dof_offset_, dof_offset_ +(N_-1),
                             dof_offset_, dof_offset_ +(N_-1),  
                             &A_hypre_);
@@ -204,7 +213,26 @@ public:
     void update() override {
         OPM_TIMEBLOCK(prec_update);
         copyMatrixToHypre();
+#if  PRINT_HYPRE_MATRIX
+        std::ostringstream oomatrixfile;//("hyprematrix_");
+        oomatrixfile << "hyprematrix_" << comm_.communicator().rank();
+        std::ostringstream oobfile;//("bvector_");
+        oobfile << "bvector_" << comm_.communicator().rank();
+        //std::stringstream oomatrixfile("hyprematrix_");
+        //oomatrixfile << comm_.communicator().rank();
+        // std::string matrixfile("hyprematrix_");
+        // matrixfile += comm_.communicator().size();
+        std::string matrixfile(oomatrixfile.str());
+        std::string bfile(oobfile.str());
+        //HYPRE_BigInt glob_num_rows, glob_num_cols,num_nonzeros;
+        //HYPRE_IJMatrixGetGlobalInfo(A_hypre_, glob_num_rows, glob_num_cols,num_nonzeros);
+        //std::cout <<  "grows, gcols, gnzz: " << glob_num_rows << " "<<  glob_num_cols << " " << num_nonzeros << std::endl;
+        HYPRE_IJMatrixPrint(A_hypre_, "hypre_matrix");//matrixfile.c_str());
+        HYPRE_IJVectorPrint(b_hypre_, "hypre_b");//bfile.c_str());
+        HYPRE_IJVectorPrint(b_hypre_, "hypre_x");
+#endif                
         HYPRE_BoomerAMGSetup(solver_, parcsr_A_, par_b_, par_x_);
+
     }
 
     /**
@@ -258,7 +286,8 @@ public:
      * @return The solver category, which is sequential.
      */
     Dune::SolverCategory::Category category() const override {
-        return Dune::SolverCategory::sequential;
+        return std::is_same_v<Comm, Dune::Amg::SequentialInformation> ?
+           Dune::SolverCategory::sequential : Dune::SolverCategory::overlapping;
     }
 
     /**
@@ -291,6 +320,7 @@ private:
             local_hypre_global_[i] = i;
         }
         dof_offset_ = 0;
+        global_size_ = N_;
     }
   
     template <class Commun>
@@ -319,7 +349,7 @@ private:
             }
             // local_global_[ind.local().local()] = ind.global();
         }
-        N_ = count - 1;
+        N_ = count;
         M_ = N_;// not sure needed
         // make order of variables
         //NB owner first will fail for cprw...
@@ -352,6 +382,10 @@ private:
         //     sizes[i] = collective_comm.sum(sizes[i]);
         // }
         // get offset
+        global_size_ = 0;
+        for (int i = 0; i < collective_comm.size(); ++i) {
+            global_size_ += sizes[i];
+        }
         dof_offset_ = 0;
         for (int i = 0; i < collective_comm.rank(); ++i) {
             dof_offset_ += sizes[i];
@@ -432,11 +466,14 @@ setupSparsityPattern()
         const int global_rowIdx = localToHypreGlobal(rind);
         assert(local_rowIdx == rowpos);
         assert(rind == local_rowIdx);// valid for owner first
+        assert(global_rowIdx>=0);
         rows_[local_rowIdx] = global_rowIdx;
         ncols_[local_rowIdx] = row->size();
 
         for (auto col = row->begin(); col != row->end(); ++col) {
             const int colIdx = localToHypreGlobal(col.index());
+            assert(colIdx>=0);
+            assert(colIdx<global_size_);
             cols_[pos++] =  colIdx;
         }
         rowpos++;
@@ -546,6 +583,7 @@ setupSparsityPattern()
     std::vector<int> local_hypre_global_;
     std::vector<int> hypre_local_;// will only be needed if not owner first
     int dof_offset_;
+    int global_size_;
 
     HYPRE_Solver solver_ = nullptr; //!< The Hypre solver object.
     HYPRE_IJMatrix A_hypre_ = nullptr; //!< The Hypre matrix object.
