@@ -322,6 +322,7 @@ private:
         }
         dof_offset_ = 0;
         global_size_ = N_;
+        owner_first_ = true;
     }
   
     template <class Commun>
@@ -368,8 +369,9 @@ private:
                 count +=1;
             }
         }
-        
-        assert(owner_first);// this simplify all of values in vectors
+        owner_first_ = owner_first;
+        // NB will only work for owner first not first if values are at end and not used.
+        //assert(owner_first);// this simplify all of values in vectors 
         // get sizes of all other ranks
         std::vector<int> sizes(collective_comm.size(), 0);
         for (int i = 0; i < collective_comm.size(); ++i) {
@@ -466,7 +468,9 @@ setupSparsityPattern()
         const int local_rowIdx = local_hypre_[rind];
         const int global_rowIdx = localToHypreGlobal(rind);
         assert(local_rowIdx == rowpos);
-        assert(rind == local_rowIdx);// valid for owner first
+        if(owner_first_){
+          assert(rind == local_rowIdx);// valid for owner first
+        }
         assert(global_rowIdx>=0);
         rows_[local_rowIdx] = global_rowIdx;
         ncols_[local_rowIdx] = row->size();
@@ -503,7 +507,6 @@ setupSparsityPattern()
     void copyMatrixToHypre() {
         OPM_TIMEBLOCK(prec_copy_matrix);
         // Get pointer to matrix values array
-        const HYPRE_Real* values = &(A_[0][0][0][0]);
         // Indexing explanation:
         // A_[0]             - First row of the matrix
         //     [0]           - First block in that row
@@ -511,11 +514,33 @@ setupSparsityPattern()
         //           [0]     - First column within the 1x1 block
 
         if (use_gpu_) {
+            const HYPRE_Real* values = &(A_[0][0][0][0]);
             hypre_TMemcpy(values_device_, values, HYPRE_Real, nnz_, HYPRE_MEMORY_DEVICE, HYPRE_MEMORY_HOST);
             HYPRE_IJMatrixSetValues(A_hypre_, N_, ncols_device_, rows_device_, cols_device_, values_device_);
         }
         else {
+          if(owner_first_){
+            const HYPRE_Real* values = &(A_[0][0][0][0]);
             HYPRE_IJMatrixSetValues(A_hypre_, N_, ncols_.data(), rows_.data(), cols_.data(), values);
+          }else{
+            // need a temp storage since matrix elements which should be copied is not continous in memory
+            std::vector<double> tmp_values(nnz_,0.0);
+            int nnz=0;
+            for (auto row = A_.begin(); row != A_.end(); ++row) {
+              const int rowIdx = row.index();
+              for (auto col = row->begin(); col != row->end(); ++col) {
+                if (!(local_hypre_[rowIdx] < 0) ){
+                  const auto& value = *col;
+                  tmp_values[nnz] = value[0][0];
+                  nnz++;
+                }
+              }
+            }
+            const HYPRE_Real* values = &(tmp_values[0]);
+            HYPRE_IJMatrixSetValues(A_hypre_, N_, ncols_.data(), rows_.data(), cols_.data(), values);
+          }  
+  
+          
         }
 
         HYPRE_IJMatrixAssemble(A_hypre_);
@@ -532,12 +557,11 @@ setupSparsityPattern()
      * @param d The defect vector.
      */
     void copyVectorsToHypre(const X& v, const Y& d) {
-        OPM_TIMEBLOCK(prec_copy_vectors_to_hypre);
-        // need to be owner first to make this valid
-        const HYPRE_Real* x_vals = &(v[0][0]);
-        const HYPRE_Real* b_vals = &(d[0][0]);
-
+        OPM_TIMEBLOCK(prec_copy_vectors_to_hypre);        
         if (use_gpu_) {
+            assert(owner_first_);
+            const HYPRE_Real* x_vals = &(v[0][0]);
+            const HYPRE_Real* b_vals = &(d[0][0]);
             hypre_TMemcpy(x_values_device_, x_vals, HYPRE_Real, N_, HYPRE_MEMORY_DEVICE, HYPRE_MEMORY_HOST);
             hypre_TMemcpy(b_values_device_, b_vals, HYPRE_Real, N_, HYPRE_MEMORY_DEVICE, HYPRE_MEMORY_HOST);
 
@@ -545,8 +569,23 @@ setupSparsityPattern()
             HYPRE_IJVectorSetValues(b_hypre_, N_, indices_device_, b_values_device_);
         }
         else {
+          if(owner_first_){
+            const HYPRE_Real* x_vals = &(v[0][0]);
+            const HYPRE_Real* b_vals = &(d[0][0]);
             HYPRE_IJVectorSetValues(x_hypre_, N_, indices_.data(), x_vals);
             HYPRE_IJVectorSetValues(b_hypre_, N_, indices_.data(), b_vals);
+          }else{
+            std::vector<double> tmp_xvals(hypre_local_.size(),0);
+            std::vector<double> tmp_bvals(hypre_local_.size(),0);
+            for(size_t i=0; i < hypre_local_.size();++i){
+              tmp_xvals[i]=v[hypre_local_[i]][0];
+              tmp_bvals[i]=d[hypre_local_[i]][0];
+            }
+            const HYPRE_Real* x_vals = &(tmp_xvals[0]);
+            const HYPRE_Real* b_vals = &(tmp_bvals[0]);
+            HYPRE_IJVectorSetValues(x_hypre_, N_, indices_.data(), x_vals);
+            HYPRE_IJVectorSetValues(b_hypre_, N_, indices_.data(), b_vals);            
+          }
         }
 
         HYPRE_IJVectorAssemble(x_hypre_);
@@ -565,13 +604,24 @@ setupSparsityPattern()
      */
     void copyVectorFromHypre(X& v) {
         OPM_TIMEBLOCK(prec_copy_vector_from_hypre);
-        HYPRE_Real* values = &(v[0][0]);
+        
         if (use_gpu_) {
+            HYPRE_Real* values = &(v[0][0]);
             HYPRE_IJVectorGetValues(x_hypre_, N_, indices_device_, x_values_device_);
             hypre_TMemcpy(values, x_values_device_, HYPRE_Real, N_, HYPRE_MEMORY_HOST, HYPRE_MEMORY_DEVICE);
         }
         else {
+          if(owner_first_){
+            HYPRE_Real* values = &(v[0][0]);
             HYPRE_IJVectorGetValues(x_hypre_, N_, indices_.data(), values);
+          }else{
+            std::vector<double> tmp_values(N_,0.0);
+            HYPRE_Real* values = &(tmp_values[0]);
+            HYPRE_IJVectorGetValues(x_hypre_, N_, indices_.data(), values);
+            for(size_t i=0; i < hypre_local_.size();++i){
+              v[hypre_local_[i]][0] = tmp_values[i];
+            }
+          }
         }
     }
 
@@ -585,6 +635,7 @@ setupSparsityPattern()
     std::vector<int> hypre_local_;// will only be needed if not owner first
     int dof_offset_;
     int global_size_;
+    bool owner_first_;
 
     HYPRE_Solver solver_ = nullptr; //!< The Hypre solver object.
     HYPRE_IJMatrix A_hypre_ = nullptr; //!< The Hypre matrix object.
