@@ -243,7 +243,8 @@ public:
      * @param v The update vector.
      * @param d The defect vector.
      */
-    void pre(X& /*v*/, Y& /*d*/) override {
+    void pre(X& v, Y& /*d*/) override {
+      comm_.copyOwnerToAll(v,v); // From dune: make dirichlet values consistent ??
     }
 
     /**
@@ -266,8 +267,8 @@ public:
         // Copy result back
         copyVectorFromHypre(v);
         // NB do we need ot sync values to be consiten to unique?
-        //comm_.project(v)
-        // comm_.copyOwnerToAll(v,v);
+        //comm_.project(v);
+        comm_.copyOwnerToAll(v,v);
     }
 
     /**
