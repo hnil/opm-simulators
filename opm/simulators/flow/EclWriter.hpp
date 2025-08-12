@@ -55,6 +55,8 @@
 
 #include <boost/date_time/posix_time/posix_time.hpp>
 
+#include <algorithm>
+#include <cstddef>
 #include <limits>
 #include <map>
 #include <memory>
@@ -135,6 +137,9 @@ class EclWriter : public EclGenericWriter<GetPropType<TypeTag, Properties::Grid>
 
 public:
 
+    using DynamicConns =
+        std::vector<std::pair<std::string, std::vector<std::size_t>>>;
+
     static void registerParameters()
     {
         OutputModule::registerParameters();
@@ -195,6 +200,13 @@ public:
     const EquilGrid& globalGrid() const
     {
         return simulator_.vanguard().equilGrid();
+    }
+
+    void recordNewDynamicWellConns(const DynamicConns& newConns)
+    {
+        if ((this->rank_ == 0) && (this->eclIO_ != nullptr)) {
+            this->eclIO_->recordNewDynamicWellConns(newConns);
+        }
     }
 
     /*!
