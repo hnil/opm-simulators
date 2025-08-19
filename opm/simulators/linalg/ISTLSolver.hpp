@@ -287,7 +287,7 @@ std::unique_ptr<Matrix> blockJacobiAdjacency(const Grid& grid,
                 if (on_io_rank) {
                     OpmLog::error(msg);
                 }
-                OPM_THROW_NOLOG(std::runtime_error, msg);
+                //OPM_THROW_NOLOG(std::runtime_error, msg);
             }
 
             const int interiorCellNum_ = detail::numMatrixRowsToUseInSolver(simulator_.vanguard().grid(), true);

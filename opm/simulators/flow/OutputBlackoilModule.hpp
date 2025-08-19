@@ -166,7 +166,7 @@ public:
             if (collectOnIORank.isIORank()) {
                 OpmLog::error(msg);
             }
-            OPM_THROW_NOLOG(std::runtime_error, msg);
+            //OPM_THROW_NOLOG(std::runtime_error, msg);
         }
 
         if (smryCfg.match("[FB]PP[OGW]") || smryCfg.match("RPP[OGW]*")) {
