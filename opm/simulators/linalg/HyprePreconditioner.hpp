@@ -151,6 +151,8 @@ public:
         HYPRE_BoomerAMGSetMeasureType(solver_, prm.get<int>("measure_type", 1)); // local
         HYPRE_BoomerAMGSetCoarsenType(solver_, prm.get<int>("coarsen_type", 6)); // Falgout
         HYPRE_BoomerAMGSetCycleType(solver_, prm.get<int>("cycle_type", 1)); // V-cycle
+        //HYPRE_ParCSRHybridSetNumFunctions(solver_, prm.get<int>("num_functions", 1));
+        //HYPRE_ParCSRHybridSetNodal(solver_, prm.get<int>("nodal", 0));
         //HYPRE_BoomerAMGSetSpGemmUseVendor(solver_, false); // hypre SpGE
         if (use_gpu_) {
             HYPRE_BoomerAMGSetRelaxType(solver_, 16);
