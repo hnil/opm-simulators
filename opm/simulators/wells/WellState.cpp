@@ -1288,6 +1288,11 @@ reportConnectionFracture(const std::size_t well_index,
         fracture.flux = data.flux[i];
         fracture.height = data.height[i];
         fracture.length = data.length[i];
+        fracture.WI = data.WI[i];
+        fracture.volume = data.volume[i];
+        fracture.filter_volume = data.filter_volume[i];
+        fracture.avg_width = data.avg_width[i];
+        fracture.avg_filter_width = data.avg_filter_width[i];        
         
     }
 }
