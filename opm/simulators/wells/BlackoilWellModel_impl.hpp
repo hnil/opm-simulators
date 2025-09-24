@@ -652,6 +652,38 @@ namespace Opm {
         }
 
         if (Indices::waterEnabled) {
+            //  update need quantities from simulator
+            //  need to know fraction of flow in fracture and perforation
+            //  which depend on dynamic well index
+            auto& well_state = this->wellState();
+            for (auto& well : this->well_container_) {
+                if (well->isInjector()) {
+                    int index_of_well = well->indexOfWell();
+                    auto& ws = well_state.well(index_of_well);
+                    auto& perf_data = ws.perf_data;
+                    const auto nperf = well->numLocalPerfs();
+                    auto& filtrate_data = perf_data.filtrate_data;
+                    const auto& wellstate_nupcol
+                            = simulator_.problem().wellModel().nupcolWellState().well(index_of_well);
+                    const auto& well_indices_fracture = well->wellIndexFracture();
+                    assert(well_indices_fracture.size() == nperf);
+                    for (int perf = 0; perf < nperf; ++perf) {
+                        const auto cell_idx = well->perforationData()[perf].cell_index;
+                        const auto& intQuants = simulator_.model().intensiveQuantities(cell_idx, /*timeIdx=*/0);                        
+                        Scalar trans_mult = simulator_.problem().template wellTransMultiplier<Scalar>(intQuants,  cell_idx);
+                        const auto& effective_well_index_phase = well->wellIndex(perf, intQuants, trans_mult, wellstate_nupcol);
+                        Scalar effective_well_index = effective_well_index_phase[FluidSystem::waterPhaseIdx];
+                        // NB we should maybe store effective_well_index;
+                        Scalar well_index_fracture = well_indices_fracture[perf];
+                        assert(effective_well_index >= well_index_fracture);
+                        const auto well_fracture_factor
+                            = (effective_well_index - well_index_fracture) / effective_well_index;
+                        // NB! this change the well state for this value
+                        filtrate_data.flow_factor[perf] = well_fracture_factor;
+                    }
+                }
+            }
+
             this->updateFiltrationModelsPostStep(dt, FluidSystem::waterPhaseIdx, local_deferredLogger);
         }
 

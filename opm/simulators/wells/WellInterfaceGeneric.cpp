@@ -105,6 +105,7 @@ WellInterfaceGeneric(const Well& well,
     {
         well_cells_.resize(number_of_local_perforations_);
         well_index_.resize(number_of_local_perforations_);
+        well_index_fracture_.resize(number_of_local_perforations_,0.0);//initialize to zero can be changed by fracture code
         saturation_table_number_.resize(number_of_local_perforations_);
         int perf = 0;
         for (const auto& pd : perf_data) {
@@ -412,6 +413,8 @@ closeCompletions(const WellTestState& wellTestState)
         if (connection.state() == Connection::State::OPEN) {
             if (wellTestState.completion_is_closed(name(), connection.complnum())) {
                 this->well_index_[perfIdx] = 0.0;
+                // NB: also close fracture connection need test
+                this->well_index_fracture_[perfIdx] = 0.0;
             }
             perfIdx++;
         }
@@ -690,14 +693,17 @@ void WellInterfaceGeneric<Scalar, IndexTraits>::resetWellOperability()
 }
 
 template<typename Scalar, typename IndexTraits>
-void WellInterfaceGeneric<Scalar, IndexTraits>::addPerforations(const std::vector<RuntimePerforation>& perfs)
+void WellInterfaceGeneric<Scalar, IndexTraits>::addFracturePerforations(const std::vector<RuntimePerforation>& perfs)
 {
     for (const auto& perf : perfs) {
         auto it = std::find(well_cells_.begin(), well_cells_.end(), perf.cell);
         if (it != this->well_cells_.end()) {
             // If perforation to cell already exists, just add contribution.
             const auto ind = std::distance(this->well_cells_.begin(), it);
-            this->well_index_[ind] += static_cast<Scalar>(perf.ctf);
+            //this->well_index_[ind] += static_cast<Scalar>(perf.ctf);
+            // assume uniqe well_fracture index
+            assert(this->well_index_fracture_[ind] == 0.0);
+            this->well_index_fracture_[ind] += static_cast<Scalar>(perf.ctf);
         }
         else {
             std::cout << "Perforation to cell " << perf.cell

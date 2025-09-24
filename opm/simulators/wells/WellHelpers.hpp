@@ -25,12 +25,14 @@
 
 #include <dune/istl/bcrsmatrix.hh>
 #include <dune/common/dynmatrix.hh>
-
+#include <opm/input/eclipse/Schedule/Well/WellEnums.hpp>
 namespace Opm {
 
 template<class Scalar> class ParallelWellInfo;
 struct WellProductionControls;
 struct WellInjectionControls;
+  //class WellProducerCMode;
+  //class WellInjectorCMode;  
 enum class WellProducerCMode : std::uint16_t;
 enum class WellInjectorCMode : std::uint16_t;
 

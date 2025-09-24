@@ -1722,6 +1722,24 @@ namespace Opm
         }
         auto wi = std::vector<Scalar>
             (this->num_conservation_quantities_, this->well_index_[perf] * trans_mult);
+        // formation multiplicator assume this should not be multiplied with d factor contributions
+        int local_perf_index = perf;
+        if (this->isInjector() && !this->inj_fc_multiplier_.empty()) {
+            const auto perf_ecl_index = this->perforationData()[local_perf_index].ecl_index;
+            const auto& connections = this->well_ecl_.getConnections();
+            const auto& connection = connections[perf_ecl_index];
+            if (connection.filterCakeActive()) {
+                std::transform(wi.begin(), wi.end(), wi.begin(),
+                               [mult = this->inj_fc_multiplier_[local_perf_index] ](const auto val)
+                               { return val * mult; });
+            }
+        }
+        
+        std::transform(wi.begin(), wi.end(), wi.begin(),
+                               [frac_wi = this->well_index_fracture_[local_perf_index] ](const auto val)
+                               { return val + frac_wi; });
+        
+            
 
         if constexpr (! Indices::gasEnabled) {
             return wi;
@@ -1782,7 +1800,8 @@ namespace Opm
                 consistent_Q = xp2;
             }
         }
-        wi[gas_comp_idx]  = 1.0/(1.0/(trans_mult * this->well_index_[perf]) + (consistent_Q/2 * d / scaling));
+        // NB add filtercake modifiction also consistent with fracture
+        wi[gas_comp_idx] =  1.0/(1.0/(trans_mult * this->well_index_[perf]) + (consistent_Q/2 * d / scaling)); 
 
         return wi;
     }
@@ -1957,17 +1976,17 @@ namespace Opm
                 OPM_DEFLOG_THROW(std::runtime_error, "individual mobility for wells does not work in combination with solvent", deferred_logger);
             }
         }
-
-        if (this->isInjector() && !this->inj_fc_multiplier_.empty()) {
-            const auto perf_ecl_index = this->perforationData()[local_perf_index].ecl_index;
-            const auto& connections = this->well_ecl_.getConnections();
-            const auto& connection = connections[perf_ecl_index];
-            if (connection.filterCakeActive()) {
-                std::transform(mob.begin(), mob.end(), mob.begin(),
-                               [mult = this->inj_fc_multiplier_[local_perf_index] ](const auto val)
-                               { return val * mult; });
-            }
-        }
+        // formation dammange contribution moved to wellIndex()
+        // if (this->isInjector() && !this->inj_fc_multiplier_.empty()) {
+        //     const auto perf_ecl_index = this->perforationData()[local_perf_index].ecl_index;
+        //     const auto& connections = this->well_ecl_.getConnections();
+        //     const auto& connection = connections[perf_ecl_index];
+        //     if (connection.filterCakeActive()) {
+        //         std::transform(mob.begin(), mob.end(), mob.begin(),
+        //                        [mult = this->inj_fc_multiplier_[local_perf_index] ](const auto val)
+        //                        { return val * mult; });
+        //     }
+        // }
     }
 
 

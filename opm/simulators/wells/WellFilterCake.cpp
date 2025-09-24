@@ -146,11 +146,26 @@ updateSkinFactorsAndMultipliers(const WellInterfaceGeneric<Scalar, IndexTraits>&
         if (!connection.filterCakeActive())
             continue;
 
+         
         // not considering the production water
-        const Scalar water_rates = std::max(Scalar{0.}, connection_rates[perf * np + water_index]);
-        const Scalar filtrate_rate = water_rates * conc;
-        const Scalar filtrate_particle_volume = filtrate_rate * dt;
         auto& filtrate_data = perf_data.filtrate_data;
+        const Scalar water_rates = std::max(Scalar{0.}, connection_rates[perf * np + water_index]);
+        Scalar filtrate_rate = water_rates * conc;
+        // exclude flux in fracture
+        {
+            Scalar well_fracture_factor = filtrate_data.flow_factor[perf];
+            if(well_fracture_factor<0){
+                std::cout << "Negative fracture factor?" << std::endl;
+            }
+            if(well_fracture_factor>1){
+                std::cout << "Fracture factor?" << std::endl;
+            }
+            filtrate_data.fracture_rate[perf] = water_rates*(1-well_fracture_factor);
+            filtrate_rate *= well_fracture_factor;
+        }
+
+        const Scalar filtrate_particle_volume = filtrate_rate * dt;
+        
         filtrate_data.rates[perf] = filtrate_rate;
         filtrate_data.total[perf] += filtrate_particle_volume;
 
@@ -167,6 +182,7 @@ updateSkinFactorsAndMultipliers(const WellInterfaceGeneric<Scalar, IndexTraits>&
         filtrate_data.perm[perf] = perm;
         filtrate_data.radius[perf] = connection.getFilterCakeRadius();
         filtrate_data.area_of_flow[perf] = connection.getFilterCakeArea();
+        
 
         Scalar delta_skin_factor = 0.;
         Scalar thickness = 0.;
