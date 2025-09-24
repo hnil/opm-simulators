@@ -702,8 +702,9 @@ void WellInterfaceGeneric<Scalar, IndexTraits>::addFracturePerforations(const st
             const auto ind = std::distance(this->well_cells_.begin(), it);
             //this->well_index_[ind] += static_cast<Scalar>(perf.ctf);
             // assume uniqe well_fracture index
-            assert(this->well_index_fracture_[ind] == 0.0);
-            this->well_index_fracture_[ind] += static_cast<Scalar>(perf.ctf);
+            //assert(this->well_index_fracture_[ind] == 0.0);
+            //NB assume onely one fracture cross a cell
+            this->well_index_fracture_[ind] = static_cast<Scalar>(perf.ctf);
         }
         else {
             std::cout << "Perforation to cell " << perf.cell
