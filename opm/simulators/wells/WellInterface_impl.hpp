@@ -1734,9 +1734,12 @@ namespace Opm
                                { return val * mult; });
             }
         }
-        
+
+        auto perf_pressure = ws.perf_data.pressure[local_perf_index];
+        // use intepolated well index
+        auto frac_wellindex = this->well_index_fracture_[local_perf_index].wellIndex(perf_pressure);
         std::transform(wi.begin(), wi.end(), wi.begin(),
-                               [frac_wi = this->well_index_fracture_[local_perf_index] ](const auto val)
+                               [frac_wi = frac_wellindex ](const auto val)
                                { return val + frac_wi; });
         
             

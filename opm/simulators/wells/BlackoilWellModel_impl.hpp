@@ -674,7 +674,9 @@ namespace Opm {
                         const auto& effective_well_index_phase = well->wellIndex(perf, intQuants, trans_mult, wellstate_nupcol);
                         Scalar effective_well_index = effective_well_index_phase[FluidSystem::waterPhaseIdx];
                         // NB we should maybe store effective_well_index;
-                        Scalar well_index_fracture = well_indices_fracture[perf];
+                        // not sure why nupcol is used here ..
+                        Scalar perf_pressure = wellstate_nupcol.perf_data.pressure[perf];
+                        Scalar well_index_fracture = well_indices_fracture[perf].wellIndex(perf_pressure);
                         assert(effective_well_index >= well_index_fracture);
                         const auto well_fracture_factor
                             = (effective_well_index - well_index_fracture) / effective_well_index;

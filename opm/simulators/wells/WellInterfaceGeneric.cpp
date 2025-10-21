@@ -105,7 +105,9 @@ WellInterfaceGeneric(const Well& well,
     {
         well_cells_.resize(number_of_local_perforations_);
         well_index_.resize(number_of_local_perforations_);
-        well_index_fracture_.resize(number_of_local_perforations_,0.0);//initialize to zero can be changed by fracture code
+        WellIndexFracture wfzero;
+        wfzero.ctf = 0.0;
+        well_index_fracture_.resize(number_of_local_perforations_,wfzero);//initialize to zero can be changed by fracture code
         saturation_table_number_.resize(number_of_local_perforations_);
         int perf = 0;
         for (const auto& pd : perf_data) {
@@ -414,7 +416,8 @@ closeCompletions(const WellTestState& wellTestState)
             if (wellTestState.completion_is_closed(name(), connection.complnum())) {
                 this->well_index_[perfIdx] = 0.0;
                 // NB: also close fracture connection need test
-                this->well_index_fracture_[perfIdx] = 0.0;
+                this->well_index_fracture_[perfIdx].ctf = 0.0;
+                this->well_index_fracture_[perfIdx].ref_ctf = 0.0;
             }
             perfIdx++;
         }
@@ -704,7 +707,12 @@ void WellInterfaceGeneric<Scalar, IndexTraits>::addFracturePerforations(const st
             // assume uniqe well_fracture index
             //assert(this->well_index_fracture_[ind] == 0.0);
             //NB assume onely one fracture cross a cell
-            this->well_index_fracture_[ind] = static_cast<Scalar>(perf.ctf);
+            this->well_index_fracture_[ind].ctf = perf.ctf;
+            this->well_index_fracture_[ind].pressure = perf.pressure;
+            this->well_index_fracture_[ind].ref_pressure = perf.ref_pressure;
+            this->well_index_fracture_[ind].ref_ctf = perf.ref_ctf;
+            //this->well_index_fracture_pressure_[ind] = static_cast<Scalar>(perf.pressure);
+
         }
         else {
             std::cout << "Perforation to cell " << perf.cell
@@ -964,7 +972,23 @@ prepareForPotentialCalculations(const SummaryState& summary_state,
         } 
     }    
 }
+template<typename T>
+T WellIndexFracture::wellIndex(T p) const{
+        // linear interpolation between (pressure,ctf) and (ref_pressure, ref_ctf)
+        return ctf;
+        double min =  std::min(ctf, ref_ctf);
+        double max =  std::min(ctf, ref_ctf);
+        if(std::abs(ref_pressure - pressure) < 1e-10){
+            return ctf;
+        }
+        T val = (ref_ctf-ctf)*(p - pressure)/(ref_pressure-pressure) + ctf;
+        val = std::max(val, min);
+        val = std::min(val, max);
+        return val;
+        //
+}
 
+template double WellIndexFracture::wellIndex(double p) const;
 
 template class WellInterfaceGeneric<double, BlackOilDefaultFluidSystemIndices>;
 
