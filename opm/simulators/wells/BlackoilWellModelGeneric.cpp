@@ -458,8 +458,11 @@ initializeWellPerfData(const int report_step)
         std::accumulate(allFound.begin(), allFound.end(), 0);
 
     if (numAllFound != static_cast<int>(allFound.size())) {
-        OPM_THROW(std::runtime_error,
-                  fmt::format("Not all connections found for "
+        // OPM_THROW(std::runtime_error,
+        //           fmt::format("Not all connections found for "
+        //                       "all {} wells at report step {}",
+        //                       allFound.size(), report_step));
+        OpmLog::info(fmt::format("Not all connections found for "
                               "all {} wells at report step {}",
                               allFound.size(), report_step));
     }

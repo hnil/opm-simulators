@@ -1862,7 +1862,7 @@ namespace Opm
     wellIndex(const int                  perf,
               const IntensiveQuantities& intQuants,
               const Scalar               trans_mult,
-              const SingleWellStateType& ws) const
+              const SingleWellStateType& ws,const bool with_fracture) const
     {
         OPM_TIMEFUNCTION_LOCAL(Subsystem::Wells);
 
@@ -1892,16 +1892,15 @@ namespace Opm
                                { return val * mult; });
             }
         }
+        if (with_fracture) {
+            const auto perf_pressure = ws.perf_data.pressure[local_perf_index];
+            const auto frac_wellindex = this->well_index_fracture_[local_perf_index]
+                .wellIndex(perf_pressure);
 
-        // use intepolated well index
-        const auto perf_pressure = ws.perf_data.pressure[local_perf_index];
-        const auto frac_wellindex = this->well_index_fracture_[local_perf_index]
-            .wellIndex(perf_pressure);
-
-        std::transform(wi.begin(), wi.end(), wi.begin(),
-                       [frac_wi = frac_wellindex ](const auto val)
-                       { return val + frac_wi; });
-
+            std::transform(wi.begin(), wi.end(), wi.begin(),
+                           [frac_wi = frac_wellindex ](const auto val)
+                           { return val + frac_wi; });
+        }
         if constexpr (! Indices::gasEnabled) {
             return wi;
         }

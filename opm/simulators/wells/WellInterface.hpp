@@ -356,7 +356,7 @@ public:
     std::vector<Scalar> wellIndex(const int perf,
                                   const IntensiveQuantities& intQuants,
                                   const Scalar trans_mult,
-                                  const SingleWellStateType& ws) const;
+                                  const SingleWellStateType& ws,const bool with_fracture = true) const;
 
     void updateConnectionDFactor(const Simulator& simulator,
                                  SingleWellStateType& ws) const;
