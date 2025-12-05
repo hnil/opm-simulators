@@ -667,14 +667,15 @@ namespace Opm {
 
                 const auto& well_indices_fracture = well->wellIndexFracture();
 
-                auto& filtrate_data = well_state.well(well->indexOfWell())
-                    .perf_data.filtrate_data;
+                auto& perf_data = well_state.well(well->indexOfWell()).perf_data;
+
+                auto& filtrate_data = perf_data.filtrate_data;
+                auto& fracture_data = perf_data.fracture_data;
 
                 const auto nperf = well->numLocalPerfs();
 
                 assert(well_indices_fracture.size() == nperf);
                 double total_flow_fracture = 0.0;
-                const auto& perf_data = well_state.well(well->indexOfWell()).perf_data;
                 for (auto perf = 0*nperf; perf < nperf; ++perf) {
                     const auto cell_idx = well->perforationData()[perf].cell_index;
                     const auto& intQuants = this->simulator_.model()
@@ -693,6 +694,8 @@ namespace Opm {
                     const Scalar well_index_fracture = well_indices_fracture[perf]
                         .wellIndex(perf_pressure);
 
+                    auto& fracture_rate = fracture_data.water_rate[perf];
+
                     assert(effective_well_index >= well_index_fracture);
                     if(effective_well_index > 0){
                         // NB! this change the well state for this value
@@ -701,9 +704,11 @@ namespace Opm {
                         double frac_fac = 1.0 - con_fac;    
                         filtrate_data.flow_factor[perf] = con_fac;
                         int np = well_state.numPhases();
-                        total_flow_fracture += frac_fac * perf_data.phase_rates[perf*np + FluidSystem::waterPhaseIdx];
+                        fracture_rate = frac_fac * perf_data.phase_rates[perf*np + FluidSystem::waterPhaseIdx];
+                        total_flow_fracture += fracture_rate;
                     }else{
                         filtrate_data.flow_factor[perf] = 0.0;
+                        fracture_rate = 0.0;
                     }
                 }
                 auto& single_wellstate = well_state.well(well->indexOfWell());
