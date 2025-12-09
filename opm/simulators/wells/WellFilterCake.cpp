@@ -140,17 +140,31 @@ updateSkinFactorsAndMultipliers(const WellInterfaceGeneric<Scalar, IndexTraits>&
     const auto conc = ws.filtrate_conc;
     const std::size_t np = well_state.numPhases();
 
+    // Compute xflow-factor
+    Scalar xfact = 1.0;
+    Scalar qw_sum = 0.0;
+    Scalar qwpos_sum = 0.0;
+    for (int perf = 0; perf < nperf; ++perf) {
+        const auto crate = connection_rates[perf * np + water_index];
+        qwpos_sum += std::max(Scalar{0.}, crate);
+        qw_sum += crate;
+        if (qwpos_sum > qw_sum && qwpos_sum > 1.0e-12) {
+            xfact = qw_sum / qwpos_sum;
+        }
+    }
+
     for (int perf = 0; perf < nperf; ++perf) {
         const auto perf_ecl_index = well.perforationData()[perf].ecl_index;
         const auto& connection = connections[perf_ecl_index];
         if (!connection.filterCakeActive())
             continue;
 
-        // not considering the production water
-        auto& filtrate_data = perf_data.filtrate_data;
-        const Scalar water_rates = std::max(Scalar{0.}, connection_rates[perf * np + water_index]);
-        Scalar filtrate_rate = water_rates * conc;
 
+        // Use xflow-factor to ensure mass balance of injected filtrate
+        const Scalar water_rates = std::max(Scalar{0.}, connection_rates[perf * np + water_index]);
+        Scalar filtrate_rate = water_rates * conc * xfact;
+        auto& filtrate_data = perf_data.filtrate_data;
+ 
         // exclude flux in fracture
         {
             Scalar well_fracture_factor = filtrate_data.flow_factor[perf];
@@ -161,7 +175,7 @@ updateSkinFactorsAndMultipliers(const WellInterfaceGeneric<Scalar, IndexTraits>&
                 std::cout << "Fracture factor?" << std::endl;
             }
 
-            filtrate_data.fracture_rate[perf] = conc*water_rates*(1-well_fracture_factor);
+            filtrate_data.fracture_rate[perf] = filtrate_rate*(1-well_fracture_factor);
             filtrate_rate *= well_fracture_factor;
         }
 
