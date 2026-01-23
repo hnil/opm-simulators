@@ -80,6 +80,18 @@ namespace Opm
                     : Parent(simulator)
                 {
                 }
+                void prepare(const Matrix& M, Vector& b) override
+                {               
+                        OPM_TIMEBLOCK(istlSolverPrepare);
+                        try {
+                        Parent::initPrepare(M,b);
+                        const auto& prm = this->prm_[this->activeSolverNum_];
+                        bool solve_system = prm.get("use_system_solver", true);
+                        if(!solve_system){
+                                Parent::prepareFlexibleSolver();
+                        }        
+                        } OPM_CATCH_AND_RETHROW_AS_CRITICAL_ERROR("This is likely due to a faulty linear solver JSON specification. Check for errors related to missing nodes.");
+                }
                 bool solve(Vector &x) override
                 {
                         OPM_TIMEBLOCK(ISTLSolverExperiment_solve);
@@ -200,6 +212,7 @@ namespace Opm
                 }
 
         private:
+                std::unique_ptr<Dune::InverseOperator<SystemVector, SystemVector>> systemsolver_;
         };
 
 }
