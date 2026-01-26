@@ -24,6 +24,17 @@ namespace Opm
                     Dune::MultiTypeBlockVector<WRMatrix, WWMatrix>>;
                 using SystemVector = Dune::MultiTypeBlockVector<RVector, WVector>;
                 using Comm = Dune::OwnerOverlapCopyCommunication<int, int>;
+
+                void getSystemSolver(std::unique_ptr<Dune::InverseOperator<SystemVector, SystemVector>>& systemsolver,
+                        std::unique_ptr<Dune::InverseOperator<SystemVector, SystemVector>>& syspreconditioner,
+                        std::unique_ptr< Dune::AssembledLinearOperator<SystemMatrix, SystemVector, SystemVector>>& system_operator,
+                        std::shared_ptr< Dune::ScalarProduct<SystemVector>>& scalarproduct,
+                        const SystemComm& systemcomm,
+                        const SystemMatrix &S,
+                        const std::function<RVector()> &weightCalculator,
+                        int pressureIndex, const Opm::PropertyTree &prm);
+                void getSystemSolver(Dune::InverseOperator<SystemVector, SystemVector> &systemsolver,
+                        const SystemMatrix &S,
                 Dune::InverseOperatorResult solveSystem(const SystemMatrix &S, SystemVector &x, const SystemVector &b,  
                         const std::function<RVector()> &weightCalculator,
                         int pressureIndex, const Opm::PropertyTree &prm, const Comm &comm);
@@ -56,6 +67,31 @@ namespace Opm
 
                 constexpr static std::size_t pressureIndex = GetPropType<TypeTag, Properties::Indices>::pressureSwitchIdx;
 
+                using SystemComm = Dune::MultiCommunicator<const Dune::OwnerOverlapCopyCommunication<int, int>&,const WellComm&>;
+                const int numResDofs = 3;
+                const int numWellDofs = 4;
+                // using Indices = GetPropType<TypeTag, Properties::Indices>;
+                // static constexpr int numResDofs = Indices::numEq;
+                // static constexpr int numWellDofs = numWellDofs + 1;
+                //  Define matrix and vector types
+                // using RRMatrix = Dune::BCRSMatrix<Dune::FieldMatrix<double, numResDofs, numResDofs>>;
+                using RRMatrix = Dune::BCRSMatrix<Opm::MatrixBlock<double, numResDofs, numResDofs>>;
+                // using RWtype = Dune::FieldMatrix<double, numResDofs, numWellDofs>;
+                using RWMatrix
+                    = Dune::BCRSMatrix<Dune::FieldMatrix<double, numResDofs, numWellDofs>>;
+                using WRMatrix
+                    = Dune::BCRSMatrix<Dune::FieldMatrix<double, numWellDofs, numResDofs>>;
+                using WWMatrix
+                    = Dune::BCRSMatrix<Dune::FieldMatrix<double, numWellDofs, numWellDofs>>;
+                using RVector = Dune::BlockVector<Dune::FieldVector<double, numResDofs>>;
+                using WVector = Dune::BlockVector<Dune::FieldVector<double, numWellDofs>>;
+                // Define system matrix and vector types
+                using SystemMatrix
+                    = Dune::MultiTypeBlockMatrix<Dune::MultiTypeBlockVector<RRMatrix, RWMatrix>,
+                                                 Dune::MultiTypeBlockVector<WRMatrix, WWMatrix>>;
+                using SystemVector = Dune::MultiTypeBlockVector<RVector, WVector>;
+
+
                 enum
                 {
                         enablePolymerMolarWeight = getPropValue<TypeTag, Properties::EnablePolymerMW>()
@@ -86,20 +122,21 @@ namespace Opm
                         try {
                         Parent::initPrepare(M,b);
                         const auto& prm = this->prm_[this->activeSolverNum_];
-                        bool solve_system = prm.get("use_system_solver", true);
+                        bool solve_system = prm.get("use_system_solver", false);
                         if(!solve_system){
                                 Parent::prepareFlexibleSolver();
+                        }else{
+                             systemsolver_ = nullptr; // reset system solver
+                             systemsolver_   
                         }        
                         } OPM_CATCH_AND_RETHROW_AS_CRITICAL_ERROR("This is likely due to a faulty linear solver JSON specification. Check for errors related to missing nodes.");
+                        
                 }
-                bool solve(Vector &x) override
+                void setupSystemSolver()
                 {
                         OPM_TIMEBLOCK(ISTLSolverExperiment_solve);
                         // Here we could add experimental features before or after calling the base class solve.
-                        const auto& prm = this->prm_[this->activeSolverNum_];
-                        bool solve_system = prm.get("use_system_solver", true);
-                        if (solve_system)
-                        {
+                        
                                 
                                 // get reservoir matrix
                                 const int numResDofs = 3;
@@ -125,7 +162,7 @@ namespace Opm
                                 // Define helper constants for accessing MultiTypeBlockMatrix elements
                                 constexpr auto _0 = Dune::Indices::_0;
                                 constexpr auto _1 = Dune::Indices::_1;
-                                RRMatrix A_copy = *Parent::matrix_;
+                                A_copy_ = *Parent::matrix_;
                                 Opm::WellMatrixMerger merger(A_copy.N());
                                 WRMatrix B1;
                                 RWMatrix C1;
@@ -154,23 +191,15 @@ namespace Opm
                                 const auto &mergedC = merger.getMergedC();
                                 const auto &mergedD = merger.getMergedD();
                                 
-                                RWMatrix C_copy = mergedC;
-                                WRMatrix B_copy = mergedB;
-                                WWMatrix D_copy = mergedD;
-                                SystemMatrix S;
-                                S[_0][_0] = A_copy;
-                                S[_0][_1] = C_copy;
-                                S[_1][_0] = B_copy;
-                                S[_1][_1] = D_copy;
+                                C_copy_ = mergedC;
+                                B_copy_ = mergedB;
+                                D_copy_ = mergedD;
+                                S_[_0][_0] = A_copy;
+                                S_[_0][_1] = C_copy;
+                                S_[_1][_0] = B_copy;
+                                S_[_1][_1] = D_copy;
 
-                                RVector r_res = *Parent::rhs_;
-                                RVector x_r(A_copy.N());
-                                x_r = 0.0;
-                                WVector x_w(D_copy.N());
-                                x_w = 0.0;
-                                w_res = x_w;
-                                // set well residual
-                                size_t well_dof=0;
+                                //not used now
                                 for (size_t i = 0; i < residual.size(); ++i)
                                 {
                                         for (size_t j = 0; j < residual[i].size(); ++j)
@@ -180,11 +209,9 @@ namespace Opm
                                         }
                                 }
                                 //std::cout << "Well residual norm: " << w_res.two_norm2() << std::endl;
-                                w_res = 0.0;// this should be applied to reservoir at this point
-                                SystemVector x_s{x_r, x_w};
-                                SystemVector r_s{r_res, w_res};
+                                //w_res = 0.0;// this should be applied to reservoir at this point
                                 const auto& prm_system = prm.get_child("system_solver");
-                                std::function<RVector()> weightCalculator = this->getWeightsCalculator(prm_system.get_child("preconditioner.reservoir_solver"), this->getMatrix(), pressureIndex);
+                                weightCalculator_ = this->getWeightsCalculator(prm_system.get_child("preconditioner.reservoir_solver"), this->getMatrix(), pressureIndex);
                                 #if HAVE_MPI
                                         using Comm = Dune::OwnerOverlapCopyCommunication<int, int>;
                                 #endif
@@ -200,9 +227,23 @@ namespace Opm
                                    const auto result = SystemSolver::solveSystem(S, x_s, r_s, weightCalculator, pressureIndex, prm_system);        // Serial run
                                    this->iterations_ = result.iterations;
                                 }
-                                
-                                x = x_s[_0];
-                                
+                }                
+        bool solve(Vector &x) override{
+                        const auto& prm = this->prm_[this->activeSolverNum_];
+                        bool solve_system = prm.get("use_system_solver", false);
+                        if (solve_system)
+                        {
+                                RVector x_r(A_copy_.N());
+                                x_r = 0.0;
+                                WVector x_w(D_copy_.N());
+                                x_w = 0.0;
+                                RVector r_res = *Parent::rhs_;
+                                WVector w_res(D_copy.N());
+                                w_res = x_w;
+                                SystemVector x_s{x_r, x_w};
+                                SystemVector r_s{r_res, w_res};
+                                systemsolver_->apply(x_s, r_s);      
+                                x = x_s[_0];         
                         }else
                         {
                                 // Call the base class solve method
@@ -212,7 +253,19 @@ namespace Opm
                 }
 
         private:
+                RRMatrix A_copy_;
+                RWMatrix C_copy_;
+                WRMatrix B_copy_;
+                WWMatrix D_copy_;
+                SystemMatrix S_;
+                std::function<RVector()> weightCalculator_;
                 std::unique_ptr<Dune::InverseOperator<SystemVector, SystemVector>> systemsolver_;
+                WellComm seqComm_;
+                SystemComm systemComm_;//(comm,seqComm);
+                //std::shared_ptr<Dune::Preconditioner<SystemVector, SystemVector>> precond_;
+                std::shared_ptr<Dune::Preconditioner<SystemVector, SystemVector>> sysprecond_;//, SystemComm, SystemPreconditionerParallel> sysprecond_;//(precond, systemComm);
+                std::shared_ptr< Dune::ScalarProduct<SystemVector> > scalarproduct_;
+                std::shared_ptr< Dune::AssembledLinearOperator<SystemMatrix, SystemVector, SystemVector> > system_operator_;
         };
 
 }
