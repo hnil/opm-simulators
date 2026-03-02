@@ -68,7 +68,7 @@ jobs:
           START_TIME=$(date +%s)
           docker run --rm \
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
-            bash -c "ctest ${CTEST_ARGS} 2>&1; echo \"EXIT_CODE=\$?\""
+            bash -c "ctest ${CTEST_ARGS} 2>&1" || TEST_FAILED=1
           END_TIME=$(date +%s)
           ELAPSED=$((END_TIME - START_TIME))
 
@@ -76,6 +76,11 @@ jobs:
           echo "========================================"
           echo "Total wall-clock time: ${ELAPSED}s ($((ELAPSED/60))m $((ELAPSED%60))s)"
           echo "========================================"
+
+          if [ "${TEST_FAILED}" = "1" ]; then
+            echo "Some tests failed."
+            exit 1
+          fi
 
       - name: List all available tests
         if: always()
