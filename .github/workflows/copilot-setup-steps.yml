@@ -1,0 +1,11 @@
+name: "Copilot Setup Steps"
+on: copilot_setup_steps
+
+jobs:
+  copilot-setup-steps:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install OPM build dependencies
+        uses: ./.github/actions/install-opm-dependencies
