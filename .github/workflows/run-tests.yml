@@ -1,0 +1,85 @@
+name: Run OPM Flow Tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_category:
+        description: 'Test category to run'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - unit
+          - regression
+          - parallel
+          - restart
+      parallel_jobs:
+        description: 'Number of parallel CTest jobs'
+        required: false
+        default: '4'
+      opm_version:
+        description: 'OPM version (branch or tag for dependencies)'
+        required: false
+        default: 'master'
+  schedule:
+    - cron: '0 2 * * 1'  # Weekly on Monday at 02:00 UTC
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/testing
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  run-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull test image
+        run: docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+
+      - name: Run tests with timing
+        run: |
+          CATEGORY="${{ inputs.test_category || 'all' }}"
+          JOBS="${{ inputs.parallel_jobs || '4' }}"
+
+          CTEST_ARGS="--parallel ${JOBS} --output-on-failure --test-output-size-passed 65536 --test-output-size-failed 65536"
+
+          if [ "${CATEGORY}" != "all" ]; then
+            CTEST_ARGS="${CTEST_ARGS} -L ${CATEGORY}"
+          fi
+
+          echo "Running tests: category=${CATEGORY}, parallel_jobs=${JOBS}"
+          echo "CTest args: ${CTEST_ARGS}"
+          echo ""
+
+          # Run tests and capture timing
+          START_TIME=$(date +%s)
+          docker run --rm \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
+            bash -c "ctest ${CTEST_ARGS} 2>&1; echo \"EXIT_CODE=\$?\""
+          END_TIME=$(date +%s)
+          ELAPSED=$((END_TIME - START_TIME))
+
+          echo ""
+          echo "========================================"
+          echo "Total wall-clock time: ${ELAPSED}s ($((ELAPSED/60))m $((ELAPSED%60))s)"
+          echo "========================================"
+
+      - name: List all available tests
+        if: always()
+        run: |
+          docker run --rm \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
+            ctest --show-only --format json | head -200

@@ -6,8 +6,11 @@
 # Build:
 #   docker build -t opm-flow-tests .
 #
-# Run all tests:
-#   docker run opm-flow-tests ctest --output-on-failure
+# Run all tests (parallel, with timing):
+#   docker run opm-flow-tests ctest --parallel $(nproc) --output-on-failure --test-output-size-passed 65536
+#
+# Run tests and show per-test timing:
+#   docker run opm-flow-tests ctest --parallel $(nproc) --output-on-failure --verbose
 #
 # List available tests:
 #   docker run opm-flow-tests ctest --show-only
@@ -15,10 +18,16 @@
 # Run a specific test:
 #   docker run opm-flow-tests ctest -R <test_name> --output-on-failure
 #
+# Run only unit tests (fast, ~2-5 min):
+#   docker run opm-flow-tests ctest -L unit --parallel $(nproc) --output-on-failure
+#
+# Run only regression tests (~30-60 min):
+#   docker run opm-flow-tests ctest -L regression --parallel $(nproc) --output-on-failure
+#
 # Interactive shell (for debugging or exploration):
 #   docker run -it opm-flow-tests bash
 #
-FROM ubuntu:24.04
+FROM ubuntu:24.04 AS base
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG OPM_VERSION=master
@@ -26,7 +35,7 @@ ARG BUILD_JOBS=4
 
 # ── System dependencies ──────────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential cmake ninja-build git ca-certificates \
+    build-essential cmake ninja-build git ca-certificates ccache \
     libboost-all-dev \
     libdune-common-dev libdune-geometry-dev libdune-grid-dev \
     libdune-istl-dev libdune-localfunctions-dev libdune-uggrid-dev \
@@ -34,6 +43,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libopenmpi-dev openmpi-bin \
     pkg-config zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# ── ccache configuration ─────────────────────────────────────────────
+ENV CCACHE_DIR=/ccache
+ENV CMAKE_C_COMPILER_LAUNCHER=ccache
+ENV CMAKE_CXX_COMPILER_LAUNCHER=ccache
 
 WORKDIR /opm
 

@@ -368,6 +368,7 @@ macro(opm-simulators_config_hook)
 endmacro()
 
 macro(opm-simulators_tests_hook)
+  set(_OPM_CURRENT_TEST_LABEL "unit")
   include(${CMAKE_CURRENT_SOURCE_DIR}/modelTests.cmake)
 
   # Look for the opm-tests repository; if found the variable
@@ -379,8 +380,10 @@ macro(opm-simulators_tests_hook)
   endif()
 
   if(MPI_FOUND)
+    set(_OPM_CURRENT_TEST_LABEL "unit")
     include(${CMAKE_CURRENT_SOURCE_DIR}/parallelUnitTests.cmake)
   endif()
+  set(_OPM_CURRENT_TEST_LABEL "")
 
   if(OPM_ENABLE_PYTHON)
     include(${CMAKE_CURRENT_SOURCE_DIR}/pythonIntegrationTests.cmake)
