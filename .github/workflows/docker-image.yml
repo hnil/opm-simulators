@@ -57,4 +57,4 @@ jobs:
           cache-to: type=gha,mode=max
           build-args: |
             OPM_VERSION=${{ inputs.opm_version || 'master' }}
-            BUILD_JOBS=4
+            BUILD_JOBS=8

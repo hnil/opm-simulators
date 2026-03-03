@@ -11,6 +11,13 @@ permissions:
   contents: read
   checks: write
 
+env:
+  # Allow MPI to run more processes than physical cores (required for
+  # parallel tests that request e.g. 8 MPI ranks on a 2-4 core runner).
+  OMPI_MCA_rmaps_base_oversubscribe: "1"
+  OMPI_ALLOW_RUN_AS_ROOT: "1"
+  OMPI_ALLOW_RUN_AS_ROOT_CONFIRM: "1"
+
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
@@ -20,13 +27,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set up ccache
+        uses: hendrikmuhs/ccache-action@v1
+        with:
+          key: ci-tests-${{ runner.os }}
+
       - name: Install OPM build dependencies
         uses: ./.github/actions/install-opm-dependencies
 
       - name: Configure opm-simulators
         run: |
           cmake -S . -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DMPIEXEC_MAX_NUMPROCS=16
 
       - name: Build opm-simulators
         run: cmake --build build -j $(nproc)

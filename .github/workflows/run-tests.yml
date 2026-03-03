@@ -32,6 +32,7 @@ env:
 permissions:
   contents: read
   packages: read
+  checks: write
 
 jobs:
   run-tests:
@@ -39,6 +40,9 @@ jobs:
     timeout-minutes: 360
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Log in to Container Registry
         uses: docker/login-action@v3
         with:
@@ -54,7 +58,7 @@ jobs:
           CATEGORY="${{ inputs.test_category || 'all' }}"
           JOBS="${{ inputs.parallel_jobs || '4' }}"
 
-          CTEST_ARGS="--parallel ${JOBS} --output-on-failure --test-output-size-passed 65536 --test-output-size-failed 65536"
+          CTEST_ARGS="--parallel ${JOBS} --output-on-failure --output-junit /tmp/test-results.xml --test-output-size-passed 65536 --test-output-size-failed 65536"
 
           if [ "${CATEGORY}" != "all" ]; then
             CTEST_ARGS="${CTEST_ARGS} -L ${CATEGORY}"
@@ -67,6 +71,7 @@ jobs:
           # Run tests and capture timing
           START_TIME=$(date +%s)
           docker run --rm \
+            -v "${{ github.workspace }}/results:/tmp" \
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
             bash -c "ctest ${CTEST_ARGS} 2>&1" || TEST_FAILED=1
           END_TIME=$(date +%s)
@@ -81,6 +86,54 @@ jobs:
             echo "Some tests failed."
             exit 1
           fi
+
+      - name: Generate summary
+        if: always()
+        run: |
+          RESULTS="${{ github.workspace }}/results/test-results.xml"
+          echo "## Test Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f "${RESULTS}" ]; then
+            TOTAL=$(grep -o 'tests="[0-9]*"' "${RESULTS}" | head -1 | grep -o '[0-9]*' || echo "0")
+            FAILURES=$(grep -o 'failures="[0-9]*"' "${RESULTS}" | head -1 | grep -o '[0-9]*' || echo "0")
+            DISABLED=$(grep -o 'disabled="[0-9]*"' "${RESULTS}" | head -1 | grep -o '[0-9]*' || echo "0")
+            TOTAL=${TOTAL:-0}
+            FAILURES=${FAILURES:-0}
+            DISABLED=${DISABLED:-0}
+            PASSED=$((TOTAL - FAILURES - DISABLED))
+            echo "| Metric | Count |" >> "$GITHUB_STEP_SUMMARY"
+            echo "|--------|-------|" >> "$GITHUB_STEP_SUMMARY"
+            echo "| ✅ Passed | ${PASSED} |" >> "$GITHUB_STEP_SUMMARY"
+            echo "| ❌ Failed | ${FAILURES} |" >> "$GITHUB_STEP_SUMMARY"
+            echo "| ⏭ Disabled | ${DISABLED} |" >> "$GITHUB_STEP_SUMMARY"
+            echo "| **Total** | **${TOTAL}** |" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            if [ "${FAILURES}" -gt 0 ] 2>/dev/null; then
+              echo "### Failed Tests" >> "$GITHUB_STEP_SUMMARY"
+              echo '```' >> "$GITHUB_STEP_SUMMARY"
+              grep 'name=.*status="fail"' "${RESULTS}" \
+                | sed 's/.*name="\([^"]*\)".*/\1/' >> "$GITHUB_STEP_SUMMARY" || true
+              echo '```' >> "$GITHUB_STEP_SUMMARY"
+            fi
+          else
+            echo "⚠️ No test results file found." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Publish test summary
+        if: always()
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        with:
+          files: ${{ github.workspace }}/results/test-results.xml
+          check_name: "CTest Results"
+          comment_mode: off
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: ${{ github.workspace }}/results/test-results.xml
+          retention-days: 30
 
       - name: List all available tests
         if: always()

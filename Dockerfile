@@ -78,9 +78,12 @@ RUN git clone --depth 1 --branch ${OPM_VERSION} \
 # ── Build opm-simulators with tests ─────────────────────────────────
 COPY . /opm/opm-simulators
 
+# Set MPIEXEC_MAX_NUMPROCS high so all parallel tests (including 8-proc
+# ones) are registered even when building on a machine with fewer cores.
 RUN cmake -S opm-simulators -B opm-simulators/build -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DOPM_TESTS_ROOT=/opm/opm-tests \
+        -DMPIEXEC_MAX_NUMPROCS=16 \
     && cmake --build opm-simulators/build -j ${BUILD_JOBS}
 
 # ── Runtime configuration ────────────────────────────────────────────
@@ -90,6 +93,10 @@ ENV OPM_TESTS_ROOT=/opm/opm-tests
 # Allow running MPI tests as root inside the container
 ENV OMPI_ALLOW_RUN_AS_ROOT=1
 ENV OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1
+
+# Allow MPI oversubscription so tests requesting more MPI ranks than
+# physical cores (e.g. 8-proc tests on a 2-core runner) still execute.
+ENV OMPI_MCA_rmaps_base_oversubscribe=1
 
 # Default: list available tests
 CMD ["ctest", "--show-only"]
