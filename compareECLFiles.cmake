@@ -21,7 +21,7 @@ set(BASE_RESULT_PATH ${PROJECT_BINARY_DIR}/tests/results)
 # Details:
 #   - This test class simply runs a simulation.
 function(add_test_runSimulator)
-  set(oneValueArgs CASENAME FILENAME SIMULATOR DIR DIR_PREFIX PROCS CONFIGURATION POST_COMMAND)
+  set(oneValueArgs CASENAME FILENAME SIMULATOR DIR DIR_PREFIX PROCS CONFIGURATION POST_COMMAND LABELS)
   set(multiValueArgs TEST_ARGS)
   cmake_parse_arguments(PARAM "$" "${oneValueArgs}" "${multiValueArgs}" ${ARGN} )
   if(NOT PARAM_DIR)
@@ -47,6 +47,11 @@ function(add_test_runSimulator)
  if(PARAM_PROCS)
     set_tests_properties(runSimulator/${PARAM_CASENAME} PROPERTIES PROCESSORS ${PARAM_PROCS})
   endif()
+  if(PARAM_LABELS)
+    set_tests_properties(runSimulator/${PARAM_CASENAME} PROPERTIES LABELS "${PARAM_LABELS}")
+  elseif(_OPM_CURRENT_TEST_LABEL)
+    set_tests_properties(runSimulator/${PARAM_CASENAME} PROPERTIES LABELS "${_OPM_CURRENT_TEST_LABEL}")
+  endif()
 endfunction()
 
 ###########################################################################
@@ -59,7 +64,7 @@ endfunction()
 # Details:
 #   - This test class compares output from a simulation to reference files.
 function(add_test_compareECLFiles)
-  set(oneValueArgs CASENAME FILENAME SIMULATOR ABS_TOL REL_TOL DIR DIR_PREFIX PREFIX RESTART_STEP RESTART_SCHED)
+  set(oneValueArgs CASENAME FILENAME SIMULATOR ABS_TOL REL_TOL DIR DIR_PREFIX PREFIX RESTART_STEP RESTART_SCHED LABELS)
   set(multiValueArgs TEST_ARGS)
   cmake_parse_arguments(PARAM "$" "${oneValueArgs}" "${multiValueArgs}" ${ARGN} )
   if(NOT PARAM_DIR)
@@ -93,6 +98,11 @@ function(add_test_compareECLFiles)
                         FILENAME ${PARAM_FILENAME}
                         SIMULATOR ${PARAM_SIMULATOR}
                         TESTNAME ${PARAM_CASENAME})
+  if(PARAM_LABELS)
+    set_tests_properties(${PARAM_PREFIX}_${PARAM_SIMULATOR}+${PARAM_FILENAME} PROPERTIES LABELS "${PARAM_LABELS}")
+  elseif(_OPM_CURRENT_TEST_LABEL)
+    set_tests_properties(${PARAM_PREFIX}_${PARAM_SIMULATOR}+${PARAM_FILENAME} PROPERTIES LABELS "${_OPM_CURRENT_TEST_LABEL}")
+  endif()
 endfunction()
 
 ###########################################################################
@@ -107,7 +117,7 @@ endfunction()
 # Details:
 #   - This test class compares two separate simulations
 function(add_test_compareSeparateECLFiles)
-  set(oneValueArgs CASENAME FILENAME1 FILENAME2 DIR1 DIR2 SIMULATOR ABS_TOL REL_TOL IGNORE_EXTRA_KW DIR_PREFIX MPI_PROCS)
+  set(oneValueArgs CASENAME FILENAME1 FILENAME2 DIR1 DIR2 SIMULATOR ABS_TOL REL_TOL IGNORE_EXTRA_KW DIR_PREFIX MPI_PROCS LABELS)
   set(multiValueArgs TEST_ARGS)
   cmake_parse_arguments(PARAM "$" "${oneValueArgs}" "${multiValueArgs}" ${ARGN} )
   if(NOT PARAM_PREFIX)
@@ -151,6 +161,11 @@ function(add_test_compareSeparateECLFiles)
     set_tests_properties(${PARAM_PREFIX}_${PARAM_SIMULATOR}+${PARAM_CASENAME} PROPERTIES
                          ENVIRONMENT_MODIFICATION PYTHONPATH=path_list_append:${opm-common_DIR}/python)
   endif()
+  if(PARAM_LABELS)
+    set_tests_properties(${PARAM_PREFIX}_${PARAM_SIMULATOR}+${PARAM_CASENAME} PROPERTIES LABELS "${PARAM_LABELS}")
+  elseif(_OPM_CURRENT_TEST_LABEL)
+    set_tests_properties(${PARAM_PREFIX}_${PARAM_SIMULATOR}+${PARAM_CASENAME} PROPERTIES LABELS "${_OPM_CURRENT_TEST_LABEL}")
+  endif()
 endfunction()
 
 ###########################################################################
@@ -164,7 +179,7 @@ endfunction()
 #   - This test class compares the output from a restarted simulation
 #     to that of a non-restarted simulation.
 function(add_test_compare_restarted_simulation)
-  set(oneValueArgs CASENAME FILENAME SIMULATOR TEST_NAME ABS_TOL REL_TOL DIR RESTART_STEP)
+  set(oneValueArgs CASENAME FILENAME SIMULATOR TEST_NAME ABS_TOL REL_TOL DIR RESTART_STEP LABELS)
   set(multiValueArgs TEST_ARGS)
   cmake_parse_arguments(PARAM "$" "${oneValueArgs}" "${multiValueArgs}" ${ARGN} )
   if(NOT PARAM_DIR)
@@ -189,6 +204,11 @@ function(add_test_compare_restarted_simulation)
                            -d $<TARGET_FILE:rst_deck>
                            -s ${PARAM_RESTART_STEP}
                TEST_ARGS ${PARAM_TEST_ARGS})
+  if(PARAM_LABELS)
+    set_tests_properties(${TEST_NAME} PROPERTIES LABELS "${PARAM_LABELS}")
+  elseif(_OPM_CURRENT_TEST_LABEL)
+    set_tests_properties(${TEST_NAME} PROPERTIES LABELS "${_OPM_CURRENT_TEST_LABEL}")
+  endif()
 endfunction()
 
 ###########################################################################
@@ -202,7 +222,7 @@ endfunction()
 #   - This test class compares the output from a parallel simulation
 #     to the output from the serial instance of the same model.
 function(add_test_compare_parallel_simulation)
-  set(oneValueArgs CASENAME FILENAME SIMULATOR ABS_TOL REL_TOL DIR POSTFIX MPI_PROCS)
+  set(oneValueArgs CASENAME FILENAME SIMULATOR ABS_TOL REL_TOL DIR POSTFIX MPI_PROCS LABELS)
   set(multiValueArgs TEST_ARGS)
   cmake_parse_arguments(PARAM "$" "${oneValueArgs}" "${multiValueArgs}" ${ARGN} )
 
@@ -243,6 +263,11 @@ function(add_test_compare_parallel_simulation)
                  TEST_ARGS ${TEST_ARGS})
     set_tests_properties(compareParallelSim_${PARAM_SIMULATOR}+${PARAM_FILENAME}${PARAM_POSTFIX}
                          PROPERTIES PROCESSORS ${MPI_PROCS})
+    if(PARAM_LABELS)
+      set_tests_properties(compareParallelSim_${PARAM_SIMULATOR}+${PARAM_FILENAME}${PARAM_POSTFIX} PROPERTIES LABELS "${PARAM_LABELS}")
+    elseif(_OPM_CURRENT_TEST_LABEL)
+      set_tests_properties(compareParallelSim_${PARAM_SIMULATOR}+${PARAM_FILENAME}${PARAM_POSTFIX} PROPERTIES LABELS "${_OPM_CURRENT_TEST_LABEL}")
+    endif()
   endif()
 endfunction()
 
@@ -258,7 +283,7 @@ endfunction()
 #   - This test class compares the output from a restarted parallel simulation
 #     to that of a non-restarted parallel simulation.
 function(add_test_compare_parallel_restarted_simulation)
-  set(oneValueArgs CASENAME FILENAME SIMULATOR ABS_TOL REL_TOL DIR MPI_PROCS RESTART_STEP TEST_NAME)
+  set(oneValueArgs CASENAME FILENAME SIMULATOR ABS_TOL REL_TOL DIR MPI_PROCS RESTART_STEP TEST_NAME LABELS)
   set(multiValueArgs TEST_ARGS)
   cmake_parse_arguments(PARAM "$" "${oneValueArgs}" "${multiValueArgs}" ${ARGN} )
 
@@ -297,6 +322,11 @@ function(add_test_compare_parallel_restarted_simulation)
                  DRIVER_ARGS ${DRIVER_ARGS}
                  TEST_ARGS ${PARAM_TEST_ARGS})
     set_tests_properties(${TEST_NAME} PROPERTIES PROCESSORS ${MPI_PROCS})
+    if(PARAM_LABELS)
+      set_tests_properties(${TEST_NAME} PROPERTIES LABELS "${PARAM_LABELS}")
+    elseif(_OPM_CURRENT_TEST_LABEL)
+      set_tests_properties(${TEST_NAME} PROPERTIES LABELS "${_OPM_CURRENT_TEST_LABEL}")
+    endif()
   endif()
 endfunction()
 
@@ -312,7 +342,7 @@ endfunction()
 #   - This test class compares the output from a parallel simulation
 #     to that of a parallel simulation running with a custom communicator.
 function(add_test_split_comm)
-  set(oneValueArgs CASENAME FILENAME SIMULATOR ABS_TOL REL_TOL DIR MPI_PROCS)
+  set(oneValueArgs CASENAME FILENAME SIMULATOR ABS_TOL REL_TOL DIR MPI_PROCS LABELS)
   set(multiValueArgs TEST_ARGS)
   cmake_parse_arguments(PARAM "$" "${oneValueArgs}" "${multiValueArgs}" ${ARGN} )
 
@@ -342,6 +372,11 @@ function(add_test_split_comm)
                TEST_ARGS ${PARAM_TEST_ARGS})
   set_tests_properties(compareParallelSplitComm_${PARAM_SIMULATOR}+${PARAM_FILENAME}
                        PROPERTIES PROCESSORS ${MPI_PROCS})
+  if(PARAM_LABELS)
+    set_tests_properties(compareParallelSplitComm_${PARAM_SIMULATOR}+${PARAM_FILENAME} PROPERTIES LABELS "${PARAM_LABELS}")
+  elseif(_OPM_CURRENT_TEST_LABEL)
+    set_tests_properties(compareParallelSplitComm_${PARAM_SIMULATOR}+${PARAM_FILENAME} PROPERTIES LABELS "${_OPM_CURRENT_TEST_LABEL}")
+  endif()
 endfunction()
 
 
@@ -357,7 +392,7 @@ endfunction()
 # Details:
 #   - This test class compares output from a simulation to reference files.
 function(add_test_compareDamarisFiles)
-  set(oneValueArgs CASENAME FILENAME SIMULATOR ABS_TOL REL_TOL DIR DIR_PREFIX PREFIX MPI_PROCS)
+  set(oneValueArgs CASENAME FILENAME SIMULATOR ABS_TOL REL_TOL DIR DIR_PREFIX PREFIX MPI_PROCS LABELS)
   set(multiValueArgs TEST_ARGS)
   cmake_parse_arguments(PARAM "$" "${oneValueArgs}" "${multiValueArgs}" ${ARGN} )
   if(NOT PARAM_DIR)
@@ -391,6 +426,11 @@ function(add_test_compareDamarisFiles)
                                     FILENAME ${PARAM_FILENAME}
                                     SIMULATOR ${PARAM_SIMULATOR}
                                     TESTNAME ${PARAM_CASENAME})
+  if(PARAM_LABELS)
+    set_tests_properties(${TEST_NAME} PROPERTIES LABELS "${PARAM_LABELS}")
+  elseif(_OPM_CURRENT_TEST_LABEL)
+    set_tests_properties(${TEST_NAME} PROPERTIES LABELS "${_OPM_CURRENT_TEST_LABEL}")
+  endif()
 endfunction()
 
 ###########################################################################
@@ -435,6 +475,7 @@ if(NOT TARGET test-suite)
 endif()
 
 # Simple execution tests
+set(_OPM_CURRENT_TEST_LABEL "regression")
 opm_set_test_driver(${PROJECT_SOURCE_DIR}/tests/run-test.sh "")
 add_test_runSimulator(CASENAME norne
                       FILENAME NORNE_ATW2013
@@ -503,8 +544,12 @@ get_property(opm-common_EMBEDDED_PYTHON TARGET opmcommon PROPERTY EMBEDDED_PYTHO
 if (opm-common_EMBEDDED_PYTHON)
   include (${CMAKE_CURRENT_SOURCE_DIR}/pyactionActionXComparisons.cmake)
 endif ()
+
+set(_OPM_CURRENT_TEST_LABEL "regression")
 include (${CMAKE_CURRENT_SOURCE_DIR}/regressionTests.cmake)
 include (${CMAKE_CURRENT_SOURCE_DIR}/comparisonTests.cmake)
+
+set(_OPM_CURRENT_TEST_LABEL "restart")
 include (${CMAKE_CURRENT_SOURCE_DIR}/restartTests.cmake)
 
 # PORV test
@@ -552,6 +597,7 @@ add_test(NAME NORNE_RESTART
 
 
 if(MPI_FOUND)
+  set(_OPM_CURRENT_TEST_LABEL "parallel")
   include (${CMAKE_CURRENT_SOURCE_DIR}/parallelRestartTests.cmake)
 
   # Single test to verify that we treat custom communicators correctly.
@@ -575,6 +621,8 @@ if(MPI_FOUND)
 
   include (${CMAKE_CURRENT_SOURCE_DIR}/parallelTests.cmake)
 endif()
+
+set(_OPM_CURRENT_TEST_LABEL "")
 
 
 if(OPM_TESTS_ROOT)

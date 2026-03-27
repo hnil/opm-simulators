@@ -1,0 +1,10 @@
+.git
+build/
+*.o
+*.so
+*.a
+*.dSYM
+**/__pycache__/
+python/docker/wheelhouse*
+python/docker/build*.log
+python/docker/extracted_wheels/
