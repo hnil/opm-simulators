@@ -674,7 +674,7 @@ namespace Opm {
 
                 const auto nperf = well->numLocalPerfs();
 
-                assert(well_indices_fracture.size() == nperf);
+                assert(int(well_indices_fracture.size()) == nperf);
                 double total_flow_fracture = 0.0;
                 for (auto perf = 0*nperf; perf < nperf; ++perf) {
                     const auto cell_idx = well->perforationData()[perf].cell_index;
