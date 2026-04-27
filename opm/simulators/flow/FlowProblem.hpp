@@ -288,6 +288,17 @@ public:
     {
         return std::max(this->simulator().episodeIndex(), 0);
     }
+    
+    void updateFailed()    {
+        this->model().updateFailed();
+        //wellModel_.serialize(res);
+        //aquiferModel_.serialize(res);
+    }
+    void advanceTimeLevel() {
+        this->model().advanceTimeLevel();
+        //wellModel_.serialize(res);
+        //aquiferModel_.serialize(res);
+    }
 
     /*!
      * \brief Called by the simulator before an episode begins.
