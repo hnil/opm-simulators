@@ -123,7 +123,7 @@ prepareStep(const SimulatorTimerInterface& timer)
                                 "- the previous step succeeded on some ranks but failed on others.");
     }
     if (lastStepFailed) {
-        simulator_.model().updateFailed();
+        simulator_.problem().updateFailed();
     }
     else {
         simulator_.model().advanceTimeLevel();
