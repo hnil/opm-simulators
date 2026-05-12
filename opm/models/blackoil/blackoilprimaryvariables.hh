@@ -753,7 +753,7 @@ public:
                             : FluidSystem::oilPvt().saturatedGasDissolutionFactor(pvtRegionIdx_,
                                                                                   T,
                                                                                   po,
-                                                                                  s,
+                                                                                  s,//if we are her this is something like oil saturation
                                                                                   soMax);
                     (*this)[Indices::compositionSwitchIdx] = std::min(rsMax, rsSat);
                     changed = true;
@@ -863,9 +863,179 @@ public:
             default:
                 throw std::logic_error("No valid primary variable selected for water");
         }
+        // if eps >0 one may at this point have negative saturations or rs,rv values out of their physical range. This function
+        // fix this
+        makeConsistentWithPhysicalMeaning_(problem,globalDofIdx); //currently for gas
         return changed;
     }
+    OPM_HOST_DEVICE void makeConsistentWithPhysicalMeaning_(const Problem& problem,unsigned globalDofIdx)
+    {
+        // this fucntion handle "all primary variables which maybe out of range", it most cases it will be reset in next iteration by adaptPrimaryVariables but in some cases (e.g. if eps is used) we want to make sure that the primary variables are consistent with their physical meaning even if they are not switched yet. Currently this is only the gas saturation or rs/rv values, but in the future it might also be relevant for the water saturation or salt concentration
+        if constexpr (enableSaltPrecipitation) {
+            const Scalar saltSolubility = BrineModule::saltSol(pvtRegionIndex());
+            if (primaryVarsMeaningBrine() == BrineMeaning::Sp) {
+                (*this)[saltConcentrationIdx] = std::max((*this)[saltConcentrationIdx], Scalar {0.0}); // salt saturation cannot be negative
+                (*this)[saltConcentrationIdx] = std::min((*this)[saltConcentrationIdx], Scalar {1.0});
+            } else if (primaryVarsMeaningBrine() == BrineMeaning::Cs) {
+                (*this)[saltConcentrationIdx] = std::max((*this)[saltConcentrationIdx], Scalar {0.0}); // salt concentration cannot be negative
+                (*this)[saltConcentrationIdx] = std::min((*this)[saltConcentrationIdx], saltSolubility); // salt saturation cannot exceed solubility limit
+            }
+        }
 
+        // if solvent saturation disappeares:  Ss (Solvent saturation) -> Rsolw (solvent dissolved
+        // in water) if solvent saturation appears: Rsolw (solvent dissolved in water) ->  Ss
+        // (Solvent saturation) Scalar rsolw = 0.0; // not needed at the moment since we dont allow
+        // for vapwat in combination with rsolw
+        if constexpr (enableSolvent) {
+            if (SolventModule::isSolubleInWater()) {
+                const Scalar p = (*this)[pressureSwitchIdx]; // cap-pressure?
+                const Scalar T = asImp_().temperature_(problem, globalDofIdx);
+                const Scalar saltConcentration = primaryVarsMeaningBrine() == BrineMeaning::Cs ? (*this)[saltConcentrationIdx] : 0.0;
+                const Scalar solLimit
+                    = SolventModule::solubilityLimit(pvtRegionIndex(), T, p, saltConcentration);
+                if (primaryVarsMeaningSolvent() == SolventMeaning::Ss) {
+                    (*this)[solventSaturationIdx] = std::max((*this)[solventSaturationIdx], Scalar {0.0}); // solvent saturation cannot be negative
+                    (*this)[solventSaturationIdx] = std::min((*this)[solventSaturationIdx], Scalar {1.0}); // solvent saturation cannot be negative               
+                    
+                } else if (primaryVarsMeaningSolvent() == SolventMeaning::Rsolw) {
+                    (*this)[solventSaturationIdx] = std::max((*this)[solventSaturationIdx], Scalar {0.0}); // solvent dissolved in water cannot be negative
+                    (*this)[solventSaturationIdx] = std::min((*this)[solventSaturationIdx], solLimit); // solvent saturation cannot exceed solubility limit           
+                }
+            }
+        }
+        // in the case where no switching is done due to eps one might have negative primary variable saturation of rs,rv out of range with an epslin
+        // this function makes sure that the primary variables are consistent with their physical meaning
+        switch(primaryVarsMeaningGas()) {
+            // fix gas primary variable to be between 0 and 1 if it is gas saturation or correct rs/rv values
+            case GasMeaning::Sg:
+            {
+                (*this)[compositionSwitchIdx] = std::min(std::max((*this)[compositionSwitchIdx], Scalar{0.0}), Scalar{1.0});
+                break;
+            }
+            case GasMeaning::Rs:
+            {
+                Scalar sw = 0.0;
+                if (primaryVarsMeaningWater() == WaterMeaning::Sw) {
+                    sw = (*this)[waterSwitchIdx];
+                }
+                const Scalar po = this->pressure_();
+                const Scalar so = 1.0 - sw - solventSaturation_();// gas saturation is zero
+                const Scalar soMax = std::max(so, problem.maxOilSaturation(globalDofIdx));
+                const Scalar T = asImp_().temperature_(problem, globalDofIdx);
+                const Scalar rsMax = problem.maxGasDissolutionFactor(/*timeIdx=*/0, globalDofIdx);
+                const Scalar rsSat =
+                    enableExtbo
+                        ? ExtboModule::rs(pvtRegionIndex(), po, zFraction_())
+                        : FluidSystem::oilPvt().saturatedGasDissolutionFactor(pvtRegionIdx_,
+                                                                              T,
+                                                                              po,
+                                                                              so,
+                                                                              soMax);
+                const Scalar rsMaxSat = std::min(rsMax, rsSat);
+                (*this)[compositionSwitchIdx] = std::min((*this)[compositionSwitchIdx], rsMaxSat);
+                (*this)[compositionSwitchIdx] = std::max((*this)[compositionSwitchIdx], Scalar{0.0});
+                break;
+            }
+            case GasMeaning::Rv:
+            {
+                Scalar sw = 0.0;
+                if (primaryVarsMeaningWater() == WaterMeaning::Sw) {
+                    sw = (*this)[waterSwitchIdx];
+                }
+                const Scalar so = 1.0 - sw - solventSaturation_();// gas saturation is zero
+                const Scalar soMax = std::max(so, problem.maxOilSaturation(globalDofIdx));
+                const Scalar T = asImp_().temperature_(problem, globalDofIdx);
+                const Scalar pg = this->pressure_();
+                //const Scalar soMax = problem.maxOilSaturation(globalDofIdx);
+                const Scalar rvMax = problem.maxOilVaporizationFactor(/*timeIdx=*/0, globalDofIdx);
+                const Scalar rvSat =
+                    enableExtbo
+                        ? ExtboModule::rv(pvtRegionIndex(), pg, zFraction_())
+                        : FluidSystem::gasPvt().saturatedOilVaporizationFactor(pvtRegionIdx_,
+                                                                               T,
+                                                                               pg,
+                                                                               /*so=*/Scalar(0.0),
+                                                                               soMax);
+                const Scalar rvMaxSat = std::min(rvMax, rvSat); 
+                (*this)[compositionSwitchIdx] = std::min((*this)[compositionSwitchIdx], rvMaxSat);
+                (*this)[compositionSwitchIdx] = std::max((*this)[compositionSwitchIdx], Scalar{0.0});
+                break;
+            }
+            case GasMeaning::Disabled:
+            {
+                break;
+            }
+            default:
+                throw std::logic_error("No valid primary variable selected for gas");
+        }
+        switch(primaryVarsMeaningWater()) {
+            case WaterMeaning::Sw:
+            {
+                (*this)[waterSwitchIdx] = std::min(std::max((*this)[waterSwitchIdx], Scalar{0.0}), Scalar{1.0});
+                break;
+        }   
+            case WaterMeaning::Rvw:
+            {
+                (*this)[waterSwitchIdx] = std::max((*this)[waterSwitchIdx], Scalar{0.0});
+                Scalar p = this->pressure_();
+                if (primaryVarsMeaningPressure() == PressureMeaning::Po) {
+                    Scalar sw = 0.0;
+                    Scalar sg = 0.0;
+                    if (primaryVarsMeaningWater() == WaterMeaning::Sw) {
+                        sw = (*this)[waterSwitchIdx];
+                    }
+                    if (primaryVarsMeaningGas() == GasMeaning::Sg) {
+                        sg = (*this)[compositionSwitchIdx];
+                    }
+                    if (primaryVarsMeaningWater() == WaterMeaning::Rsw) {
+                        sw = 1.0;
+                    }
+
+                    if (primaryVarsMeaningGas() == GasMeaning::Disabled && gasEnabled) {
+                        sg = 1.0 - sw; // water + gas case
+                    }
+
+                    std::array<Scalar, numPhases> pC{};
+                    const MaterialLawParams& matParams = problem.materialLawParams(globalDofIdx);
+                    const Scalar so = 1.0 - sg - solventSaturation_();
+                    computeCapillaryPressures_(pC, so, sg + solventSaturation_(), /*sw=*/ 0.0, matParams);
+                    p += pcFactor_ * (pC[gasPhaseIdx] - pC[oilPhaseIdx]);
+                }
+                const auto& T = asImp_().temperature_(problem, globalDofIdx);
+                const auto& saltConcentration = primaryVarsMeaningBrine() == BrineMeaning::Cs ? (*this)[saltConcentrationIdx] : 0.0;
+                const Scalar rvwSat =
+                    FluidSystem::gasPvt().saturatedWaterVaporizationFactor(pvtRegionIdx_,
+                                                                           T,
+                                                                           p,
+                                                                           saltConcentration);
+                (*this)[waterSwitchIdx] = std::min((*this)[waterSwitchIdx], rvwSat);
+                break;
+            }
+            case WaterMeaning::Rsw:
+            {
+                const Scalar& pw = this->pressure_();
+                assert(primaryVarsMeaningPressure() == PressureMeaning::Pw);
+                const auto& T = asImp_().temperature_(problem, globalDofIdx);
+                const auto& saltConcentration = primaryVarsMeaningBrine() == BrineMeaning::Cs ? (*this)[saltConcentrationIdx] : 0.0;
+                const Scalar rswSat =
+                    FluidSystem::waterPvt().saturatedGasDissolutionFactor(pvtRegionIdx_,
+                                                                          T,
+                                                                          pw,
+                                                                          saltConcentration);
+
+                const Scalar rsw = (*this)[Indices::waterSwitchIdx];
+                const Scalar rswMax = problem.maxGasDissolutionFactor(/*timeIdx=*/0, globalDofIdx);
+                const auto rswSatMax = std::min(rswSat, rswMax);
+                (*this)[waterSwitchIdx] = std::min((*this)[waterSwitchIdx], rswSatMax); 
+                (*this)[waterSwitchIdx] = std::max((*this)[waterSwitchIdx], Scalar{0.0});
+                break;
+            }   
+            case WaterMeaning::Disabled:
+                break;
+            default:
+                throw std::logic_error("No valid primary variable selected for water");
+        }
+    }   
     OPM_HOST_DEVICE bool chopAndNormalizeSaturations()
     {
         if (primaryVarsMeaningWater() == WaterMeaning::Disabled &&
