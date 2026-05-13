@@ -12,6 +12,7 @@
 #include <opm/common/ErrorMacros.hpp>
 #include <opm/common/OpmLog/OpmLog.hpp>
 
+#include <opm/models/discretization/common/baseauxiliarymodule.hh>
 #include <opm/models/utils/propertysystem.hh>
 
 #include <opm/simulators/timestepping/ConvergenceReport.hpp>
@@ -24,6 +25,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -298,7 +300,9 @@ protected:
             perfTimer.reset();
             perfTimer.start();
 
-            wellModel.postSolve(x);
+            if constexpr (!std::is_base_of_v<BaseAuxiliaryModule<TypeTag>, std::remove_reference_t<WellModel>>) {
+                wellModel.postSolve(x);
+            }
 
             if (param.use_update_stabilization_) {
                 bool isOscillate = false;
