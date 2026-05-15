@@ -131,20 +131,17 @@ NonlinearSystemCompositional<TypeTag>::
 nonlinearIteration(const SimulatorTimerInterface& timer,
                    NonlinearSolverType& nonlinearSolver)
 {
-    return ParentType::nonlinearIteration(
-        timer,
-        numEq,
-        [this]()
-        {
-            this->residual_norms_history_.clear();
-            this->current_relaxation_ = 1.0;
-            this->dx_old_ = 0.0;
-        },
-        [this, &timer, &nonlinearSolver]() -> SimulatorReportSingle
-        {
-            return this->nonlinearIterationNewton(timer, nonlinearSolver);
-        },
-        []() {});
+    if (this->simulator_.problem().iterationContext().needsTimestepInit()) {
+        this->residual_norms_history_.clear();
+        this->current_relaxation_ = 1.0;
+        this->dx_old_ = 0.0;
+        this->convergence_reports_.push_back({timer.reportStepNum(), timer.currentStepNum(), {}});
+        this->convergence_reports_.back().report.reserve(numEq);
+    }
+
+    auto result = this->nonlinearIterationNewton(timer, nonlinearSolver);
+    this->simulator_.problem().advanceIteration();
+    return result;
 }
 
 template <class TypeTag>
@@ -154,33 +151,74 @@ NonlinearSystemCompositional<TypeTag>::
 nonlinearIterationNewton(const SimulatorTimerInterface& timer,
                          NonlinearSolverType& nonlinearSolver)
 {
-    return ParentType::nonlinearIterationNewton(timer,
-                                                nonlinearSolver,
-                                                this->param_,
-                                                this->wellModel(),
-                                                this->residual_norms_history_,
-                                                this->dx_old_,
-                                                this->current_relaxation_,
-                                                this->linear_solve_setup_time_,
-                                                [this](SimulatorReportSingle& report,
-                                                       const int minIter,
-                                                       const int maxIter,
-                                                       const SimulatorTimerInterface& innerTimer)
-                                                {
-                                                    this->initialLinearization(report, minIter, maxIter, innerTimer);
-                                                },
-                                                [this](BVector& x)
-                                                {
-                                                    this->solveJacobianSystem(x);
-                                                },
-                                                [this]()
-                                                {
-                                                    return this->linearIterationsLastSolve();
-                                                },
-                                                [this](const BVector& x)
-                                                {
-                                                    this->updateSolution(x);
-                                                });
+    OPM_TIMEFUNCTION();
+
+    SimulatorReportSingle report;
+    Dune::Timer perfTimer;
+
+    this->initialLinearization(report,
+                               this->param_.newton_min_iter_,
+                               this->param_.newton_max_iter_,
+                               timer);
+
+    if (!report.converged) {
+        perfTimer.reset();
+        perfTimer.start();
+        report.total_newton_iterations = 1;
+
+        BVector x(this->simulator_.model().numGridDof());
+        this->linear_solve_setup_time_ = 0.0;
+
+        try {
+            this->wellModel().linearize(this->simulator_.model().linearizer().jacobian(),
+                                        this->simulator_.model().linearizer().residual());
+
+            this->solveJacobianSystem(x);
+
+            report.linear_solve_setup_time += this->linear_solve_setup_time_;
+            report.linear_solve_time += perfTimer.stop();
+            report.total_linear_iterations += this->linearIterationsLastSolve();
+        }
+        catch (...) {
+            report.linear_solve_setup_time += this->linear_solve_setup_time_;
+            report.linear_solve_time += perfTimer.stop();
+            report.total_linear_iterations += this->linearIterationsLastSolve();
+
+            this->failureReport_ += report;
+            throw;
+        }
+
+        perfTimer.reset();
+        perfTimer.start();
+
+        this->wellModel().postSolve(x);
+
+        if (this->param_.use_update_stabilization_) {
+            bool isOscillate = false;
+            bool isStagnate = false;
+            nonlinearSolver.detectOscillations(this->residual_norms_history_,
+                                               this->residual_norms_history_.size() - 1,
+                                               isOscillate,
+                                               isStagnate);
+
+            if (isOscillate) {
+                this->current_relaxation_ -= nonlinearSolver.relaxIncrement();
+                this->current_relaxation_ = std::max(this->current_relaxation_, nonlinearSolver.relaxMax());
+
+                if (this->terminalOutputEnabled()) {
+                    OpmLog::info("    Oscillating behavior detected: Relaxation set to "
+                                 + std::to_string(this->current_relaxation_));
+                }
+            }
+
+            nonlinearSolver.stabilizeNonlinearUpdate(x, this->dx_old_, this->current_relaxation_);
+        }
+
+        this->updateSolution(x);
+        report.update_time += perfTimer.stop();
+    }
+
+    return report;
 }
 
 template <class TypeTag>

@@ -209,32 +209,31 @@ NonlinearSystemBlackOilReservoir<TypeTag>::
 nonlinearIteration(const SimulatorTimerInterface& timer,
                    NonlinearSolverType& nonlinear_solver)
 {
-    return ParentType::nonlinearIteration(
-        timer,
-        11,
-        [this]()
-        {
-            // Model-level timestep initialization (once per timestep).
-            // markTimestepInitialized() is called later in initialLinearization(),
-            // after assembleReservoir() has triggered the well model's prepareTimeStep().
-            residual_norms_history_.clear();
-            conv_monitor_.reset();
-            current_relaxation_ = 1.0;
-            dx_old_ = 0.0;
-        },
-        [this, &timer, &nonlinear_solver]() -> SimulatorReportSingle
-        {
-            if (this->param_.nonlinear_solver_ != "nldd") {
-                return this->nonlinearIterationNewton(timer, nonlinear_solver);
-            }
+    // Model-level timestep initialization (once per timestep).
+    // markTimestepInitialized() is called later in initialLinearization(),
+    // after assembleReservoir() has triggered the well model's prepareTimeStep().
+    if (this->simulator_.problem().iterationContext().needsTimestepInit()) {
+        residual_norms_history_.clear();
+        conv_monitor_.reset();
+        current_relaxation_ = 1.0;
+        dx_old_ = 0.0;
+        this->convergence_reports_.push_back({timer.reportStepNum(), timer.currentStepNum(), {}});
+        this->convergence_reports_.back().report.reserve(11);
+    }
 
-            return this->nlddSolver_->nonlinearIterationNldd(timer, nonlinear_solver);
-        },
-        [this]()
-        {
-            auto& rst_conv = simulator_.problem().eclWriter().mutableOutputModule().getConv();
-            rst_conv.update(simulator_.model().linearizer().residual());
-        });
+    SimulatorReportSingle result;
+    if (this->param_.nonlinear_solver_ != "nldd") {
+        result = this->nonlinearIterationNewton(timer, nonlinear_solver);
+    }
+    else {
+        result = this->nlddSolver_->nonlinearIterationNldd(timer, nonlinear_solver);
+    }
+
+    auto& rst_conv = this->simulator_.problem().eclWriter().mutableOutputModule().getConv();
+    rst_conv.update(this->simulator_.model().linearizer().residual());
+
+    this->simulator_.problem().advanceIteration();
+    return result;
 }
 
 template <class TypeTag>
@@ -244,33 +243,72 @@ NonlinearSystemBlackOilReservoir<TypeTag>::
 nonlinearIterationNewton(const SimulatorTimerInterface& timer,
                          NonlinearSolverType& nonlinear_solver)
 {
-    return ParentType::nonlinearIterationNewton(timer,
-                                                nonlinear_solver,
-                                                this->param_,
-                                                this->wellModel(),
-                                                residual_norms_history_,
-                                                dx_old_,
-                                                current_relaxation_,
-                                                linear_solve_setup_time_,
-                                                [this](SimulatorReportSingle& report,
-                                                       const int minIter,
-                                                       const int maxIter,
-                                                       const SimulatorTimerInterface& timer)
-                                                {
-                                                    this->initialLinearization(report, minIter, maxIter, timer);
-                                                },
-                                                [this](BVector& x)
-                                                {
-                                                    this->solveJacobianSystem(x);
-                                                },
-                                                [this]()
-                                                {
-                                                    return this->linearIterationsLastSolve();
-                                                },
-                                                [this](const BVector& x)
-                                                {
-                                                    this->updateSolution(x);
-                                                });
+    OPM_TIMEFUNCTION();
+
+    SimulatorReportSingle report;
+    Dune::Timer perfTimer;
+
+    this->initialLinearization(report,
+                               this->param_.newton_min_iter_,
+                               this->param_.newton_max_iter_,
+                               timer);
+
+    if (!report.converged) {
+        perfTimer.reset();
+        perfTimer.start();
+        report.total_newton_iterations = 1;
+
+        const unsigned nc = this->simulator_.model().numGridDof();
+        BVector x(nc);
+
+        linear_solve_setup_time_ = 0.0;
+        try {
+            this->wellModel().linearize(this->simulator().model().linearizer().jacobian(),
+                                        this->simulator().model().linearizer().residual());
+
+            solveJacobianSystem(x);
+
+            report.linear_solve_setup_time += linear_solve_setup_time_;
+            report.linear_solve_time += perfTimer.stop();
+            report.total_linear_iterations += linearIterationsLastSolve();
+        }
+        catch (...) {
+            report.linear_solve_setup_time += linear_solve_setup_time_;
+            report.linear_solve_time += perfTimer.stop();
+            report.total_linear_iterations += linearIterationsLastSolve();
+
+            this->failureReport_ += report;
+            throw;
+        }
+
+        perfTimer.reset();
+        perfTimer.start();
+
+        this->wellModel().postSolve(x);
+
+        if (param_.use_update_stabilization_) {
+            bool isOscillate = false;
+            bool isStagnate = false;
+            nonlinear_solver.detectOscillations(residual_norms_history_,
+                                                residual_norms_history_.size() - 1,
+                                                isOscillate,
+                                                isStagnate);
+            if (isOscillate) {
+                current_relaxation_ -= nonlinear_solver.relaxIncrement();
+                current_relaxation_ = std::max(current_relaxation_, nonlinear_solver.relaxMax());
+                if (this->terminalOutputEnabled()) {
+                    OpmLog::info("    Oscillating behavior detected: Relaxation set to "
+                                 + std::to_string(current_relaxation_));
+                }
+            }
+            nonlinear_solver.stabilizeNonlinearUpdate(x, dx_old_, current_relaxation_);
+        }
+
+        updateSolution(x);
+        report.update_time += perfTimer.stop();
+    }
+
+    return report;
 }
 
 template <class TypeTag>

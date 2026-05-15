@@ -47,100 +47,13 @@ namespace Opm {
 template<int numComp, bool EnableWater>
 int dispatchFlowComp(int argc, char** argv);
 
-template <class TypeTag>
-class FlowCompNewtonMethod : public Opm::NewtonMethod<TypeTag>
-{
-public:
-    using ParentType = Opm::NewtonMethod<TypeTag>;
-    using PrimaryVariables = GetPropType<TypeTag, Properties::PrimaryVariables>;
-    using EqVector = GetPropType<TypeTag, Properties::EqVector>;
-    using Simulator = GetPropType<TypeTag, Properties::Simulator>;
-    using Scalar = GetPropType<TypeTag, Properties::Scalar>;
-    using Indices = GetPropType<TypeTag, Properties::Indices>;
-
-    enum { pressure0Idx = Indices::pressure0Idx };
-    enum { z0Idx = Indices::z0Idx };
-    enum { numComponents = getPropValue<TypeTag, Properties::NumComponents>() };
-
-    static constexpr bool waterEnabled = Indices::waterEnabled;
-
-    explicit FlowCompNewtonMethod(Simulator& simulator)
-        : ParentType(simulator)
-    {}
-
-    using ParentType::preSolve_;
-    using ParentType::update_;
-
-protected:
-    friend ParentType;
-    friend NewtonMethod<TypeTag>;
-
-    /*!
-     * \copydoc FvBaseNewtonMethod::updatePrimaryVariables_
-     * Apply update limiters to prevent divergence after control changes
-     */
-    void updatePrimaryVariables_(unsigned /* globalDofIdx */,
-                                 PrimaryVariables& nextValue,
-                                 const PrimaryVariables& currentValue,
-                                 const EqVector& update,
-                                 const EqVector& /* currentResidual */)
-    {
-        // normal Newton-Raphson update
-        nextValue = currentValue;
-        nextValue -= update;
-
-        ////
-        // Pressure updates
-        ////
-        // limit pressure reference change relative to the total value per iteration
-        constexpr Scalar max_percent_change = 0.2;
-        constexpr Scalar upper_bound = 1. + max_percent_change;
-        constexpr Scalar lower_bound = 1. - max_percent_change;
-        nextValue[pressure0Idx] = std::clamp(nextValue[pressure0Idx],
-                                             currentValue[pressure0Idx] * lower_bound,
-                                             currentValue[pressure0Idx] * upper_bound);
-
-        ////
-        // z updates
-        ////
-        // restrict update
-        Scalar maxDeltaZ = 0.0;  // in update vector
-        Scalar sumDeltaZ = 0.0; // changes in last component (not in update vector)
-        for (unsigned compIdx = 0; compIdx < numComponents - 1; ++compIdx) {
-            maxDeltaZ = std::max(std::abs(update[z0Idx + compIdx]), maxDeltaZ);
-            sumDeltaZ += update[z0Idx + compIdx];
-        }
-        maxDeltaZ = std::max(std::abs(sumDeltaZ), maxDeltaZ);
-
-        // if max. update is above limit, restrict that one to limit and adjust the rest
-        // accordingly (s.t. last comp. update is sum of the changes in update vector)
-        constexpr Scalar deltaz_limit = 0.2;
-        if (maxDeltaZ > deltaz_limit) {
-            const Scalar alpha = deltaz_limit / maxDeltaZ;
-            for (unsigned compIdx = 0; compIdx < numComponents - 1; ++compIdx) {
-                nextValue[z0Idx + compIdx] = currentValue[z0Idx + compIdx] - alpha * update[z0Idx + compIdx];
-            }
-        }
-
-        // ensure that z-values are less than tol or more than 1-tol
-        constexpr Scalar tol = 1e-8;
-        for (unsigned compIdx = 0; compIdx < numComponents - 1; ++compIdx) {
-           nextValue[z0Idx + compIdx] = std::clamp(nextValue[z0Idx + compIdx], tol, 1-tol);
-        }
-
-        if constexpr (waterEnabled) {
-            // limit change in water saturation
-            constexpr Scalar dSwMax = 0.2;
-            if (update[Indices::water0Idx] > dSwMax) {
-                nextValue[Indices::water0Idx] = currentValue[Indices::water0Idx] - dSwMax;
-            }
-        }
-    }
-};
-
-}
+} // namespace Opm
 
 namespace Opm::Properties {
+
+template <class TypeTag, class MyTypeTag>
+struct DiscNewtonMethod;
+
 namespace TTag {
 
 template<int NumComp, bool EnableWater>
@@ -162,11 +75,8 @@ public:
     using type = typename Linear::IstlSparseMatrixAdapter<Block>;
 };
 
-template<class TypeTag, int NumComp, bool EnableWater>
-struct NewtonMethod<TypeTag, TTag::FlowCompProblem<NumComp, EnableWater>>
-{
-    using type = Opm::FlowCompNewtonMethod<TypeTag>;
-};
+// NOTE: Do NOT override NewtonMethod here.
+// The inherited model configuration decides the solver implementation.
 
 #if 0
 template<class TypeTag>
@@ -369,7 +279,6 @@ template<int numComp, bool EnableWater>
 int dispatchFlowComp(int argc, char** argv)
 {
     using TypeTag = Properties::TTag::FlowCompProblem<numComp, EnableWater>;
-
     auto mainObject = std::make_unique<Opm::Main>(argc, argv);
     const auto ret = mainObject->runStatic<TypeTag>();
     mainObject.reset();

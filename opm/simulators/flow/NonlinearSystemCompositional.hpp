@@ -66,7 +66,7 @@ public:
     void initialLinearization(SimulatorReportSingle& report,
                               int minIter,
                               int maxIter,
-                              const SimulatorTimerInterface& timer);
+                              const SimulatorTimerInterface& timer) override;
 
     template <class NonlinearSolverType>
     SimulatorReportSingle nonlinearIteration(const SimulatorTimerInterface& timer,

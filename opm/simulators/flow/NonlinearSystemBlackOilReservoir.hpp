@@ -157,7 +157,7 @@ public:
     void initialLinearization(SimulatorReportSingle& report,
                               const int minIter,
                               const int maxIter,
-                              const SimulatorTimerInterface& timer);
+                              const SimulatorTimerInterface& timer) override;
 
     /// Called once per nonlinear iteration.
     /// This model will perform a Newton-Raphson update, changing reservoir_state

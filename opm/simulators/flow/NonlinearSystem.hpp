@@ -41,6 +41,8 @@ public:
     using Scalar = GetPropType<TypeTag, Properties::Scalar>;
     using ComponentName = ::Opm::ComponentName<FluidSystem, Indices>;
 
+    virtual ~NonlinearSystem() = default;
+
     bool isParallel() const
     { return grid_.comm().size() > 1; }
 
@@ -117,6 +119,11 @@ protected:
         , grid_(simulator_.vanguard().grid())
         , terminal_output_(terminal_output)
     {}
+
+    virtual void initialLinearization(SimulatorReportSingle& report,
+                                      int minIter,
+                                      int maxIter,
+                                      const SimulatorTimerInterface& timer) = 0;
 
     SimulatorReportSingle prepareStep(const SimulatorTimerInterface& timer)
     {
@@ -199,10 +206,10 @@ protected:
         auto& newtonMethod = simulator_.model().newtonMethod();
         auto& solution = simulator_.model().solution(/*timeIdx=*/0);
 
-        newtonMethod.update_(/*nextSolution=*/solution,
-                             /*curSolution=*/solution,
-                             /*update=*/dx,
-                             /*resid=*/dx);
+        newtonMethod.applyUpdate(/*nextSolution=*/solution,
+                     /*curSolution=*/solution,
+                     /*update=*/dx,
+                     /*resid=*/dx);
 
         {
             OPM_TIMEBLOCK(invalidateAndUpdateIntensiveQuantities);
@@ -212,120 +219,6 @@ protected:
         if (shouldStoreSolutionUpdate) {
             std::forward<StoreSolutionUpdate>(storeSolutionUpdate)(dx);
         }
-    }
-
-    template <class StepInit, class IterationBody, class PostIteration>
-    SimulatorReportSingle nonlinearIteration(const SimulatorTimerInterface& timer,
-                                             const std::size_t reportReserve,
-                                             StepInit&& stepInit,
-                                             IterationBody&& iterationBody,
-                                             PostIteration&& postIteration)
-    {
-        if (simulator_.problem().iterationContext().needsTimestepInit()) {
-            std::forward<StepInit>(stepInit)();
-            convergence_reports_.push_back({timer.reportStepNum(), timer.currentStepNum(), {}});
-            convergence_reports_.back().report.reserve(reportReserve);
-        }
-
-        auto result = std::forward<IterationBody>(iterationBody)();
-        std::forward<PostIteration>(postIteration)();
-
-        simulator_.problem().advanceIteration();
-        return result;
-    }
-
-    template <class BVector,
-              class NonlinearSolverType,
-              class ModelParameters,
-              class WellModel,
-              class ResidualNormsHistory,
-              class ScalarValue,
-              class InitialLinearization,
-              class SolveJacobianSystem,
-              class LinearIterationsLastSolve,
-              class UpdateSolution>
-    SimulatorReportSingle
-    nonlinearIterationNewton(const SimulatorTimerInterface& timer,
-                             NonlinearSolverType& nonlinearSolver,
-                             const ModelParameters& param,
-                             WellModel& wellModel,
-                             ResidualNormsHistory& residualNormsHistory,
-                             BVector& dxOld,
-                             ScalarValue& currentRelaxation,
-                             double& linearSolveSetupTime,
-                             InitialLinearization&& initialLinearization,
-                             SolveJacobianSystem&& solveJacobianSystem,
-                             LinearIterationsLastSolve&& linearIterationsLastSolve,
-                             UpdateSolution&& updateSolution)
-    {
-        OPM_TIMEFUNCTION();
-
-        SimulatorReportSingle report;
-        Dune::Timer perfTimer;
-
-        std::forward<InitialLinearization>(initialLinearization)(report,
-                                                                 param.newton_min_iter_,
-                                                                 param.newton_max_iter_,
-                                                                 timer);
-
-        if (!report.converged) {
-            perfTimer.reset();
-            perfTimer.start();
-            report.total_newton_iterations = 1;
-
-            BVector x(simulator_.model().numGridDof());
-            linearSolveSetupTime = 0.0;
-
-            try {
-                wellModel.linearize(simulator_.model().linearizer().jacobian(),
-                                    simulator_.model().linearizer().residual());
-
-                std::forward<SolveJacobianSystem>(solveJacobianSystem)(x);
-
-                report.linear_solve_setup_time += linearSolveSetupTime;
-                report.linear_solve_time += perfTimer.stop();
-                report.total_linear_iterations += std::forward<LinearIterationsLastSolve>(linearIterationsLastSolve)();
-            }
-            catch (...) {
-                report.linear_solve_setup_time += linearSolveSetupTime;
-                report.linear_solve_time += perfTimer.stop();
-                report.total_linear_iterations += std::forward<LinearIterationsLastSolve>(linearIterationsLastSolve)();
-
-                failureReport_ += report;
-                throw;
-            }
-
-            perfTimer.reset();
-            perfTimer.start();
-
-            wellModel.postSolve(x);
-
-            if (param.use_update_stabilization_) {
-                bool isOscillate = false;
-                bool isStagnate = false;
-                nonlinearSolver.detectOscillations(residualNormsHistory,
-                                                   residualNormsHistory.size() - 1,
-                                                   isOscillate,
-                                                   isStagnate);
-
-                if (isOscillate) {
-                    currentRelaxation -= nonlinearSolver.relaxIncrement();
-                    currentRelaxation = std::max(currentRelaxation, nonlinearSolver.relaxMax());
-
-                    if (terminalOutputEnabled()) {
-                        OpmLog::info("    Oscillating behavior detected: Relaxation set to "
-                                     + std::to_string(currentRelaxation));
-                    }
-                }
-
-                nonlinearSolver.stabilizeNonlinearUpdate(x, dxOld, currentRelaxation);
-            }
-
-            std::forward<UpdateSolution>(updateSolution)(x);
-            report.update_time += perfTimer.stop();
-        }
-
-        return report;
     }
 
     template <class ValueType>

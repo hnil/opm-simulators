@@ -42,6 +42,7 @@ CompWellModel<TypeTag>::CompWellModel(Simulator& simulator)
     , comm_(simulator.gridView().comm())
     , comp_config_(ecl_state_.compositionalConfig())
     , comp_well_states_(comp_config_)
+    , last_valid_comp_well_states_(comp_config_)
 {
     local_num_cells_ = simulator.gridView().size(0);
 }
@@ -56,6 +57,8 @@ beginReportStep(unsigned report_step)
     wells_ecl_ = schedule_.getWells(report_step);
     initWellConnectionData();
     initWellState();
+        // Save the well state at report step start so it can be restored on failed timestep retries
+    last_valid_comp_well_states_.copyDynamicStateFrom(comp_well_states_);
 }
 
 template <typename TypeTag>
@@ -63,6 +66,9 @@ void
 CompWellModel<TypeTag>::
 beginTimeStep()
 {
+    // Restore well state to beginning-of-report-step state so that failed timestep
+    // retries always start from a clean well state (correct control mode, BHP, rates)
+    comp_well_states_.copyDynamicStateFrom(last_valid_comp_well_states_);
     createWellContainer();
     initWellContainer();
 }
