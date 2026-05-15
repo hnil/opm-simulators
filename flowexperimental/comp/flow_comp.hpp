@@ -54,6 +54,12 @@ namespace Opm::Properties {
 template <class TypeTag, class MyTypeTag>
 struct DiscNewtonMethod;
 
+template <class TypeTag, class MyTypeTag>
+struct WellModel;
+
+template <class TypeTag, class MyTypeTag>
+struct TracerModel;
+
 namespace TTag {
 
 template<int NumComp, bool EnableWater>

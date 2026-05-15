@@ -56,7 +56,34 @@ SimulatorReportSingle
 NonlinearSystemCompositional<TypeTag>::
 prepareStep(const SimulatorTimerInterface& timer)
 {
-    return ParentType::prepareStep(timer);
+    SimulatorReportSingle report;
+    Dune::Timer perfTimer;
+    perfTimer.start();
+
+    const int lastStepFailed = timer.lastStepFailed();
+    if (this->grid_.comm().size() > 1
+        && this->grid_.comm().max(lastStepFailed) != this->grid_.comm().min(lastStepFailed)) {
+        OPM_THROW(std::runtime_error,
+                  "Misalignment of the parallel simulation run in prepareStep "
+                  "- the previous step succeeded on some ranks but failed on others.");
+    }
+
+    if (lastStepFailed) {
+        this->wellModel().restoreLastValidState();
+        this->simulator_.model().updateFailed();
+    }
+    else {
+        this->simulator_.model().advanceTimeLevel();
+    }
+
+    this->simulator_.setTime(timer.simulationTimeElapsed());
+    this->simulator_.setTimeStepSize(timer.currentStepLength());
+
+    this->simulator_.problem().resetIterationForNewTimestep();
+    this->simulator_.problem().beginTimeStep();
+
+    report.pre_post_time += perfTimer.stop();
+    return report;
 }
 
 template <class TypeTag>
@@ -170,8 +197,9 @@ nonlinearIterationNewton(const SimulatorTimerInterface& timer,
         this->linear_solve_setup_time_ = 0.0;
 
         try {
-            this->wellModel().linearize(this->simulator_.model().linearizer().jacobian(),
-                                        this->simulator_.model().linearizer().residual());
+            auto& linearizer = this->simulator_.model().linearizer();
+            linearizer.linearizeAuxiliaryEquations();
+            linearizer.finalize();
 
             this->solveJacobianSystem(x);
 
@@ -191,7 +219,10 @@ nonlinearIterationNewton(const SimulatorTimerInterface& timer,
         perfTimer.reset();
         perfTimer.start();
 
-        this->wellModel().postSolve(x);
+        auto& model = this->simulator_.model();
+        for (unsigned auxModIdx = 0; auxModIdx < model.numAuxiliaryModules(); ++auxModIdx) {
+            model.auxiliaryModule(auxModIdx)->postSolve(x);
+        }
 
         if (this->param_.use_update_stabilization_) {
             bool isOscillate = false;
@@ -277,6 +308,8 @@ solveJacobianSystem(BVector& x)
     linSolver.prepare(jacobian, residual);
     this->linear_solve_setup_time_ = perfTimer.stop();
     linSolver.setResidual(residual);
+    linSolver.getResidual(residual);
+    linSolver.setMatrix(jacobian);
     linSolver.solve(x);
 }
 

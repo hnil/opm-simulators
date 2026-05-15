@@ -99,10 +99,11 @@ public:
     void beginReportStep(unsigned report_step);
     void beginTimeStep();
     void beginIteration();
+     void restoreLastValidState();
 
     void init();
     void endIteration() const {}
-    void endTimeStep() {}
+     void endTimeStep();
     void endEpisode() {}
 
     void computeTotalRatesForDof(RateVector& /*rate*/, unsigned /*globalIdx*/) const;
