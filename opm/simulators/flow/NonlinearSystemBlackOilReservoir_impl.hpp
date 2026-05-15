@@ -79,12 +79,8 @@ NonlinearSystemBlackOilReservoir(Simulator& simulator,
               const ModelParameters& param,
               BlackoilWellModel<TypeTag>& well_model,
               const bool terminal_output)
-    : ParentType(simulator, terminal_output)
-    , param_( param )
-    , well_model_ (well_model)
-    , current_relaxation_(1.0)
-    , dx_old_(simulator_.model().numGridDof())
-    , conv_monitor_(param_.monitor_params_)
+    : ParentType(simulator, param, well_model, terminal_output)
+    , conv_monitor_(param.monitor_params_)
 {
     // compute global sum of number of cells
     global_nc_ = detail::countGlobalCells(grid_);
@@ -163,11 +159,9 @@ initialLinearization(SimulatorReportSingle& report,
                      const SimulatorTimerInterface& timer)
 {
     ParentType::initialLinearization(report,
-                                     timer,
-                                     [this](const SimulatorTimerInterface& timer)
-                                     {
-                                         return this->assembleReservoir(timer);
-                                     });
+                                     minIter,
+                                     maxIter,
+                                     timer);                                 
 
     // -----------   Check if converged   -----------
     std::vector<Scalar> residual_norms;
@@ -304,19 +298,11 @@ nonlinearIterationNewton(const SimulatorTimerInterface& timer,
             nonlinear_solver.stabilizeNonlinearUpdate(x, dx_old_, current_relaxation_);
         }
 
-        updateSolution(x);
+        this->updateSolution(x);
         report.update_time += perfTimer.stop();
     }
 
     return report;
-}
-
-template <class TypeTag>
-SimulatorReportSingle
-NonlinearSystemBlackOilReservoir<TypeTag>::
-assembleReservoir(const SimulatorTimerInterface& /* timer */)
-{
-    return ParentType::assembleReservoir(wellModel());
 }
 
 template <class TypeTag>
@@ -428,7 +414,6 @@ solveJacobianSystem(BVector& x)
         x = 0.0;
         std::vector<BVector> x_trial(numSolvers, x);
         for (int solver = 0; solver < numSolvers; ++solver) {
-            BVector x0(x);
             linSolver.setActiveSolver(solver);
             perfTimer.start();
             linSolver.prepare(jacobian, residual);
@@ -452,7 +437,6 @@ solveJacobianSystem(BVector& x)
         linSolver.setActiveSolver(fastest_solver);
     }
     else {
-        // set initial guess
         x = 0.0;
 
         Dune::Timer perfTimer;
@@ -469,24 +453,18 @@ solveJacobianSystem(BVector& x)
 }
 
 template <class TypeTag>
-void
+bool
 NonlinearSystemBlackOilReservoir<TypeTag>::
-updateSolution(const BVector& dx)
+shouldStoreSolutionUpdate() const
 {
-    const bool shouldStoreSolutionUpdate =
-        this->param_.tolerance_max_dp_ > 0.0 || this->param_.tolerance_max_ds_ > 0.0
+    return this->param_.tolerance_max_dp_ > 0.0 || this->param_.tolerance_max_ds_ > 0.0
         || this->param_.tolerance_max_drs_ > 0.0 || this->param_.tolerance_max_drv_ > 0.0;
-
-    ParentType::updateSolution(dx,
-                               shouldStoreSolutionUpdate,
-                               [this]() { this->prepareStoringSolutionUpdate(); },
-                               [this](const BVector& update) { this->storeSolutionUpdate(update); });
 }
 
 template <class TypeTag>
 void
 NonlinearSystemBlackOilReservoir<TypeTag>::
-prepareStoringSolutionUpdate()
+prepareSolutionUpdate()
 {
     // Init. solution update vector
     unsigned nc = simulator_.model().numGridDof();
@@ -507,7 +485,7 @@ prepareStoringSolutionUpdate()
 template <class TypeTag>
 void
 NonlinearSystemBlackOilReservoir<TypeTag>::
-storeSolutionUpdate(const BVector& dx)
+storeSolutionUpdate(const GlobalEqVector& dx)
 {
     const auto& elemMapper = simulator_.model().elementMapper();
     const auto& gridView = simulator_.gridView();
@@ -724,31 +702,6 @@ characteriseCnvPvSplit(const std::vector<Scalar>& B_avg, const double dt)
     this->grid_.comm().sum(cellCntPV.data(), cellCntPV.size());
 
     return { cnvPvSplit, ixCells };
-}
-
-template <class TypeTag>
-void
-NonlinearSystemBlackOilReservoir<TypeTag>::
-updateTUNING(const Tuning& tuning)
-{
-    this->param_.tolerance_cnv_ = tuning.TRGCNV;
-    this->param_.tolerance_cnv_relaxed_ = tuning.XXXCNV;
-    this->param_.tolerance_mb_ = tuning.TRGMBE;
-    this->param_.tolerance_mb_relaxed_ = tuning.XXXMBE;
-    this->param_.newton_max_iter_ = tuning.NEWTMX;
-    this->param_.newton_min_iter_ = tuning.NEWTMN;
-}
-
-template <class TypeTag>
-void
-NonlinearSystemBlackOilReservoir<TypeTag>::
-updateTUNINGDP(const TuningDp& tuning_dp)
-{
-    // NOTE: If TUNINGDP item is _not_ set it should be 0.0
-    this->param_.tolerance_max_dp_ = tuning_dp.TRGDDP;
-    this->param_.tolerance_max_ds_ = tuning_dp.TRGDDS;
-    this->param_.tolerance_max_drs_ = tuning_dp.TRGDDRS;
-    this->param_.tolerance_max_drv_ = tuning_dp.TRGDDRV;
 }
 
 template <class TypeTag>
@@ -1055,8 +1008,8 @@ getConvergence(const SimulatorTimerInterface& timer,
                                           maxIter, B_avg, residual_norms);
     {
         OPM_TIMEBLOCK(getWellConvergence);
-        report += wellModel().getWellConvergence(B_avg,
-                                                 /*checkWellGroupControlsAndNetwork*/report.converged());
+        report += this->wellModel().getWellConvergence(B_avg,
+                                                       /*checkWellGroupControlsAndNetwork*/report.converged());
     }
 
     conv_monitor_.checkPenaltyCard(report, simulator_.problem().iterationContext().iteration());

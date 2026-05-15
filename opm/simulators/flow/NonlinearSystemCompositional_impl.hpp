@@ -42,11 +42,7 @@ NonlinearSystemCompositional(Simulator& simulator,
                              const ModelParameters& param,
                              CompWellModel<TypeTag>& wellModel,
                              const bool terminalOutput)
-    : ParentType(simulator, terminalOutput)
-    , param_(param)
-    , well_model_(wellModel)
-    , current_relaxation_(1.0)
-    , dx_old_(this->simulator_.model().numGridDof())
+    : ParentType(simulator, param, wellModel, terminalOutput)
 {
     this->convergence_reports_.reserve(64);
 }
@@ -91,16 +87,13 @@ void
 NonlinearSystemCompositional<TypeTag>::
 initialLinearization(SimulatorReportSingle& report,
                      const int minIter,
-                     const int,
+                     const int maxIter,
                      const SimulatorTimerInterface& timer)
 {
     ParentType::initialLinearization(report,
-                                     timer,
-                                     [this](const SimulatorTimerInterface& innerTimer)
-                                     {
-                                         return this->assembleReservoir(innerTimer);
-                                     });
-
+                                     minIter,
+                                     maxIter,
+                                     timer);
     Dune::Timer perfTimer;
     perfTimer.start();
 
@@ -122,7 +115,7 @@ initialLinearization(SimulatorReportSingle& report,
             residual,
             types,
             tolerances,
-            param_.max_residual_allowed_,
+            this->param_.max_residual_allowed_,
             [this](const std::string& message)
             {
                 if (this->terminal_output_) {
@@ -253,17 +246,6 @@ nonlinearIterationNewton(const SimulatorTimerInterface& timer,
 }
 
 template <class TypeTag>
-SimulatorReportSingle
-NonlinearSystemCompositional<TypeTag>::
-assembleReservoir(const SimulatorTimerInterface&)
-{
-    this->simulator_.problem().beginIteration();
-    this->simulator_.model().linearizer().linearizeDomain();
-    this->simulator_.problem().endIteration();
-    return this->wellModel().lastReport();
-}
-
-template <class TypeTag>
 typename NonlinearSystemCompositional<TypeTag>::Scalar
 NonlinearSystemCompositional<TypeTag>::
 relativeChange() const
@@ -311,41 +293,6 @@ solveJacobianSystem(BVector& x)
     linSolver.getResidual(residual);
     linSolver.setMatrix(jacobian);
     linSolver.solve(x);
-}
-
-template <class TypeTag>
-void
-NonlinearSystemCompositional<TypeTag>::
-updateSolution(const BVector& dx)
-{
-    ParentType::updateSolution(dx,
-                               false,
-                               []() {},
-                               [](const BVector&) {});
-}
-
-template <class TypeTag>
-void
-NonlinearSystemCompositional<TypeTag>::
-updateTUNING(const Tuning& tuning)
-{
-    this->param_.tolerance_cnv_ = tuning.TRGCNV;
-    this->param_.tolerance_cnv_relaxed_ = tuning.XXXCNV;
-    this->param_.tolerance_mb_ = tuning.TRGMBE;
-    this->param_.tolerance_mb_relaxed_ = tuning.XXXMBE;
-    this->param_.newton_max_iter_ = tuning.NEWTMX;
-    this->param_.newton_min_iter_ = tuning.NEWTMN;
-}
-
-template <class TypeTag>
-void
-NonlinearSystemCompositional<TypeTag>::
-updateTUNINGDP(const TuningDp& tuning_dp)
-{
-    this->param_.tolerance_max_dp_ = tuning_dp.TRGDDP;
-    this->param_.tolerance_max_ds_ = tuning_dp.TRGDDS;
-    this->param_.tolerance_max_drs_ = tuning_dp.TRGDDRS;
-    this->param_.tolerance_max_drv_ = tuning_dp.TRGDDRV;
 }
 
 template <class TypeTag>
