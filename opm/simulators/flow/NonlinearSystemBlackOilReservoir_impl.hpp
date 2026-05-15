@@ -94,7 +94,7 @@ NonlinearSystemBlackOilReservoir(Simulator& simulator,
         if (terminal_output) {
             OpmLog::info("Using Non-Linear Domain Decomposition solver (nldd).");
         }
-        nlddSolver_ = std::make_unique<BlackoilModelNldd<TypeTag>>(*this);
+        nlddSolver_ = std::make_unique<NonlinearSystemNldd<TypeTag>>(*this);
     } else if (param_.nonlinear_solver_ == "newton") {
         if (terminal_output) {
             OpmLog::info("Using Newton nonlinear solver.");

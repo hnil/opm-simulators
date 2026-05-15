@@ -29,7 +29,7 @@
 #include <opm/simulators/flow/NonlinearSystem.hpp>
 
 #include <opm/simulators/flow/BlackoilModelConvergenceMonitor.hpp>
-#include <opm/simulators/flow/BlackoilModelNldd.hpp>
+#include <opm/simulators/flow/NonlinearSystemNldd.hpp>
 #include <opm/simulators/flow/BlackoilModelProperties.hpp>
 #include <opm/simulators/flow/FlowProblemBlackoilProperties.hpp>
 #include <opm/simulators/flow/RSTConv.hpp>
@@ -340,7 +340,7 @@ protected:
 
     SolutionVector solUpd_;
 
-    std::unique_ptr<BlackoilModelNldd<TypeTag>> nlddSolver_; //!< Non-linear DD solver
+    std::unique_ptr<NonlinearSystemNldd<TypeTag>> nlddSolver_; //!< Non-linear DD solver
     BlackoilModelConvergenceMonitor<Scalar> conv_monitor_;
 
 private:
