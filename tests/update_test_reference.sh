@@ -11,26 +11,8 @@ changed_tests=""
 # Populated by function extractTestProperties().
 declare -A testProperty
 
-have_flock=0
-if command -v flock >/dev/null 2>&1
-then
-    have_flock=1
-fi
-
 # ===========================================================================
 # Helper functions.
-
-withOptionalLock () {
-    if [ "${have_flock}" -eq 1 ]
-    then
-        (
-            flock -x 200
-            "$@"
-        ) 200>"${TMPDIR}/opm_diff_lock"
-    else
-        "$@"
-    fi
-}
 
 # Generate textual diffs of formatted file contents.
 #
@@ -75,7 +57,8 @@ compareResultFileContents () {
     fi
 
 
-    appendDataDiff () {
+    {
+        flock -x 200
         if [ "${new}" != "${ref}" ]
         then
             diff -u "${ref}" "${new}" >> "${WORKSPACE}/data_diff"
@@ -85,8 +68,7 @@ compareResultFileContents () {
             echo "No difference between reference and update for ${result_file}" \
                  >> "${WORKSPACE}/data_diff"
         fi
-    }
-    withOptionalLock appendDataDiff
+    } 200>|$TMPDIR/opm_diff_lock
 
     rm -rf ${tmp2}
 }
@@ -182,10 +164,10 @@ copyDamarisToReferenceDir () {
 
   for file in $FIRST_FILE $LAST_FILE
   do
-        appendDamarisDiff () {
-                h5diff -v "$file" "$DST_DIR/`basename $file`" >> $WORKSPACE/data_diff
-        }
-        withOptionalLock appendDamarisDiff
+    {
+        flock -x 200
+        h5diff -v "$file" "$DST_DIR/`basename $file`" >> $WORKSPACE/data_diff
+    } 200>|$TMPDIR/opm_diff_lock
     cp "$file" $DST_DIR
   done
 }
@@ -313,7 +295,7 @@ case "$@" in
     updateDamarisResults ;;
 esac
 
-appendChangedTests () {
-    printf '%s\n' "$changed_tests" >> "$TMPDIR/changed_tests"
-}
-withOptionalLock appendChangedTests
+{
+    flock -x 200
+    echo $changed_tests >> $TMPDIR/changed_tests
+} 200>|$TMPDIR/opm_diff_lock
