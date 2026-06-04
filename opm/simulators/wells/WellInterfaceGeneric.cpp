@@ -56,6 +56,7 @@
 #include <cstddef>
 #include <stdexcept>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace Opm {
@@ -704,6 +705,8 @@ template<typename Scalar, typename IndexTraits>
 void WellInterfaceGeneric<Scalar, IndexTraits>::
 addFracturePerforations(const std::vector<RuntimePerforation>& perfs)
 {
+    static std::unordered_set<std::string> warned_missing_perforations;
+
     for (const auto& perf : perfs) {
         auto it = std::find(well_cells_.begin(), well_cells_.end(), perf.cell);
         if (it != this->well_cells_.end()) {
@@ -719,9 +722,13 @@ addFracturePerforations(const std::vector<RuntimePerforation>& perfs)
             this->well_index_fracture_[ind].ref_ctf = perf.ref_ctf;
         }
         else {
-            std::cout << "Perforation to cell " << perf.cell
-                      << " does not exist in well " << this->name()
-                      << ", skip it. TimeStep cuts do to error in fracture solve?" << std::endl;
+            const auto warning_key = fmt::format("{}:{}", this->name(), perf.cell);
+            if (warned_missing_perforations.insert(warning_key).second) {
+                std::cout << "Skipping fracture perforation for cell " << perf.cell
+                          << " in well " << this->name()
+                          << " because it is not present in the current local well structure"
+                          << std::endl;
+            }
         }
     }
 }
