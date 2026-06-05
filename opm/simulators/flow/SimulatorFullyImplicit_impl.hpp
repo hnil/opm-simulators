@@ -19,11 +19,11 @@
   along with OPM.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#ifndef OPM_SIMULATOR_FULLY_IMPLICIT_BLACKOIL_IMPL_HEADER_INCLUDED
-#define OPM_SIMULATOR_FULLY_IMPLICIT_BLACKOIL_IMPL_HEADER_INCLUDED
+#ifndef OPM_SIMULATOR_FULLY_IMPLICIT_IMPL_HEADER_INCLUDED
+#define OPM_SIMULATOR_FULLY_IMPLICIT_IMPL_HEADER_INCLUDED
 
 // Improve IDE experience
-#ifndef OPM_SIMULATOR_FULLY_IMPLICIT_HEADER_HPP
+#ifndef OPM_SIMULATOR_FULLY_IMPLICIT_HEADER_INCLUDED
 #include <config.h>
 #include <opm/simulators/flow/SimulatorFullyImplicit.hpp>
 #endif
@@ -591,4 +591,4 @@ createSolver(WellModel& wellModel)
 
 } // namespace Opm
 
-#endif // OPM_SIMULATOR_FULLY_IMPLICIT_BLACKOIL_IMPL_HEADER_INCLUDED
+#endif // OPM_SIMULATOR_FULLY_IMPLICIT_IMPL_HEADER_INCLUDED
