@@ -1113,6 +1113,8 @@ namespace Opm {
         // Timestep initialization: should run once at the start of each timestep.
         if (iterCtx.needsTimestepInit() && this->wellsActive()) {
             OPM_TIMEBLOCK(firstIterationAssemble);
+            Dune::Timer prepareTimer;
+            prepareTimer.start();
             // try-catch is needed here as updateWellControls
             // contains global communication and has either to
             // be reached by all processes or all need to abort
@@ -1125,12 +1127,20 @@ namespace Opm {
             OPM_END_PARALLEL_TRY_CATCH_LOG(local_deferredLogger,
                                            "assemble() failed during well initialization: ",
                                            this->terminal_output_, grid().comm());
+            last_report_.well_facility_time += prepareTimer.stop();
         }
 
+        Dune::Timer networkTimer;
+        networkTimer.start();
         const bool well_group_control_changed = updateWellControlsAndNetwork(
                             /*mandatory_network_balance=*/false,
                             dt,
                             local_deferredLogger);
+        // the control/network update is part of the facility calculations,
+        // together with the time step preparation of the wells above
+        const double network_time = networkTimer.stop();
+        last_report_.well_control_network_time += network_time;
+        last_report_.well_facility_time += network_time;
 
         // even when there is no wells active, the network nodal pressure still need to be updated through updateWellControlsAndNetwork()
         // but there is no need to assemble the well equations
@@ -1142,10 +1152,35 @@ namespace Opm {
         // Pre-compute cell rates to we don't have to do this for every cell during linearization...
         updateCellRates();
 
+        // collect the statistics for the standalone well solves done since
+        // the last assembly (prepareTimeStep, well testing and well
+        // potential calculations)
+        collectWellSolveStats();
+
         // if group or well control changes we don't consider the
         // case converged
         last_report_.well_group_control_changed = well_group_control_changed;
         last_report_.assemble_time_well += perfTimer.stop();
+    }
+
+
+
+
+    template<typename TypeTag>
+    void
+    BlackoilWellModel<TypeTag>::
+    collectWellSolveStats()
+    {
+        for (const auto& well : well_container_) {
+            const auto& stats = well->solveStats();
+            last_report_.well_solve_time += stats.solve_time;
+            last_report_.well_potential_solve_time += stats.potential_solve_time;
+            last_report_.well_solve_assemble_time += stats.assemble_time;
+            last_report_.well_solve_linear_solve_time += stats.linear_solve_time;
+            last_report_.total_well_iterations += stats.iterations;
+            last_report_.total_well_potential_iterations += stats.potential_iterations;
+            well->resetSolveStats();
+        }
     }
 
 
@@ -1207,6 +1242,10 @@ namespace Opm {
         if (this->isRescoupMasterCoupledNetworkIteration_()) {
             this->sendSlaveNetworkLoopTerminationSignal_();
         }
+        // only count the balancing iterations when a network is active
+        if (this->schedule()[simulator_.episodeIndex()].network().active()) {
+            last_report_.total_network_iterations += network_update_iteration;
+        }
         return well_group_control_changed;
     }
 
@@ -1254,6 +1293,8 @@ namespace Opm {
                 // the network balancing
                 const bool updatePotentials = (this->network_.shouldBalance(reportStepIdx) ||
                                                mandatory_network_balance);
+                Dune::Timer gliftTimer;
+                gliftTimer.start();
                 alq_updated = gaslift_.maybeDoGasLiftOptimize(simulator_,
                                                           well_container_,
                                                           this->network_.nodePressures(),
@@ -1261,6 +1302,10 @@ namespace Opm {
                                                           this->wellState(),
                                                           this->groupState(),
                                                           local_deferredLogger);
+                // only account for the time when gas lift optimization is in use
+                if (this->schedule().glo(reportStepIdx).active()) {
+                    last_report_.gaslift_time += gliftTimer.stop();
+                }
             }
             prepareWellsBeforeAssembling(dt);
         }

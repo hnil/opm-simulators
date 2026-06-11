@@ -235,7 +235,11 @@ initialLinearization(SimulatorReportSingle& report,
                               ));
         }
     }
-    report.update_time += perfTimer.stop();
+    // This block contains the convergence checks (reservoir and wells),
+    // keep track of the time separately from the rest of update_time.
+    const double convergence_check_time = perfTimer.stop();
+    report.update_time += convergence_check_time;
+    report.convergence_check_time += convergence_check_time;
     residual_norms_history_.push_back(residual_norms);
 }
 
@@ -304,6 +308,9 @@ nonlinearIterationNewton(const SimulatorTimerInterface& timer,
 
         // Solve the linear system.
         linear_solve_setup_time_ = 0.0;
+        linear_solve_apply_time_ = 0.0;
+        precond_setup_time_ = 0.0;
+        precond_apply_time_ = 0.0;
         try {
             // Apply the Schur complement of the well model to
             // the reservoir linearized equations.
@@ -315,11 +322,17 @@ nonlinearIterationNewton(const SimulatorTimerInterface& timer,
             solveJacobianSystem(x);
 
             report.linear_solve_setup_time += linear_solve_setup_time_;
+            report.linear_solve_apply_time += linear_solve_apply_time_;
+            report.precond_setup_time += precond_setup_time_;
+            report.precond_apply_time += precond_apply_time_;
             report.linear_solve_time += perfTimer.stop();
             report.total_linear_iterations += linearIterationsLastSolve();
         }
         catch (...) {
             report.linear_solve_setup_time += linear_solve_setup_time_;
+            report.linear_solve_apply_time += linear_solve_apply_time_;
+            report.precond_setup_time += precond_setup_time_;
+            report.precond_apply_time += precond_apply_time_;
             report.linear_solve_time += perfTimer.stop();
             report.total_linear_iterations += linearIterationsLastSolve();
 
@@ -362,6 +375,7 @@ nonlinearIterationNewton(const SimulatorTimerInterface& timer,
         updateSolution(x);
 
         report.update_time += perfTimer.stop();
+        report.props_time += props_update_time_;
     }
 
     return report;
@@ -508,6 +522,10 @@ solveJacobianSystem(BVector& x)
         // Use timing on rank 0 to determine fastest, must be consistent across ranks.
         grid_.comm().broadcast(&fastest_solver, 1, 0);
         linear_solve_setup_time_ = setupTimes[fastest_solver];
+        linear_solve_apply_time_ = times[fastest_solver];
+        // Note: aggregated over all solvers tried in the speed test.
+        precond_setup_time_ = linSolver.popPreconditionerUpdateTime();
+        precond_apply_time_ = linSolver.popPreconditionerApplyTime();
         x = x_trial[fastest_solver];
         linSolver.setActiveSolver(fastest_solver);
     }
@@ -519,12 +537,17 @@ solveJacobianSystem(BVector& x)
         perfTimer.start();
         linSolver.prepare(jacobian, residual);
         linear_solve_setup_time_ = perfTimer.stop();
+        precond_setup_time_ = linSolver.popPreconditionerUpdateTime();
         linSolver.setResidual(residual);
         // actually, the error needs to be calculated after setResidual in order to
         // account for parallelization properly. since the residual of ECFV
         // discretizations does not need to be synchronized across processes to be
         // consistent, this is not relevant for OPM-flow...
+        perfTimer.reset();
+        perfTimer.start();
         linSolver.solve(x);
+        linear_solve_apply_time_ = perfTimer.stop();
+        precond_apply_time_ = linSolver.popPreconditionerApplyTime();
     }
 }
 
@@ -553,7 +576,10 @@ updateSolution(const BVector& dx)
     // if the solution is updated, the intensive quantities need to be recalculated
     {
         OPM_TIMEBLOCK(invalidateAndUpdateIntensiveQuantities);
+        Dune::Timer propsTimer;
+        propsTimer.start();
         simulator_.model().invalidateAndUpdateIntensiveQuantities(/*timeIdx=*/0);
+        props_update_time_ = propsTimer.stop();
     }
 
     // Store solution update

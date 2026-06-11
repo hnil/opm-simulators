@@ -380,6 +380,10 @@ private:
     Scalar drMaxRel() const { return param_.dr_max_rel_; }
     Scalar maxResidualAllowed() const { return param_.max_residual_allowed_; }
     double linear_solve_setup_time_;
+    double linear_solve_apply_time_ = 0.0;
+    double precond_setup_time_ = 0.0;
+    double precond_apply_time_ = 0.0;
+    double props_update_time_ = 0.0;
     std::vector<bool> wasSwitched_;
 };
 
