@@ -65,6 +65,11 @@ public:
     using BVectorWell = typename StandardWellEquations<Scalar, IndexTraits, Indices::numEq>::BVectorWell;
 
     //! \brief Returns a const reference to equation system.
+    //! \brief Read access to the well primary variables (adjoint module:
+    //!        rate <-> primary-variable derivatives via getQs()).
+    const PrimaryVariables& primaryVariables() const
+    { return primary_variables_; }
+
     const StandardWellEquations<Scalar, IndexTraits, Indices::numEq>& linSys() const
     { return linSys_; }
 
