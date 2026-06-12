@@ -589,8 +589,7 @@ namespace Opm {
                 well->setPrevSurfaceRates(this->wellState(), this->prevWellState());
             }
 
-            const auto& network = this->schedule()[timeStepIdx].network();
-            if (network.active()) {
+            if (details::anyNetworkActive(this->schedule(), timeStepIdx)) {
                 this->network_.initializeWell(*well);
             }
             try {
@@ -1165,8 +1164,7 @@ namespace Opm {
                 this->updateNetworkActiveState_();
             }
             const int episodeIdx = simulator_.episodeIndex();
-            const auto& network = this->schedule()[episodeIdx].network();
-            if (!this->wellsActive() && !network.active()) {
+            if (!this->wellsActive() && !details::anyNetworkActive(this->schedule(), episodeIdx)) {
                 return;
             }
         }
