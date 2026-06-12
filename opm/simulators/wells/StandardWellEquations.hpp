@@ -124,6 +124,20 @@ public:
     void sumDistributed(Parallel::Communication comm);
 
     //! \brief Returns a const reference to the residual.
+    //! \brief Read access to the well equation matrices, needed by the
+    //!        adjoint module to couple well objectives into the
+    //!        transposed (adjoint) systems:
+    //!        B = dR_w/dx_reservoir, C^T couples wells into the reservoir
+    //!        equations, D = dR_w/dx_well.
+    const OffDiagMatWell& Bmatrix() const
+    { return duneB_; }
+
+    const OffDiagMatWell& Cmatrix() const
+    { return duneC_; }
+
+    const DiagMatWell& Dmatrix() const
+    { return duneD_; }
+
     const BVectorWell& residual() const
     {
         return resWell_;
