@@ -178,6 +178,18 @@ public:
                                         WellStateType& well_state,
                                         const bool solving_with_zero_rate);
 
+    //! \brief Override the summary state used to derive the active
+    //!        controls during residual assembly.
+    //!
+    //! Default (nullptr) means the live state
+    //! simulator.vanguard().summaryState(), so this is result-neutral in
+    //! the forward run (which never sets it). The adjoint replay can
+    //! inject a restored summary state so the well-equation assembly is
+    //! reproducible from a snapshot without re-running the control
+    //! advance (see opm-adjoint/adjoint_refactoring.md, Stage 2).
+    void setAssemblySummaryState(const SummaryState* summary_state)
+    { assemblySummaryState_ = summary_state; }
+
     // Convenience overload that gets scaled fractions internally
     void updateGroupTargetFallbackFlag(WellStateType& well_state,
                                        DeferredLogger& deferred_logger) const;
@@ -375,6 +387,19 @@ protected:
     bool changed_to_stopped_this_step_ = false;
     bool thp_update_iterations = false;
     int number_of_well_reopenings_{0};
+
+    // Optional injected summary state for reproducible residual assembly
+    // (nullptr -> use the live simulator.vanguard().summaryState()).
+    const SummaryState* assemblySummaryState_ = nullptr;
+
+    //! \brief Summary state the residual assembly derives its active
+    //!        controls from; the live state unless overridden.
+    const SummaryState& assemblySummaryState(const Simulator& simulator) const
+    {
+        return (assemblySummaryState_ != nullptr)
+                   ? *assemblySummaryState_
+                   : simulator.vanguard().summaryState();
+    }
 
     Scalar wpolymer() const;
     Scalar wfoam() const;

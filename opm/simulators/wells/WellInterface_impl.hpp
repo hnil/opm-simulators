@@ -987,7 +987,10 @@ namespace Opm
                                    const bool solving_with_zero_rate)
     {
         OPM_TIMEFUNCTION();
-        const auto& summary_state = simulator.vanguard().summaryState();
+        // The active controls are derived from the summary state. Use the
+        // assembly seam (live state unless the adjoint injected a restored
+        // one) so the residual assembly can be reproduced from a snapshot.
+        const auto& summary_state = this->assemblySummaryState(simulator);
         const auto inj_controls = this->well_ecl_.isInjector() ? this->well_ecl_.injectionControls(summary_state) : Well::InjectionControls(0);
         const auto prod_controls = this->well_ecl_.isProducer() ? this->well_ecl_.productionControls(summary_state) : Well::ProductionControls(0);
         // TODO: the reason to have inj_controls and prod_controls in the arguments, is that we want to change the control used for the well functions
