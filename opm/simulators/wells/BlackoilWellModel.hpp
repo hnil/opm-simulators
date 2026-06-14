@@ -463,6 +463,31 @@ template<class Scalar> class WellContributions;
             // TODO: finding a better naming
             void assembleWellEqWithoutIteration(const double dt);
 
+            //! \brief Assemble the well equations at an already-converged,
+            //!        restored state, recomputing only the well-local
+            //!        quantities (prepareWellsBeforeAssembling) and not
+            //!        re-deriving the controls / group targets / network /
+            //!        guide rates.
+            //!
+            //! The full assemble() re-runs updateWellControlsAndNetwork,
+            //! which re-derives the group/control state and does not
+            //! reproduce the forward's converged values from a restored
+            //! snapshot (it produces a different allocation, and crashes on
+            //! shut wells). This entry point lets the adjoint replay
+            //! reproduce the forward well system from a snapshot. See
+            //! opm-adjoint/adjoint_refactoring.md.
+            void assembleWellEqGivenControls(const double dt)
+            {
+                // recompute the well primary variables from the restored
+                // (converged) well state, then the well-local quantities,
+                // then assemble - without touching the group/control state.
+                auto logger_guard = this->groupStateHelper().pushLogger();
+                updatePrimaryVariables();
+                prepareWellsBeforeAssembling(dt);
+                assembleWellEqWithoutIteration(dt);
+                updateCellRates();
+            }
+
             const std::vector<Scalar>& B_avg() const
             { return B_avg_; }
 
