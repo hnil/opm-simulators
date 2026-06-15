@@ -464,10 +464,14 @@ template<class Scalar> class WellContributions;
             void assembleWellEqWithoutIteration(const double dt);
 
             //! \brief Assemble the well equations at an already-converged,
-            //!        restored state, recomputing only the well-local
-            //!        quantities (prepareWellsBeforeAssembling) and not
+            //!        restored state, recomputing only the well primary
+            //!        variables (from the restored well state) and not
             //!        re-deriving the controls / group targets / network /
-            //!        guide rates.
+            //!        guide rates, nor re-running the well operability /
+            //!        inner-iteration decisions (prepareWellsBeforeAssembling,
+            //!        which belongs to the forward-only advance and does a
+            //!        shut-well name lookup that is unsafe on a restored
+            //!        snapshot).
             //!
             //! The full assemble() re-runs updateWellControlsAndNetwork,
             //! which re-derives the group/control state and does not
@@ -483,7 +487,6 @@ template<class Scalar> class WellContributions;
                 // then assemble - without touching the group/control state.
                 auto logger_guard = this->groupStateHelper().pushLogger();
                 updatePrimaryVariables();
-                prepareWellsBeforeAssembling(dt);
                 assembleWellEqWithoutIteration(dt);
                 updateCellRates();
             }
