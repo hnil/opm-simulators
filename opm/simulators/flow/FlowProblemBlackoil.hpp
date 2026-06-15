@@ -524,9 +524,12 @@ public:
         // also updated.
         this->eclWriter().mutableOutputModule().invalidateLocalData();
 
-        if (this->eclOutputEvalSupported_()) {
-            this->eclWriter_->evalSummaryState(!this->episodeWillBeOver());
-        }
+        // Evaluate the summary state for CpGrid with LGRs as well.  In serial
+        // the CollectDataOnIORank maps are the identity and the leaf-grid data
+        // is written directly; in parallel the name-keyed summary data (wells,
+        // groups, region values) is gathered to the I/O rank while cell-based
+        // restart/block output on refined grids is still being wired up.
+        this->eclWriter_->evalSummaryState(!this->episodeWillBeOver());
 
         {
             OPM_TIMEBLOCK(applyActions);
@@ -636,9 +639,9 @@ public:
         // the initial solution.
         this->thresholdPressures_.finishInit();
 
-        if (this->eclOutputEvalSupported_() &&
-            (this->simulator().episodeIndex() == 0))
-        {
+        // Compute the initial FIP report (also for CpGrid with LGRs) so the
+        // in-place reference values are available for the summary balance.
+        if (this->simulator().episodeIndex() == 0) {
             eclWriter_->writeInitialFIPReport();
         }
     }
