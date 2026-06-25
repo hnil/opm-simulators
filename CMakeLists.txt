@@ -696,6 +696,7 @@ macro(opm-simulators_targets_hook)
 
   set(FLOW_MODELS
     blackoil
+    blackoil_adaptive
     blackoil_legacyassembly
     blackoil_nohyst
     blackoil_temp
