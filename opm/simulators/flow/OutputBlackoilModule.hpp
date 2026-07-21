@@ -2079,17 +2079,35 @@ private:
                         mech.assignLinStress(ectx.globalDofIdx,
                                              model.linstress(ectx.globalDofIdx));
 
-                        mech.assignPotentialForces(ectx.globalDofIdx,
-                                                   model.mechPotentialForce(ectx.globalDofIdx),
-                                                   model.mechPotentialPressForce(ectx.globalDofIdx),
-                                                   model.mechPotentialTempForce(ectx.globalDofIdx));
+                        // Models may provide dedicated output forms of the
+                        // pressure/temperature potentials (e.g. with the
+                        // poroelastic amplification factor removed); prefer
+                        // those over the quantities used in the equations.
+                        if constexpr (requires { model.mechPotentialPressForceOutput(ectx.globalDofIdx); }) {
+                            mech.assignPotentialForces(ectx.globalDofIdx,
+                                                       model.mechPotentialForce(ectx.globalDofIdx),
+                                                       model.mechPotentialPressForceOutput(ectx.globalDofIdx),
+                                                       model.mechPotentialTempForceOutput(ectx.globalDofIdx));
+                        } else {
+                            mech.assignPotentialForces(ectx.globalDofIdx,
+                                                       model.mechPotentialForce(ectx.globalDofIdx),
+                                                       model.mechPotentialPressForce(ectx.globalDofIdx),
+                                                       model.mechPotentialTempForce(ectx.globalDofIdx));
+                        }
 
                         mech.assignStrain(ectx.globalDofIdx,
                                           model.strain(ectx.globalDofIdx, /*include_fracture*/true));
 
-                        // Total stress is not stored but calculated result is Voigt notation
-                        mech.assignStress(ectx.globalDofIdx,
-                                          model.stress(ectx.globalDofIdx, /*include_fracture*/true));
+                        // Total stress is not stored but calculated result is Voigt notation.
+                        // Prefer the model's output snapshot (valid even if the initial
+                        // stress is modified during the run) over recomputation.
+                        if constexpr (requires { model.outputstress(ectx.globalDofIdx); }) {
+                            mech.assignStress(ectx.globalDofIdx,
+                                              model.outputstress(ectx.globalDofIdx));
+                        } else {
+                            mech.assignStress(ectx.globalDofIdx,
+                                              model.stress(ectx.globalDofIdx, /*include_fracture*/true));
+                        }
 
                         // Only assign traction if TRACT/TRACT- is requested
                         if (mech.enableTraction()) {
@@ -3282,7 +3300,11 @@ private:
                                       [&model = this->simulator_.problem().geoMechModel()]
                                       (const VoigtIndex index, const Context& ectx)
                                       {
-                                          return model.stress(ectx.globalDofIdx, /*include_fracture*/true)[index];
+                                          if constexpr (requires { model.outputstress(ectx.globalDofIdx); }) {
+                                              return model.outputstress(ectx.globalDofIdx)[index];
+                                          } else {
+                                              return model.stress(ectx.globalDofIdx, /*include_fracture*/true)[index];
+                                          }
                                       }
                           }
                     });
