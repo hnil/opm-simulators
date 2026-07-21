@@ -77,6 +77,7 @@
 #include <cassert>
 #include <functional>
 #include <iterator>
+#include <numeric>
 #include <sstream>
 #include <stdexcept>
 #include <tuple>
@@ -225,7 +226,7 @@ initFromRestartFile(const RestartValue& restartValues,
     this->local_parallel_well_info_ = createLocalParallelWellInfo(wells_ecl_);
 
     this->initializeWellProdIndCalculators();
-    initializeWellPerfData();
+    this->initializeWellPerfData(report_step);
 
     const bool handle_ms_well = param_.use_multisegment_well_ && anyMSWellOpenLocal();
     // Resize for restart step
@@ -271,7 +272,7 @@ prepareDeserialize(int report_step, const std::size_t numCells, bool enable_dist
     this->local_parallel_well_info_ = createLocalParallelWellInfo(wells_ecl_);
 
     this->initializeWellProdIndCalculators();
-    initializeWellPerfData();
+    this->initializeWellPerfData(report_step);
 
     if (! this->wells_ecl_.empty()) {
         const bool handle_ms_well = param_.use_multisegment_well_ && anyMSWellOpenLocal();
@@ -279,8 +280,8 @@ prepareDeserialize(int report_step, const std::size_t numCells, bool enable_dist
                                  this->schedule(), handle_ms_well, numCells,
                                  this->well_perf_data_, this->summaryState_, enable_distributed_wells,
                                  this->eclState().getSimulationConfig().isThermal());
-
     }
+
     this->wellState().clearWellRates();
     this->commitWGState();
     this->updateNupcolWGState();
@@ -338,9 +339,11 @@ initializeWellProdIndCalculators()
 
 template<typename Scalar, typename IndexTraits>
 void BlackoilWellModelGeneric<Scalar, IndexTraits>::
-initializeWellPerfData()
+initializeWellPerfData(const int report_step)
 {
     well_perf_data_.resize(wells_ecl_.size());
+
+    auto allFound = std::vector<int>(this->schedule().numWells(report_step), 0);
 
     this->conn_idx_map_.clear();
     this->conn_idx_map_.reserve(wells_ecl_.size());
@@ -368,7 +371,6 @@ initializeWellPerfData()
 
         auto& parallelWellInfo = this->local_parallel_well_info_[well_index].get();
         parallelWellInfo.beginReset();
-
 
         for (const auto& connection : well.getConnections()) {
 
@@ -427,11 +429,38 @@ initializeWellPerfData()
 
         parallelWellInfo.endReset();
 
-        checker.checkAllConnectionsFound();
+        {
+            const auto& [found, msg] = checker.checkAllConnectionsFound();
+            allFound[well.seqIndex()] = static_cast<int>(found);
+            if (!found && !msg.empty() && parallelWellInfo.isOwner()) {
+                OpmLog::warning(msg);
+            }
+        }
 
         parallelWellInfo.communicateFirstPerforation(hasFirstConnection);
 
         ++well_index;
+    }
+
+    // Make the verdict collectively so every rank takes the same path
+    // (a throw on the owning rank alone would deadlock the others).
+    this->comm_.sum(allFound.data(), allFound.size());
+
+    const auto numMissing = std::count(allFound.begin(), allFound.end(), 0);
+
+    if (numMissing > 0) {
+        const auto text =
+            fmt::format("{} well(s) have connections in cells that are not "
+                        "part of the grid at report step {}",
+                        numMissing, report_step);
+        if (this->continueOnMissingWellConnections()) {
+            // A derived well model (e.g. one creating connections
+            // dynamically from a fracture model) may accept this.
+            OpmLog::info(text);
+        }
+        else {
+            OPM_THROW_NOLOG(std::runtime_error, text);
+        }
     }
 }
 
