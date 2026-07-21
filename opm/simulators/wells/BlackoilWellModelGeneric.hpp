@@ -467,7 +467,14 @@ protected:
     /// \param reportStepIdx Report step whose well set to register
     void registerNewParallelWells(int reportStepIdx);
     void initializeWellProdIndCalculators();
-    void initializeWellPerfData();
+    void initializeWellPerfData(const int report_step);
+
+    /// Policy for wells whose connections reference cells not present in
+    /// the grid: by default this is a hard error.  Well models that create
+    /// connections dynamically (e.g. from a fracture model) may override
+    /// this to continue with the affected connections inactive.
+    virtual bool continueOnMissingWellConnections() const
+    { return false; }
 
     bool wasDynamicallyShutThisTimeStep(const std::size_t well_index) const;
 
