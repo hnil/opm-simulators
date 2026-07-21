@@ -67,6 +67,7 @@
 #include <limits>
 #include <map>
 #include <set>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -1998,17 +1999,36 @@ private:
                         mech.assignLinStress(ectx.globalDofIdx,
                                              model.linstress(ectx.globalDofIdx));
 
-                        mech.assignPotentialForces(ectx.globalDofIdx,
-                                                   model.mechPotentialForce(ectx.globalDofIdx),
-                                                   model.mechPotentialPressForce(ectx.globalDofIdx),
-                                                   model.mechPotentialTempForce(ectx.globalDofIdx));
+                        // Models may provide dedicated output forms of the
+                        // pressure/temperature potentials (e.g. with the
+                        // poroelastic amplification factor removed); prefer
+                        // those over the quantities used in the equations.
+                        if constexpr (requires { model.mechPotentialPressForceOutput(ectx.globalDofIdx); }) {
+                            mech.assignPotentialForces(ectx.globalDofIdx,
+                                                       model.mechPotentialForce(ectx.globalDofIdx),
+                                                       model.mechPotentialPressForceOutput(ectx.globalDofIdx),
+                                                       model.mechPotentialTempForceOutput(ectx.globalDofIdx));
+                        } else {
+                            mech.assignPotentialForces(ectx.globalDofIdx,
+                                                       model.mechPotentialForce(ectx.globalDofIdx),
+                                                       model.mechPotentialPressForce(ectx.globalDofIdx),
+                                                       model.mechPotentialTempForce(ectx.globalDofIdx));
+                        }
 
                         mech.assignStrain(ectx.globalDofIdx,
                                           model.strain(ectx.globalDofIdx, /*include_fracture*/true));
 
-                        // Total stress is not stored but calculated result is Voigt notation
-                        mech.assignStress(ectx.globalDofIdx,
-                                          model.stress(ectx.globalDofIdx, /*include_fracture*/true));
+                        // Total stress is not stored but calculated; the result is in
+                        // Voigt notation.  Models that provide an output snapshot
+                        // (which stays valid even if the initial stress is modified
+                        // during the run) are preferred over recomputation.
+                        if constexpr (requires { model.outputstress(ectx.globalDofIdx); }) {
+                            mech.assignStress(ectx.globalDofIdx,
+                                              model.outputstress(ectx.globalDofIdx));
+                        } else {
+                            mech.assignStress(ectx.globalDofIdx,
+                                              model.stress(ectx.globalDofIdx, /*include_fracture*/true));
+                        }
                     },
                     true
                 );
@@ -2024,6 +2044,7 @@ private:
         using Context = typename BlockExtractor::Context;
         using PhaseEntry = typename BlockExtractor::PhaseEntry;
         using ScalarEntry = typename BlockExtractor::ScalarEntry;
+        using TensorEntry = typename BlockExtractor::TensorEntry;
 
         using namespace std::string_view_literals;
 
@@ -3171,13 +3192,39 @@ private:
             },
         };
 
-        this->blockExtractors_ = BlockExtractor::setupExecMap(this->blockData_, handlers);
+        // Module-specific extensions of the handler table.  The base table
+        // is used unchanged (and without copying) when no extension applies.
+        auto handler_span = std::span<const Entry>{handlers};
+        auto extended_handlers = std::vector<Entry>{};
+        if constexpr (getPropValue<TypeTag, Properties::EnableMech>()) {
+            if (this->mech_.allocated()) {
+                extended_handlers.assign(handlers.begin(), handlers.end());
+                extended_handlers.push_back(
+                    Entry{TensorEntry{"BSTRSS",
+                                      [&model = this->simulator_.problem().geoMechModel()]
+                                      (const VoigtIndex index, const Context& ectx)
+                                      {
+                                          if constexpr (requires { model.outputstress(ectx.globalDofIdx); }) {
+                                              return model.outputstress(ectx.globalDofIdx)
+                                                  [static_cast<int>(index)];
+                                          } else {
+                                              return model.stress(ectx.globalDofIdx, /*include_fracture*/true)
+                                                  [static_cast<int>(index)];
+                                          }
+                                      }
+                          }
+                    });
+                handler_span = extended_handlers;
+            }
+        }
+
+        this->blockExtractors_ = BlockExtractor::setupExecMap(this->blockData_, handler_span);
 
         // The LGR-cell extractors reuse the same handler list -- the
         // physics is identical, only the cell identification differs.
         // Empty for runs without LB* requests (zero non-LGR cost).
         this->lgrBlockExtractors_ =
-            BlockExtractor::setupLgrExecMap(this->lgrBlockData_, handlers);
+            BlockExtractor::setupLgrExecMap(this->lgrBlockData_, handler_span);
 
         this->extraBlockData_.clear();
         if (reportStepNum > 0 && !isSubStep) {
