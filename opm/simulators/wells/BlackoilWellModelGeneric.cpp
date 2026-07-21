@@ -83,6 +83,7 @@
 #include <cassert>
 #include <functional>
 #include <iterator>
+#include <numeric>
 #include <sstream>
 #include <stdexcept>
 #include <tuple>
@@ -230,7 +231,7 @@ initFromRestartFile(const RestartValue& restartValues,
     this->local_parallel_well_info_ = createLocalParallelWellInfo(wells_ecl_);
 
     this->initializeWellProdIndCalculators();
-    initializeWellPerfData();
+    this->initializeWellPerfData(report_step);
 
     const bool handle_ms_well = param_.use_multisegment_well_ && anyMSWellOpenLocal();
     // Resize for restart step
@@ -312,7 +313,7 @@ prepareDeserialize(int report_step, const std::size_t numCells, bool enable_dist
     this->local_parallel_well_info_ = createLocalParallelWellInfo(wells_ecl_);
 
     this->initializeWellProdIndCalculators();
-    initializeWellPerfData();
+    this->initializeWellPerfData(report_step);
 
     // Resize unconditionally, including when this rank has no local wells at
     // report_step. Skipping it there leaves the PREVIOUS call's well state in
@@ -488,7 +489,7 @@ initializeWellProdIndCalculators()
 
 template<typename Scalar, typename IndexTraits>
 void BlackoilWellModelGeneric<Scalar, IndexTraits>::
-initializeWellPerfData()
+initializeWellPerfData(const int report_step)
 {
     well_perf_data_.resize(wells_ecl_.size());
 
@@ -521,7 +522,6 @@ initializeWellPerfData()
 
         auto& parallelWellInfo = this->local_parallel_well_info_[well_index].get();
         parallelWellInfo.beginReset();
-
 
         for (const auto& connection : well.getConnections()) {
 
@@ -596,6 +596,12 @@ initializeWellPerfData()
         if (missingCells.empty()) {
             missingCells = "Connection cells of a well were not found "
                            "in grid on another rank";
+        }
+        // A derived well model (one adding connections from a fracture
+        // model) may accept this.
+        if (this->continueOnMissingWellConnections()) {
+            OpmLog::info(missingCells);
+            return;
         }
         OPM_THROW(std::runtime_error, missingCells);
     }
