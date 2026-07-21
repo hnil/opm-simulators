@@ -277,7 +277,7 @@ namespace Opm {
         OPM_BEGIN_PARALLEL_TRY_CATCH()
         {
             if (initializeWellState) {
-                this->initializeWellPerfData();
+                this->initializeWellPerfData(reportStepIdx);
                 this->initializeWellState(reportStepIdx);
             }
             this->wbp_.initializeWBPCalculationService();
