@@ -575,7 +575,10 @@ initializeWellPerfData()
 
         parallelWellInfo.endReset();
 
-        checker.checkAllConnectionsFound();
+        // The verdict is reduced over the ranks, so every rank stops together.
+        if (const auto [found, msg] = checker.checkAllConnectionsFound(); !found) {
+            OPM_THROW(std::runtime_error, msg);
+        }
 
         parallelWellInfo.communicateFirstPerforation(hasFirstConnection);
 
