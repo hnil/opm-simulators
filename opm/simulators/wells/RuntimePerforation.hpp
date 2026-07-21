@@ -20,6 +20,9 @@
 #ifndef OPM_RUNTIME_PERFORATION_HPP_INCLUDED
 #define OPM_RUNTIME_PERFORATION_HPP_INCLUDED
 
+#include <optional>
+#include <utility>
+
 namespace Opm {
 
 /// Simple model of a well connection created at runtime, possibly as a
