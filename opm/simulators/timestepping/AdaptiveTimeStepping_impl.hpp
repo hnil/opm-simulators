@@ -1532,7 +1532,9 @@ runSubStep_()
     catch (const Dune::MatrixBlockError& e) {
         handleFailure("Matrix block error", e);
     }
-
+    catch (const std::exception& e) {
+        handleFailure("Unexpected error during solver step", e);
+    }
     return substep_report;
 }
 
