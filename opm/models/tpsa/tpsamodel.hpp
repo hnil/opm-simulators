@@ -526,12 +526,29 @@ public:
     * cells (output, fracture models) should call updateStressCache() once
     * after each mechanics solve instead of reconstructing per call.
     */
-    const SymTensor& outputstress(const unsigned globalIdx) const
+    SymTensor outputstress(const unsigned globalIdx) const
     {
         if (!stressCacheValid_) {
             updateStressCache();
         }
-        return stressCache_[globalIdx];
+        auto val = stressCache_[globalIdx];
+        if (!outputStressOffset_.empty()) {
+            val += outputStressOffset_[globalIdx];
+        }
+        return val;
+    }
+
+    /*!
+    * rief Set a per-cell background (initial) stress added to the
+    *        reconstructed stress in outputstress()
+    *
+    * The TPSA solve is relative to an unstressed initial state; problems
+    * that know the initial in-situ stress (e.g. from STRESSEQUIL) can set
+    * it here so the reported stress is the total stress.
+    */
+    void setOutputStressOffset(std::vector<SymTensor> offset)
+    {
+        outputStressOffset_ = std::move(offset);
     }
 
     /*!
@@ -785,6 +802,7 @@ private:
     // cache can serve const output accessors.
     mutable std::vector<SymTensor> stressCache_;
     mutable bool stressCacheValid_{false};
+    std::vector<SymTensor> outputStressOffset_;
 
     // prepareTPSA() rolls the solution history at most once per time step.
     bool historyRolledThisStep_{false};
