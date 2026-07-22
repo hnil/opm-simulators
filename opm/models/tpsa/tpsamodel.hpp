@@ -203,12 +203,45 @@ public:
     }
 
     /*!
+    * \brief Called at the start of each time step
+    *
+    * Re-arms the once-per-step history roll performed by prepareTPSA().
+    */
+    void beginTimeStep()
+    {
+        historyRolledThisStep_ = false;
+    }
+
+    /*!
     * \brief Prepare TPSA model for coupled Flow-TPSA scheme
+    *
+    * Rolls the solution history at most once per time step: outer schemes
+    * (e.g. a fracture coupling loop) may restart the fixed-stress sequence
+    * within the same step, and a second roll would overwrite the
+    * begin-of-step state with the current iterate.
     */
     void prepareTPSA()
     {
+        if (historyRolledThisStep_) {
+            return;
+        }
+
         // Update historic solution
         solution(/*timeIdx=*/1) = solution(/*timeIdx=*/0);
+        historyRolledThisStep_ = true;
+    }
+
+    /*!
+    * \brief Restore the begin-of-step mechanics state after a failed step
+    *
+    * The current solution holds the last (rejected) iterate; restore it
+    * from the history so the retried step starts from the same state as
+    * the failed one did.
+    */
+    void updateFailed()
+    {
+        solution(/*timeIdx=*/0) = solution(/*timeIdx=*/1);
+        updateMaterialState(/*timeIdx=*/0);
     }
 
     /*!
@@ -734,6 +767,9 @@ private:
     // cache can serve const output accessors.
     mutable std::vector<SymTensor> stressCache_;
     mutable bool stressCacheValid_{false};
+
+    // prepareTPSA() rolls the solution history at most once per time step.
+    bool historyRolledThisStep_{false};
 };  // class TpsaModel
 
 }  // namespace Opm
