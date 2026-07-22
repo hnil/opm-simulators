@@ -3197,7 +3197,12 @@ private:
         auto handler_span = std::span<const Entry>{handlers};
         auto extended_handlers = std::vector<Entry>{};
         if constexpr (getPropValue<TypeTag, Properties::EnableMech>()) {
-            if (this->mech_.allocated()) {
+            // Key on mech being active, NOT on the restart container being
+            // allocated: mech_.allocated() only holds at report steps (when
+            // restart buffers exist), so gating the summary handler on it
+            // left BSTRSS* block vectors frozen at their last report-step
+            // value for all intermediate ministeps.
+            if (this->eclState_.runspec().mech()) {
                 extended_handlers.assign(handlers.begin(), handlers.end());
                 extended_handlers.push_back(
                     Entry{TensorEntry{"BSTRSS",
