@@ -46,6 +46,7 @@
 #include <opm/simulators/flow/FlowProblemBlackoil.hpp>
 #include <opm/simulators/flow/FlowProblemParameters.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <memory>
 #include <stdexcept>
@@ -353,6 +354,22 @@ public:
             const auto& mechbcval = bc.mechbcvalue;
             return {BCMECHType::SPRING, EvalDimVector{0.0, 0.0, 0.0},
                     mechbcval.distance, mechbcval.shearmodulus};
+        }
+        if (bc.bcmechtype == BCMECHType::FIXED) {
+            // Zero displacement only; a per-direction mask is clamped in full.
+            const auto& mech = bc.mechbcvalue;
+            if (std::any_of(mech.disp.begin(), mech.disp.end(),
+                            [](const double d) { return d != 0.0; })) {
+                throw std::runtime_error("BCPROP FIXED with non-zero displacement "
+                                         "is not implemented in TPSA");
+            }
+            if (!std::all_of(mech.fixeddir.begin(), mech.fixeddir.end(),
+                             [](const bool b) { return b; })) {
+                OpmLog::warning("TPSA_FIXED_BC_CLAMPED",
+                                "BCPROP FIXED with a per-direction mask: TPSA clamps "
+                                "all displacement components to zero (roller "
+                                "conditions are not yet implemented).");
+            }
         }
 
         // Default return
