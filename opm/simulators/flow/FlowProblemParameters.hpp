@@ -69,6 +69,13 @@ struct UseHybridNewton { static constexpr bool value = false; };
 // Conserve inner energy instead of enthalpy even if THERMAL is used
 struct ConserveInnerEnergyThermal { static constexpr bool value = false; };
 
+// Feed the geomechanical pore-volume change back into the flow equations
+// (rockMechPoroChange).  Default on for the TPSA solver (its native
+// behaviour); mechanics problems without this feedback register the same
+// parameter with default off, so backend comparisons can run with identical
+// coupling.
+struct MechPorosityCoupling { static constexpr bool value = true; };
+
 } // namespace Opm::Parameters
 
 namespace Opm {

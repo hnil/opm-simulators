@@ -43,6 +43,7 @@
 
 #include <opm/simulators/flow/FacePropertiesTPSA.hpp>
 #include <opm/simulators/flow/FlowProblemBlackoil.hpp>
+#include <opm/simulators/flow/FlowProblemParameters.hpp>
 
 #include <cmath>
 #include <memory>
@@ -152,6 +153,10 @@ public:
 
         // VTK output parameters
         VtkTpsaModule<TypeTag>::registerParameters();
+
+        Parameters::Register<Parameters::MechPorosityCoupling>
+            ("Feed the geomechanical pore-volume change back into the flow "
+             "equations");
     }
 
     /*!
@@ -391,6 +396,12 @@ public:
     */
     Scalar rockMechPoroChange(unsigned elementIdx, unsigned timeIdx) const
     {
+        // Optional decoupling switch, mainly for comparing mechanics
+        // backends under identical flow physics.
+        if (!Parameters::Get<Parameters::MechPorosityCoupling>()) {
+            return 0.0;
+        }
+
         // TODO: get timeIdx=1 solid pressure from a cached materialState (or intensiveQuantities) if/when implemented
         assert (timeIdx <= historySize);
         const auto solidPres = (timeIdx == 0) ?
