@@ -220,6 +220,12 @@ public:
     void eraseMatrix()
     {
         jacobian_.reset();
+        // createMatrix_() only rebuilds when the neighbor information is
+        // empty; without clearing it here the next linearization would run
+        // with a null Jacobian.  Clearing forces a full sparsity/neighbor
+        // regeneration on the next initFirstIteration_().
+        neighborInfo_ = {};
+        boundaryInfo_.clear();
     }
 
     /*!
