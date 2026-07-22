@@ -684,9 +684,9 @@ public:
     *
     * \note Needed in OutputBlackOilModule, but zero for now!
     */
-    Scalar mechPotentialForce(unsigned /*globalIdx*/) const
+    Scalar mechPotentialForce(unsigned globalIdx) const
     {
-        return Scalar(0.0);
+        return mechPotentialPressForce(globalIdx) + mechPotentialTempForce(globalIdx);
     }
 
     /*!
@@ -697,9 +697,18 @@ public:
     *
     * \note Needed in OutputBlackOilModule, but zero for now!
     */
-    Scalar mechPotentialPressForce(unsigned /*globalIdx*/) const
+    Scalar mechPotentialPressForce(unsigned globalIdx) const
     {
-        return Scalar(0.0);
+        return simulator_.problem().mechPotentialPressForce(globalIdx);
+    }
+
+    /*!
+    * rief Pressure potential in displacement-potential normalization
+    */
+    Scalar mechPotentialPressForceOutput(unsigned globalIdx) const
+    {
+        return mechPotentialPressForce(globalIdx)
+            * simulator_.problem().mechPotentialOutputFactor(globalIdx);
     }
 
     /*!
@@ -710,9 +719,18 @@ public:
     *
     * \note Needed in OutputBlackOilModule, but zero for now!
     */
-    Scalar mechPotentialTempForce(unsigned /*globalIdx*/) const
+    Scalar mechPotentialTempForce(unsigned globalIdx) const
     {
-        return Scalar(0.0);
+        return simulator_.problem().mechPotentialTempForce(globalIdx);
+    }
+
+    /*!
+    * rief Temperature potential in displacement-potential normalization
+    */
+    Scalar mechPotentialTempForceOutput(unsigned globalIdx) const
+    {
+        return mechPotentialTempForce(globalIdx)
+            * simulator_.problem().mechPotentialOutputFactor(globalIdx);
     }
 
 protected:

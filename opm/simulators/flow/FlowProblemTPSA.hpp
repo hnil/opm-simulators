@@ -386,6 +386,48 @@ public:
     }
 
     /*!
+    * \brief Pressure part of the mechanical potential force, biot*(p - p0)
+    */
+    Scalar mechPotentialPressForce(unsigned globalSpaceIdx) const
+    {
+        const auto& fs = this->model().intensiveQuantities(globalSpaceIdx, /*timeIdx=*/0).fluidState();
+        const auto pres = decay<Scalar>(fs.pressure(this->refPressurePhaseIdx_()));
+        const auto initPres = this->initialFluidState(globalSpaceIdx).pressure(this->refPressurePhaseIdx_());
+        return this->biotCoeff(globalSpaceIdx) * (pres - initPres);
+    }
+
+    /*!
+    * \brief Temperature part of the mechanical potential force, tcoeff*(T - T0)
+    */
+    Scalar mechPotentialTempForce(unsigned globalSpaceIdx) const
+    {
+        const auto tcoeff = this->thermalStressCoeff(globalSpaceIdx);
+        if (tcoeff == 0.0) {
+            return 0.0;
+        }
+        const auto& fs = this->model().intensiveQuantities(globalSpaceIdx, /*timeIdx=*/0).fluidState();
+        const auto temp = decay<Scalar>(fs.temperature(this->refPressurePhaseIdx_()));
+        const auto initTemp = this->initialFluidState(globalSpaceIdx).temperature(this->refPressurePhaseIdx_());
+        return tcoeff * (temp - initTemp);
+    }
+
+    /*!
+    * \brief Displacement-potential normalization factor (1-2nu)/(1-nu)
+    *
+    * Used by the *Output potential-force variants to report the
+    * displacement potential instead of the amplified force, matching the
+    * VEM geomechanics output convention.  1 when PRATIO is not available.
+    */
+    Scalar mechPotentialOutputFactor(unsigned globalSpaceIdx) const
+    {
+        const auto nu = this->pRatio(globalSpaceIdx);
+        if (nu <= 0.0 || nu >= 0.5) {
+            return 1.0;
+        }
+        return (1.0 - 2.0 * nu) / (1.0 - nu);
+    }
+
+    /*!
     * \brief Pore volume change due to geomechanics
     *
     * \param elementIdx Cell index

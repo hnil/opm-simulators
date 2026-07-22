@@ -175,6 +175,12 @@ public:
     Scalar thermalStressCoeff(unsigned elementIdx) const;
 
     /*!
+    * \brief Poisson's ratio in an element (PRATIO field property; zero if
+    *        the deck does not provide it)
+    */
+    Scalar pRatio(unsigned elementIdx) const;
+
+    /*!
      * \brief Sets the porosity of an element
      *
      */

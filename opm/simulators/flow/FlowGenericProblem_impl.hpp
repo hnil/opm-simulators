@@ -409,6 +409,18 @@ thermalStressCoeff(unsigned elementIdx) const
 template<class GridView, class FluidSystem>
 typename FlowGenericProblem<GridView,FluidSystem>::Scalar
 FlowGenericProblem<GridView,FluidSystem>::
+pRatio(unsigned elementIdx) const
+{
+    const auto& fp = eclState_.fieldProps();
+    if (fp.has_double("PRATIO")) {
+        return this->lookUpData_.fieldPropDouble(fp, "PRATIO", elementIdx);
+    }
+    return 0.0;
+}
+
+template<class GridView, class FluidSystem>
+typename FlowGenericProblem<GridView,FluidSystem>::Scalar
+FlowGenericProblem<GridView,FluidSystem>::
 biotCoeff(unsigned elementIdx) const
 {
     Scalar biotC;
