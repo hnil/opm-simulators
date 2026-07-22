@@ -3293,7 +3293,10 @@ private:
         auto blockHandlers = std::span<const Entry>{handlers};
         auto mechHandlers = std::vector<Entry>{};
         if constexpr (getPropValue<TypeTag, Properties::EnableMech>()) {
-            if (this->mech_.allocated()) {
+            // Key on mech being active, NOT on the restart container being
+            // allocated: mech_.allocated() only holds at report steps, so gating
+            // on it froze BSTRSS* block vectors between report steps.
+            if (this->eclState_.runspec().mech()) {
                 mechHandlers.assign(handlers.begin(), handlers.end());
                 mechHandlers.push_back(
                     Entry{TensorEntry{"BSTRSS",
