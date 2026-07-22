@@ -204,6 +204,11 @@ public:
         inj_fc_multiplier_ = inj_fc_multiplier;
     }
 
+    //! \brief Filter-cake (WINJDAM) transmissibility multipliers per local
+    //! perforation; empty when no filtration model is active.
+    const std::vector<Scalar>& filterCakeMultipliers() const
+    { return inj_fc_multiplier_; }
+
     void resetWellOperability();
 
     virtual std::vector<Scalar> getPrimaryVars() const

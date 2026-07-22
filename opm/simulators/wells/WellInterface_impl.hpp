@@ -1923,6 +1923,23 @@ namespace Opm
             OPM_THROW(std::invalid_argument,"The perforation index exceeds the size of the local containers - possibly wellIndex was called with a global instead of a local perforation index!");
         }
 
+        // WINJDAM formation-damage (filter-cake) multiplier.  Applied to the
+        // connection transmissibility instead of the mobility so that it
+        // damages ONLY the original (radial/linear-radial cake) perforation
+        // path: the fracture contribution added below carries its own flat
+        // filter-cake resistance inside the fracture model, and a mobility
+        // multiplier would wrongly scale both parallel paths.
+        if (this->isInjector() && !this->inj_fc_multiplier_.empty()) {
+            const auto perf_ecl_index = this->perforationData()[perf].ecl_index;
+            const auto& connection = this->well_ecl_.getConnections()[perf_ecl_index];
+            if (connection.filterCakeActive()) {
+                const Scalar mult = this->inj_fc_multiplier_[perf];
+                for (auto& tw : Tw) {
+                    tw *= mult;
+                }
+            }
+        }
+
         // Contribution from dynamically created fracture perforations, if a
         // fracture model has registered any (see addFracturePerforations();
         // the container is empty otherwise and this is a no-op).
@@ -2191,17 +2208,10 @@ namespace Opm
             }
         }
 
-        if (this->isInjector() && !this->inj_fc_multiplier_.empty()) {
-            const auto perf_ecl_index = this->perforationData()[local_perf_index].ecl_index;
-            const auto& connections = this->well_ecl_.getConnections();
-            const auto& connection = connections[perf_ecl_index];
-            if (connection.filterCakeActive()) {
-                std::ranges::transform(mob, mob.begin(),
-                                       [mult = this->inj_fc_multiplier_[local_perf_index]]
-                                       (const auto val)
-                                       { return val * mult; });
-            }
-        }
+        // NOTE: the WINJDAM filter-cake multiplier is applied to the
+        // connection transmissibility in getTw(), not to the mobility here,
+        // so that fracture contributions to the well index are not damaged
+        // by the perforation cake (they carry their own cake resistance).
     }
 
 
