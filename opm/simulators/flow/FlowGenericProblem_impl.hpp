@@ -385,6 +385,30 @@ lame(unsigned elementIdx) const
 template<class GridView, class FluidSystem>
 typename FlowGenericProblem<GridView,FluidSystem>::Scalar
 FlowGenericProblem<GridView,FluidSystem>::
+thermalStressCoeff(unsigned elementIdx) const
+{
+    // Thermal stress modulus tcoeff = 3*K*alpha:
+    //   THELCOEF = THERMEXR*E/(1 - nu)      =>  tcoeff = THELCOEF*(1-nu)/(1-2nu)
+    //   equivalently tcoeff = THERMEXR*E/(1-2nu)
+    const auto& fp = eclState_.fieldProps();
+    if (fp.has_double("THELCOEF") && fp.has_double("PRATIO")) {
+        const auto& thelCoef = this->lookUpData_.fieldPropDouble(fp, "THELCOEF", elementIdx);
+        const auto& pRatio = this->lookUpData_.fieldPropDouble(fp, "PRATIO", elementIdx);
+        return thelCoef * (1 - pRatio) / (1 - 2 * pRatio);
+    }
+    else if (fp.has_double("THERMEXR") && fp.has_double("YMODULE") && fp.has_double("PRATIO")) {
+        const auto& thermExr = this->lookUpData_.fieldPropDouble(fp, "THERMEXR", elementIdx);
+        const auto& yModulus = this->lookUpData_.fieldPropDouble(fp, "YMODULE", elementIdx);
+        const auto& pRatio = this->lookUpData_.fieldPropDouble(fp, "PRATIO", elementIdx);
+        return thermExr * yModulus / (1 - 2 * pRatio);
+    }
+
+    return 0.0;
+}
+
+template<class GridView, class FluidSystem>
+typename FlowGenericProblem<GridView,FluidSystem>::Scalar
+FlowGenericProblem<GridView,FluidSystem>::
 biotCoeff(unsigned elementIdx) const
 {
     Scalar biotC;

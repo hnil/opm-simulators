@@ -364,6 +364,20 @@ public:
 
         auto sourceFromFlow = -biot / lameParam * (pres - initPres);
         sourceTerm[contiSolidPresEqIdx] += sourceFromFlow;
+
+        // Thermoelastic coupling: same structure as the Biot term, with the
+        // thermal stress modulus tcoeff = 3*K*alpha in place of the Biot
+        // coefficient.  Inactive unless the deck provides thermoelastic
+        // input (THELCOEF or THERMEXR); without a temperature equation the
+        // fluid-state temperature stays at its initial value and the term
+        // vanishes identically.
+        const auto tcoeff = this->thermalStressCoeff(globalSpaceIdx);
+        if (tcoeff != 0.0) {
+            const auto temp = decay<Scalar>(fs.temperature(this->refPressurePhaseIdx_()));
+            const auto initTemp = this->initialFluidState(globalSpaceIdx)
+                                      .temperature(this->refPressurePhaseIdx_());
+            sourceTerm[contiSolidPresEqIdx] += -tcoeff / lameParam * (temp - initTemp);
+        }
     }
 
     /*!

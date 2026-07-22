@@ -166,6 +166,15 @@ public:
     Scalar biotCoeff(unsigned elementIdx) const;
 
     /*!
+    * \brief Thermal stress modulus (3*K*alpha) in an element
+    *
+    * From THELCOEF (+PRATIO) or THERMEXR (+YMODULE, PRATIO); zero when the
+    * deck provides no thermoelastic input, in which case thermal stress
+    * coupling is inactive.
+    */
+    Scalar thermalStressCoeff(unsigned elementIdx) const;
+
+    /*!
      * \brief Sets the porosity of an element
      *
      */
