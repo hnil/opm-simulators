@@ -542,22 +542,25 @@ private:
                     const auto& faceNormal = problem.cellFaceNormal(globI, globJ);
                     stressInfo_[globI][loc].faceNormal = faceNormal;
                     stressInfo_[globI][loc].faceArea = nbInfo.faceArea;
-                    // The momentum face term interpolates the solid (total)
-                    // pressure between the two cells.  The traction stored for
-                    // the cell-centered stress reconstruction instead uses the
-                    // cell's own solid pressure, so that sharp single-cell
-                    // loads (e.g. a thermal front at an injector) are not
-                    // smeared into the neighbors.  The residual itself is
-                    // unchanged.
+                    for (unsigned tractionIdx = 0; tractionIdx < 3; ++tractionIdx) {
+                        stressInfo_[globI][loc].traction[tractionIdx] = res[tractionIdx];
+                    }
+                    // The scheme's face traction (stored above) contains the
+                    // face value of the solid (total) pressure obtained from
+                    // the two-point traction-continuity closure,
+                    // wIn*psIn + wEx*psEx.  For a constitutive-consistent
+                    // CELL-CENTERED stress estimate the volumetric part should
+                    // instead use the cell's own solid pressure (a primary
+                    // variable carrying the full local Biot/thermal load).
+                    // Store the difference separately so the stress
+                    // reconstruction can localize the volumetric part without
+                    // altering the scheme's (continuous) traction.
                     const Scalar psIn = decay<Scalar>(materialStateIn.solidPressure());
                     const Scalar psEx = decay<Scalar>(materialStateEx.solidPressure());
                     const Scalar wIn = problem.weightAverage(globI, globJ);
                     const Scalar wEx = problem.weightAverage(globJ, globI);
-                    const Scalar psCorr = (wIn * psIn + wEx * psEx - psIn) * nbInfo.faceArea;
-                    for (unsigned tractionIdx = 0; tractionIdx < 3; ++tractionIdx) {
-                        stressInfo_[globI][loc].traction[tractionIdx] =
-                            res[tractionIdx] + faceNormal[tractionIdx] * psCorr;
-                    }
+                    stressInfo_[globI][loc].psLocalCorr =
+                        (wIn * psIn + wEx * psEx - psIn) * nbInfo.faceArea;
                     ++loc;
                 }
             }
@@ -784,6 +787,11 @@ private:
         StressInfoVector traction;
         StressInfoVector faceNormal;
         double faceArea;
+        //! Correction (times face area) that replaces the face value of the
+        //! solid pressure in `traction` by the cell's own value:
+        //! traction_local = traction + faceNormal * psLocalCorr.  Zero for
+        //! boundary faces (the boundary closure already uses the cell value).
+        double psLocalCorr{0.0};
     };
 
     SparseTable<StressInfo> stressInfo_{};

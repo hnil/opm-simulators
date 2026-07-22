@@ -642,11 +642,22 @@ private:
                         mat[3*rowIdx + 2][5] = fNormal[1];
                     }
 
-                    // Add traction vectors for same faces
+                    // Add traction vectors for same faces.  The stored
+                    // traction is the scheme's continuous face traction, whose
+                    // volumetric part carries the two-point face value of the
+                    // solid (total) pressure.  For the cell-centered stress
+                    // estimate, psLocalCorr replaces that face value by the
+                    // cell's own solid pressure, so that sharp single-cell
+                    // Biot/thermal loads (e.g. a cold injector cell) are not
+                    // smeared into the neighbors.  This is a post-processing
+                    // (output/fracture-input) choice only; the discrete
+                    // solution itself is built on the continuous traction.
                     const auto& fTraction = faceStressInfo.traction;
-                    rhs[3*rowIdx] += fTraction[0];
-                    rhs[3*rowIdx + 1] += fTraction[1];
-                    rhs[3*rowIdx + 2] += fTraction[2];
+                    const auto& fNorm = faceStressInfo.faceNormal;
+                    const auto psCorr = faceStressInfo.psLocalCorr;
+                    rhs[3*rowIdx] += fTraction[0] + fNorm[0] * psCorr;
+                    rhs[3*rowIdx + 1] += fTraction[1] + fNorm[1] * psCorr;
+                    rhs[3*rowIdx + 2] += fTraction[2] + fNorm[2] * psCorr;
 
                     // Sum face area
                     sumFaceArea += faceStressInfo.faceArea;
