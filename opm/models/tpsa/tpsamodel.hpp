@@ -248,6 +248,10 @@ public:
     */
     void updateMaterialState(const unsigned /*timeIdx*/)
     {
+        // The mechanics state changes, so any cached stress reconstruction
+        // is stale from here on.
+        invalidateStressCache();
+
         // Loop over all elements chuncks and update material state from current solution
         const auto& elementMapper = simulator_.model().elementMapper();
 #ifdef _OPENMP
@@ -512,6 +516,61 @@ public:
     */
     SymTensor stress(const unsigned globalIdx, const bool /*with_fracture*/) const
     {
+        return reconstructStress_(globalIdx);
+    }
+
+    /*!
+    * \brief Stress tensor from the cache filled by updateStressCache()
+    *
+    * \param globalIdx Cell index
+    * \returns Stress tensor (Voigt notation) at grid cell
+    *
+    * The cache is built lazily on first use; consumers that sample many
+    * cells (output, fracture models) should call updateStressCache() once
+    * after each mechanics solve instead of reconstructing per call.
+    */
+    const SymTensor& outputstress(const unsigned globalIdx) const
+    {
+        if (!stressCacheValid_) {
+            updateStressCache();
+        }
+        return stressCache_[globalIdx];
+    }
+
+    /*!
+    * \brief Reconstruct and cache the stress tensor for all cells
+    *
+    * One least-squares reconstruction sweep per call; valid for the state
+    * of the last TPSA linearization.
+    */
+    void updateStressCache() const
+    {
+        const std::size_t numDof = simulator_.model().numGridDof();
+        stressCache_.resize(numDof);
+#ifdef _OPENMP
+#pragma omp parallel for
+#endif
+        for (std::size_t globalIdx = 0; globalIdx < numDof; ++globalIdx) {
+            stressCache_[globalIdx] = reconstructStress_(globalIdx);
+        }
+        stressCacheValid_ = true;
+    }
+
+    /*!
+    * \brief Mark the stress cache as stale (e.g. after a mechanics update)
+    */
+    void invalidateStressCache() const
+    {
+        stressCacheValid_ = false;
+    }
+
+private:
+    /*!
+    * \brief Reconstruct the stress tensor at a cell center by least squares
+    *        from the face tractions of the last linearization
+    */
+    SymTensor reconstructStress_(const unsigned globalIdx) const
+    {
         SymTensor stressOutput;
         const auto& stressInfo = linearizer_->getStressInfo();
         if (!stressInfo.empty()) {
@@ -604,6 +663,7 @@ public:
         return stressOutput;
     }
 
+public:
     /*!
     * \brief Output traction vector for each of the 6 face directions
     *
@@ -785,6 +845,12 @@ private:
     std::vector<MaterialState> materialState_;
     PotForceVector mechPotPresForce_;
     PotForceVector mechPotTempForce_;
+
+    // Cell-center stress reconstructions for the state of the last
+    // linearization (see updateStressCache()); mutable so the lazily built
+    // cache can serve const output accessors.
+    mutable std::vector<SymTensor> stressCache_;
+    mutable bool stressCacheValid_{false};
 };  // class TpsaModel
 
 }  // namespace Opm
