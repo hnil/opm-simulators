@@ -157,16 +157,32 @@ updateSkinFactorsAndMultipliers(const WellInterfaceGeneric<Scalar, IndexTraits>&
     for (int perf = 0; perf < nperf; ++perf) {
         const auto perf_ecl_index = well.perforationData()[perf].ecl_index;
         const auto& connection = connections[perf_ecl_index];
-        if (!connection.filterCakeActive())
-            continue;
 
         // Use xflow-factor to ensure mass balance of injected filtrate
         const Scalar water_rates = std::max(Scalar{0.}, connection_rates[perf * np + water_index]);
-        const Scalar filtrate_rate = water_rates * conc * xfact;
-        const Scalar filtrate_particle_volume = filtrate_rate * dt;
+        Scalar filtrate_rate = water_rates * conc * xfact;
         auto& filtrate_data = perf_data.filtrate_data;
+
+        // Split the filtrate between the matrix path and an attached
+        // fracture: only the matrix share deposits as cake on the original
+        // perforation; the fracture share deposits on the fracture faces and
+        // is accounted for inside the fracture model.  flow_factor is 1
+        // unless a fracture model has registered a competing contribution.
+        {
+            const Scalar flow_factor = filtrate_data.flow_factor[perf];
+            filtrate_data.fracture_rate[perf] = filtrate_rate * (Scalar{1} - flow_factor);
+            filtrate_rate *= flow_factor;
+        }
+
+        const Scalar filtrate_particle_volume = filtrate_rate * dt;
         filtrate_data.rates[perf] = filtrate_rate;
         filtrate_data.total[perf] += filtrate_particle_volume;
+
+        // Rate/total outputs (CFCF*) above are recorded for ALL connections,
+        // including dynamically added fracture connections without an active
+        // cake model; only the cake growth below requires WINJDAM.
+        if (!connection.filterCakeActive())
+            continue;
 
         const auto& filter_cake = connection.getFilterCake();
         const Scalar area = connection.getFilterCakeArea();
