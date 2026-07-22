@@ -273,6 +273,9 @@ public:
         // Call parent class beginTimeStep()
         ParentType::beginTimeStep();
 
+        // Re-arm the once-per-step mechanics history roll.
+        geoMechModel_.beginTimeStep();
+
         // Update mechanics boundary conditions.
         // NOTE: Flow boundary conditions should be updated in ParentType::beginTimeStep()
         if (this->nonTrivialBoundaryConditions()) {
@@ -291,6 +294,20 @@ public:
 
         // Call parent class endTimeStep()
         ParentType::endTimeStep();
+    }
+
+    /*!
+    * \brief Restore the state captured at the beginning of the time step
+    *        after a failed time step.
+    *
+    * Restores the mechanics solution alongside the flow state; without
+    * this the retried step would start from the rejected mechanics
+    * iterate and roll it into the history.
+    */
+    void updateFailed()
+    {
+        ParentType::updateFailed();
+        geoMechModel_.updateFailed();
     }
 
     /*!
