@@ -33,6 +33,7 @@
 
 #include <opm/input/eclipse/Schedule/BCState.hpp>
 
+#include <opm/material/common/MathToolbox.hpp>
 #include <opm/material/materialstates/MaterialStateTPSA.hpp>
 
 #include <opm/models/discretization/common/linearizationtype.hh>
@@ -307,6 +308,14 @@ public:
                 for (unsigned tractionIdx = 0; tractionIdx < 3; ++tractionIdx) {
                     stressInfo_[globI][loc].traction[tractionIdx] = adres[tractionIdx].value();
                 }
+                // The traction carries the two-point face value of the solid pressure;
+                // store the shift to the cell's own value for the cell-centered reconstruction.
+                const Scalar psIn = decay<Scalar>(materialStateIn.solidPressure());
+                const Scalar psEx = decay<Scalar>(materialStateEx.solidPressure());
+                const Scalar wIn = problem.weightAverage(globI, globJ);
+                const Scalar wEx = problem.weightAverage(globJ, globI);
+                stressInfo_[globI][loc].psLocalCorr =
+                    (wIn * psIn + wEx * psEx - psIn) * nbInfo.faceArea;
                 ++loc;
             }
         }
@@ -833,6 +842,11 @@ private:
         StressInfoVector traction;
         StressInfoVector faceNormal;
         double faceArea;
+        //! Correction (times face area) that replaces the face value of the
+        //! solid pressure in `traction` by the cell's own value:
+        //! traction_local = traction + faceNormal * psLocalCorr.  Zero for
+        //! boundary faces (the boundary closure already uses the cell value).
+        double psLocalCorr{0.0};
     };
 
     SparseTable<StressInfo> stressInfo_{};
