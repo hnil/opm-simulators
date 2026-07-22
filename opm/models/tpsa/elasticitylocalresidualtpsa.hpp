@@ -239,7 +239,17 @@ public:
                                      globalIndex);
             break;
         case BCMECHType::FIXED:
-            throw std::runtime_error("BCTYPE FIXED has not been implemented in TPSA");
+            // FIXED is treated as zero displacement in ALL directions for
+            // now; the problem validates that the deck prescribes zero
+            // displacement.  Per-direction (roller) constraints are not yet
+            // implemented -- decks fixing only some components get the
+            // fully clamped approximation.
+            computeBoundaryTermFixed(bndryTerm,
+                                     materialState,
+                                     bdyInfo,
+                                     problem,
+                                     globalIndex);
+            break;
         case BCMECHType::FREE:
             computeBoundaryTermFree(bndryTerm,
                                     materialState,
