@@ -221,7 +221,19 @@ public:
         return this->simulator_.problem().geoMechModel().newtonMethod().apply();
     }
 
-private:
+protected:
+    /*!
+    * \brief Reset the fixed-stress sequence counter
+    *
+    * For derived classes whose outer coupling (e.g. a fracture loop)
+    * invalidates the current fixed-stress sequence, for instance after a
+    * mid-step well-structure change.
+    */
+    void resetFixedStressIterations()
+    {
+        seqIter_ = 0;
+    }
+
     int seqIter_{0};
 };  // class NonlinearSystemBlackOilReservoirTPSA
 
