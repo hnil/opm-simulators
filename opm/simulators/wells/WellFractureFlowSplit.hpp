@@ -73,7 +73,14 @@ void updateWellFractureFlowSplit(const Simulator& simulator,
             const auto trans_mult = simulator.problem()
                 .template wellTransMultiplier<Scalar>(intQuants, cell_idx, obtain);
 
-            const Scalar matrix_wi = well->wellIndex()[perf] * trans_mult;
+            Scalar matrix_wi = well->wellIndex()[perf] * trans_mult;
+            // The WINJDAM filter cake damages the matrix (perforation) path
+            // only (see WellInterface::getTw); include it so that a caked-up
+            // perforation routes correspondingly more flow into the fracture.
+            const auto& cake_mult = well->filterCakeMultipliers();
+            if (!cake_mult.empty()) {
+                matrix_wi *= cake_mult[perf];
+            }
             const Scalar perf_pressure = wellstate_nupcol.perf_data.pressure[perf];
             const Scalar fracture_wi = fracture_indices[perf].wellIndex(perf_pressure);
             const Scalar effective_wi = matrix_wi + fracture_wi;
