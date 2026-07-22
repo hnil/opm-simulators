@@ -33,6 +33,7 @@
 
 #include <opm/input/eclipse/Schedule/BCProp.hpp>
 
+#include <opm/material/common/MathToolbox.hpp>
 #include <opm/material/materialstates/MaterialStateTPSA.hpp>
 
 #include <opm/models/discretization/common/linearizationtype.hh>
@@ -541,8 +542,21 @@ private:
                     const auto& faceNormal = problem.cellFaceNormal(globI, globJ);
                     stressInfo_[globI][loc].faceNormal = faceNormal;
                     stressInfo_[globI][loc].faceArea = nbInfo.faceArea;
+                    // The momentum face term interpolates the solid (total)
+                    // pressure between the two cells.  The traction stored for
+                    // the cell-centered stress reconstruction instead uses the
+                    // cell's own solid pressure, so that sharp single-cell
+                    // loads (e.g. a thermal front at an injector) are not
+                    // smeared into the neighbors.  The residual itself is
+                    // unchanged.
+                    const Scalar psIn = decay<Scalar>(materialStateIn.solidPressure());
+                    const Scalar psEx = decay<Scalar>(materialStateEx.solidPressure());
+                    const Scalar wIn = problem.weightAverage(globI, globJ);
+                    const Scalar wEx = problem.weightAverage(globJ, globI);
+                    const Scalar psCorr = (wIn * psIn + wEx * psEx - psIn) * nbInfo.faceArea;
                     for (unsigned tractionIdx = 0; tractionIdx < 3; ++tractionIdx) {
-                        stressInfo_[globI][loc].traction[tractionIdx] = res[tractionIdx];
+                        stressInfo_[globI][loc].traction[tractionIdx] =
+                            res[tractionIdx] + faceNormal[tractionIdx] * psCorr;
                     }
                     ++loc;
                 }
