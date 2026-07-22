@@ -296,6 +296,7 @@ public:
         // Update info for mechanics output
         // OBS: Must be done before ParentClass::endTimeStep!
         geoMechModel().linearizer().updateStressInfo();
+        geoMechModel().invalidateStressCache();
 
         // Call parent class endTimeStep()
         ParentType::endTimeStep();
