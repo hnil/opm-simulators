@@ -62,7 +62,7 @@ public:
     */
     explicit NonlinearSystemBlackOilReservoirTPSA(Simulator& simulator,
                                const ModelParameters& param,
-                               BlackoilWellModel<TypeTag>& well_model,
+                               GetPropType<TypeTag, Properties::WellModel>& well_model,
                                const bool terminal_output)
         : ParentType(simulator, param, well_model, terminal_output)
     {}
