@@ -216,6 +216,63 @@ public:
                 return ownedLgrCells.count(std::make_pair(level, levelCart)) > 0;
             });
 
+        // A plain B* block vector addressing a coarse cell that a CARFIN box
+        // refined away cannot be evaluated: that cell no longer exists on the
+        // leaf grid, so the vector would silently stay at zero.  Drop the
+        // slot and warn (the warning is also recorded in the .DBG file);
+        // cells inside an LGR are addressed with the LB* keyword form.
+        if constexpr (std::is_same_v<Grid, Dune::CpGrid>) {
+            if (simulator.vanguard().grid().maxLevel() > 0) {
+                const auto& lgrs = simulator.vanguard().eclState().getLgrs();
+                const auto& inputGrid = simulator.vanguard().eclState().getInputGrid();
+                const int nx = static_cast<int>(inputGrid.getNX());
+                const int ny = static_cast<int>(inputGrid.getNY());
+                // Deck-declared boxes are replicated on every rank, so this
+                // classification is identical everywhere (nested LGR boxes
+                // address their parent LGR's local space and are inside the
+                // parent's global box anyway).
+                const auto refinedBy = [&lgrs, nx, ny](const int cartIdx) -> std::string {
+                    const int i = cartIdx % nx;
+                    const int j = (cartIdx / nx) % ny;
+                    const int k = cartIdx / (nx * ny);
+                    for (std::size_t l = 0; l < lgrs.size(); ++l) {
+                        const auto& box = lgrs.getLgr(l);
+                        if (box.PARENT_NAME() != "GLOBAL") {
+                            continue;
+                        }
+                        if (i >= box.I1() && i <= box.I2()
+                            && j >= box.J1() && j <= box.J2()
+                            && k >= box.K1() && k <= box.K2()) {
+                            return box.NAME();
+                        }
+                    }
+                    return {};
+                };
+                for (const auto& node : smryCfg) {
+                    if (node.category() != SummaryConfigNode::Category::Block
+                        || node.lgr_name().has_value()) {
+                        continue;
+                    }
+                    const int cartIdx = node.number() - 1;
+                    const auto lgrName = refinedBy(cartIdx);
+                    if (lgrName.empty()) {
+                        continue;
+                    }
+                    this->blockData_.erase({node.keyword(), node.number()});
+                    if (collectOnIORank.isIORank()) {
+                        OpmLog::warning("Summary block vector " + node.keyword()
+                            + " at cell (" + std::to_string(cartIdx % nx + 1)
+                            + "," + std::to_string((cartIdx / nx) % ny + 1)
+                            + "," + std::to_string(cartIdx / (nx * ny) + 1)
+                            + ") addresses a cell refined away by CARFIN LGR '" + lgrName
+                            + "'; the vector is skipped and will report zero. "
+                              "Use the LGR block form (LB*) to address cells "
+                              "inside the refinement.");
+                    }
+                }
+            }
+        }
+
         if (! Parameters::Get<Parameters::OwnerCellsFirst>()) {
             const std::string msg = "The output code does not support --owner-cells-first=false.";
             if (collectOnIORank.isIORank()) {
