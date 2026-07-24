@@ -168,6 +168,32 @@ public:
     }
 
     /*
+      Snapshot / restore the full active well+group state (well_state,
+      group_state, well_test_state).  Used to make a throwaway setup
+      iteration state-neutral: the geomechanics fracture coupling re-runs a
+      parent nonlinear iteration purely for its per-step setup side-effects
+      and then restores solution(0) and the storage cache -- but that
+      iteration also solves the wells, mutating the WGState.  For a
+      MultisegmentWell that leaves the segment state inconsistent with the
+      restored solution (the reported rate collapses to zero while the
+      perforations keep injecting).  Wrapping the setup iteration in
+      snapshotWGState()/restoreWGState() reverses the well solve too.
+      Uses a separate local copy on purpose -- NOT last_valid_wgstate_,
+      which is reserved for timestep-cut recovery.
+    */
+    WGState<Scalar, IndexTraits> snapshotWGState() const
+    {
+        return this->active_wgstate_;
+    }
+
+    void restoreWGState(WGState<Scalar, IndexTraits> wgstate)
+    {
+        this->active_wgstate_ = std::move(wgstate);
+        // Update helper pointers to reference the restored active state.
+        this->group_state_helper_.updateState(this->wellState(), this->groupState());
+    }
+
+    /*
       Will return the currently active nupcolWellState; must update
       the internal nupcol wellstate with updateNupcolWGState() first.
 
