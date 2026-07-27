@@ -246,12 +246,13 @@ namespace {
 
     std::shared_ptr<Opm::EclipseState>
     createEclipseState([[maybe_unused]] Opm::Parallel::Communication comm,
-                       const Opm::Deck&                              deck)
+                       const Opm::Deck&                              deck,
+                       const Opm::NumericalAquiferMode               aquiferMode)
     {
 #if HAVE_MPI
-        return std::make_shared<Opm::ParallelEclipseState>(deck, comm);
+        return std::make_shared<Opm::ParallelEclipseState>(deck, comm, aquiferMode);
 #else
-        return std::make_shared<Opm::EclipseState>(deck);
+        return std::make_shared<Opm::EclipseState>(deck, aquiferMode);
 #endif
     }
 
@@ -357,7 +358,8 @@ namespace {
                       const bool                           keepKeywords,
                       const std::optional<int>&            outputInterval,
                       Opm::ErrorGuard&                     errorGuard,
-                      const bool                           slaveMode)
+                      const bool                           slaveMode,
+                      const Opm::NumericalAquiferMode      aquiferMode)
     {
         OPM_TIMEBLOCK(readDeck);
 
@@ -377,7 +379,7 @@ namespace {
 
         if (eclipseState == nullptr) {
             OPM_TIMEBLOCK(createEclState);
-            eclipseState = createEclipseState(comm, deck);
+            eclipseState = createEclipseState(comm, deck, aquiferMode);
         }
 
         if (eclipseState->getInitConfig().restartRequested()) {
@@ -753,7 +755,8 @@ void Opm::readDeck(Opm::Parallel::Communication    comm,
                    const bool                      checkDeck,
                    const bool                      keepKeywords,
                    const std::optional<int>&       outputInterval,
-                   const bool                      slaveMode)
+                   const bool                      slaveMode,
+                   const NumericalAquiferMode      aquiferMode)
 {
     auto errorGuard = std::make_unique<ErrorGuard>();
     int parseSuccess = 1; // > 0 is success
@@ -782,7 +785,8 @@ void Opm::readDeck(Opm::Parallel::Communication    comm,
                          eclipseState, schedule, udqState, actionState, wtestState,
                          summaryConfig, std::move(python), initFromRestart,
                          checkDeck, treatCriticalAsNonCritical, lowActionParsingStrictness,
-                         keepKeywords, outputInterval, *errorGuard, slaveMode);
+                         keepKeywords, outputInterval, *errorGuard, slaveMode,
+                         aquiferMode);
 
             // Update schedule so that re-parsing after actions use same strictness
             assert(schedule);
