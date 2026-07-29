@@ -220,6 +220,8 @@ assembleReservoir(WellModelType& wellModel)
 {
     simulator_.problem().beginIteration();
     simulator_.model().linearizer().linearizeDomain();
+    simulator_.problem().linearizeAuxCellModules(simulator_.model().linearizer().jacobian(),
+                                                 simulator_.model().linearizer().residual());
     simulator_.problem().endIteration();
     return wellModel.lastReport();
 }

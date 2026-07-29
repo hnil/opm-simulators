@@ -1308,6 +1308,27 @@ public:
     const std::vector<std::unique_ptr<FlowAuxCellModule<TypeTag>>>& auxCellModules() const
     { return auxCellModules_; }
 
+    /*!
+     * \brief Give the auxiliary cell modules their turn at the linear system.
+     *
+     * Their degrees of freedom are assembled by the model's own local residual, like grid
+     * cells, so most of them have nothing to add here.  What they do own is the rows of
+     * the cells they have preallocated but not yet put to use: those have no volume and
+     * no connections, so nothing else writes to them, and an all-zero row is a singular
+     * matrix.  Conditioning them is the module's business, since only it knows which they
+     * are.
+     *
+     * Deliberately not the linearizer's linearizeAuxiliaryEquations(), which drives
+     * *every* auxiliary module -- the well model among them, whose contribution is
+     * applied separately and would be counted twice.
+     */
+    void linearizeAuxCellModules(SparseMatrixAdapter& matrix, GlobalEqVector& residual)
+    {
+        for (const auto& module : auxCellModules_) {
+            module->linearize(matrix, residual);
+        }
+    }
+
 private:
     Implementation& asImp_()
     { return *static_cast<Implementation *>(this); }
