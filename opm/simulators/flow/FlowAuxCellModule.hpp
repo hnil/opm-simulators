@@ -92,6 +92,17 @@ public:
     { return this->bulkVolume(localIdx); }
 
     /*!
+     * \brief Work out the connections, once the grid is distributed.
+     *
+     * Called when the module is registered, which is later than its constructor: a
+     * connection names grid cells in the local compressed numbering, and that numbering
+     * is only meaningful once the grid has been partitioned.  A module whose connections
+     * appear later still -- a fracture that does not exist yet -- has nothing to do here.
+     */
+    virtual void buildConnections()
+    {}
+
+    /*!
      * \brief The connections of this module, each reported exactly once.
      *
      * The discretization enters every connection in the neighbour list of *both* of its

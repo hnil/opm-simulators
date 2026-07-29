@@ -143,7 +143,7 @@ public:
      * Deferred out of the constructor because it needs the grid's cartesian-to-compressed
      * mapping, which is only meaningful once the grid has been distributed.
      */
-    void buildConnections()
+    void buildConnections() override
     {
         const auto& vanguard = simulator_.vanguard();
         const auto& eclState = vanguard.eclState();
