@@ -1773,6 +1773,33 @@ protected:
     }
 
     /*!
+     * \brief Re-read everything the auxiliary cell modules author.
+     *
+     * A module whose cells change -- a fracture that opens new ones, or whose apertures
+     * move -- calls this to have the volumes, porosities and connection
+     * transmissibilities read again.  A change of *values* is all this covers; a change
+     * of *topology*, meaning a connection that did not exist before, additionally needs
+     * the sparsity pattern rebuilt, which is what eraseMatrix() below asks for.
+     */
+    void refreshAuxCellModules_(const bool topologyChanged)
+    {
+        if (this->auxCellModules_.empty()) {
+            return;
+        }
+
+        this->model().updateAuxiliaryDofVolumes();
+        this->authorAuxCellPorosity_();
+        this->referencePorosity_[1] = this->referencePorosity_[0];
+        this->applyAuxCellTransmissibilities_();
+
+        if (topologyChanged) {
+            this->model().linearizer().eraseMatrix();
+        }
+
+        this->model().invalidateAndUpdateIntensiveQuantities(/*timeIdx=*/0);
+    }
+
+    /*!
      * \brief Fill in the reference porosity of the auxiliary cells.
      *
      * The model reads a porosity and multiplies it by the degree of freedom's total

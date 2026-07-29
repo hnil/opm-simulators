@@ -526,12 +526,7 @@ public:
         // Auxiliary DOFs have no grid entity to take a volume from, so the modules state
         // it themselves.  They are also not shared with peer processes via the grid's
         // interior-border interface, hence local by construction.
-        for (const auto* auxMod : auxEqModules_) {
-            for (unsigned localIdx = 0; localIdx < auxMod->numDofs(); ++localIdx) {
-                const auto globalIdx = static_cast<std::size_t>(auxMod->localToGlobalDof(localIdx));
-                dofTotalVolume_[globalIdx] = auxMod->dofVolume(localIdx);
-            }
-        }
+        updateAuxiliaryDofVolumes();
 
         for (std::size_t dofIdx = numGridDof; dofIdx < numDof; ++dofIdx) {
             isLocalDof_[dofIdx] = true;
@@ -1256,6 +1251,23 @@ public:
      */
     Scalar dofTotalVolume(unsigned globalIdx) const
     { return dofTotalVolume_[globalIdx]; }
+
+    /*!
+     * \brief Re-read the volumes of the auxiliary degrees of freedom from their modules.
+     *
+     * A module whose degrees of freedom change size during the run -- a fracture whose
+     * cells open -- states the new volumes here.  The grid DOFs are untouched, and with
+     * no auxiliary modules this does nothing.
+     */
+    void updateAuxiliaryDofVolumes()
+    {
+        for (const auto* auxMod : auxEqModules_) {
+            for (unsigned localIdx = 0; localIdx < auxMod->numDofs(); ++localIdx) {
+                const auto globalIdx = static_cast<std::size_t>(auxMod->localToGlobalDof(localIdx));
+                dofTotalVolume_[globalIdx] = auxMod->dofVolume(localIdx);
+            }
+        }
+    }
 
     /*!
      * \brief Returns if the overlap of the volume ofa degree of freedom is non-zero.
