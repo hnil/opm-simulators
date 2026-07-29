@@ -1078,10 +1078,18 @@ public:
         // Add well contribution to source here.
         wellModel_.computeTotalRatesForDof(rate, globalDofIdx);
 
+        // A degree of freedom with no volume holds nothing and so can be the source of
+        // nothing -- an auxiliary cell that has been reserved but not yet put to use.
+        // Dividing by its volume below would turn a zero rate into a NaN.
+        const auto volume = this->model().dofTotalVolume(globalDofIdx);
+        if (volume <= 0.0) {
+            return;
+        }
+
         // convert the source term from the total mass rate of the
         // cell to the one per unit of volume as used by the model.
         for (unsigned eqIdx = 0; eqIdx < numEq; ++ eqIdx) {
-            rate[eqIdx] /= this->model().dofTotalVolume(globalDofIdx);
+            rate[eqIdx] /= volume;
 
             Valgrind::CheckDefined(rate[eqIdx]);
             assert(isfinite(rate[eqIdx]));
