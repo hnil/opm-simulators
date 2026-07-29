@@ -1994,6 +1994,26 @@ protected:
         extend(this->plmixnum_, [](auto&) {});
     }
 
+    //! Re-read what the auxiliary cell modules author; a new connection
+    //! (topologyChanged) also needs the sparsity pattern rebuilt.
+    void refreshAuxCellModules_(const bool topologyChanged)
+    {
+        if (this->auxCellModules_.empty()) {
+            return;
+        }
+
+        this->model().updateAuxiliaryDofVolumes();
+        this->authorAuxCellPorosity_();
+        this->referencePorosity_[1] = this->referencePorosity_[0];
+        this->applyAuxCellTransmissibilities_();
+
+        if (topologyChanged) {
+            this->model().linearizer().eraseMatrix();
+        }
+
+        this->model().invalidateAndUpdateIntensiveQuantities(/*timeIdx=*/0);
+    }
+
     //! Porosity times the DOF volume must give back the module's pore volume.
     void authorAuxCellPorosity_()
     {
