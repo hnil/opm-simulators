@@ -370,6 +370,12 @@ public:
         const int episodeIdx = this->episodeIndex();
         const int timeStepSize = this->simulator().timeStepSize();
 
+        // Any auxiliary cell still without a start-of-step accumulation gets one, before
+        // anything assembles.  A cell not yet handed out never earns one on its own: the
+        // linearizer fills the entry from the previous step's, and a cell that has been
+        // sitting idle has no previous step to have moved in.
+        this->seedAuxCellStorageCache_();
+
         this->beginTimeStep_(enableExperiments,
                              episodeIdx,
                              this->simulator().timeStepIndex(),
@@ -1038,6 +1044,15 @@ public:
         if (!this->model().enableStorageCache() || !this->recycleFirstIterationStorage()) {
             this->model().invalidateAndUpdateIntensiveQuantities(/*timeIdx*/1);
         }
+
+        // An auxiliary cell goes through the ordinary assembly whether or not it is in
+        // use, and that reaches for the accumulation of the previous time level.  The
+        // linearizer fills it on the first Newton iteration of a step, which is soon
+        // enough for a cell that is there from the start, but not for one still waiting to
+        // be handed out -- nor for one handed out after that iteration has gone by, which
+        // is when a fracture opens its cells.  Seed them all once here so that no
+        // auxiliary row can reach for an entry that was never written.
+        this->seedAuxCellStorageCache_();
 
         // initialize the wells. Note that this needs to be done after initializing the
         // intrinsic permeabilities and the after applying the initial solution because
@@ -1828,13 +1843,75 @@ protected:
             // A cell that has only just appeared has no history: it did not exist at the
             // start of the time step, so there is no earlier state to have changed from.
             // Give it the state it starts with, which is what says its mass has not moved
-            // by coming into existence.  Without this the accumulation term reaches for a
-            // previous state that was never stored.
-            this->model().solution(/*timeIdx=*/1) = this->model().solution(/*timeIdx=*/0);
-            this->model().invalidateIntensiveQuantitiesCache(/*timeIdx=*/1);
+            // by coming into existence.  The grid cells keep theirs -- that is the state
+            // the step is measuring the change from.
+            auto& previous = this->model().solution(/*timeIdx=*/1);
+            const auto& current = this->model().solution(/*timeIdx=*/0);
+            for (unsigned dofIdx = this->model().numGridDof();
+                 dofIdx < this->model().numTotalDof(); ++dofIdx)
+            {
+                previous[dofIdx] = current[dofIdx];
+            }
+
         }
 
         this->model().invalidateAndUpdateIntensiveQuantities(/*timeIdx=*/0);
+
+        if (topologyChanged) {
+            this->seedAuxCellStorageCache_();
+        }
+    }
+
+    /*!
+     * \brief Give the auxiliary cells a start-of-step storage term.
+     *
+     * The linearizer keeps the accumulation of the previous time level in a cache, and
+     * fills it on the first Newton iteration of a step -- which a cell that appears part
+     * way through one has already missed.  Reaching for it then throws rather than
+     * quietly using a stale number, which is the right behaviour and exactly why it has
+     * to be filled here.
+     *
+     * The value is the accumulation the cell's own starting state implies, so that its
+     * mass is unchanged by the cell having come into existence.
+     */
+    void seedAuxCellStorageCache_()
+    {
+        using LocalResidual = GetPropType<TypeTag, Properties::LocalResidual>;
+        using EqVector = GetPropType<TypeTag, Properties::EqVector>;
+
+        using Linearizer = GetPropType<TypeTag, Properties::Linearizer>;
+
+        // Auxiliary cells carrying the model's equations exist only under a linearizer
+        // that assembles per degree of freedom, and only that one pairs with the local
+        // residual whose accumulation can be formed from a degree-of-freedom index alone.
+        if constexpr (!Linearizer::assemblesAuxiliaryDofEquations) {
+            return;
+        }
+        else {
+
+        auto& model = this->model();
+        if (!model.enableStorageCache()) {
+            return;
+        }
+
+        // Formed from the current state rather than from the previous time level's
+        // intensive quantities, which need not be kept at all when the first iteration's
+        // storage is recycled.  For these cells the two are the same: a cell that has
+        // just appeared starts the step where it is, and one that has not been handed out
+        // has not moved.
+        for (unsigned dofIdx = model.numGridDof(); dofIdx < model.numTotalDof(); ++dofIdx) {
+            if (model.storageCacheIsUpToDate(dofIdx, /*timeIdx=*/1)) {
+                continue;
+            }
+
+            EqVector storage;
+            LocalResidual::template computeStorage<Scalar>
+                (storage, model.intensiveQuantities(dofIdx, /*timeIdx=*/0));
+
+            model.updateCachedStorage(dofIdx, /*timeIdx=*/1, storage);
+        }
+
+        } // if constexpr
     }
 
     /*!
