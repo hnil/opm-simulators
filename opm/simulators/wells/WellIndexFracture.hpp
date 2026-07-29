@@ -31,20 +31,16 @@ struct WellIndexFracture
     /// Fracture connection transmissibility factor.
     double ctf{0.0};
 
-    /// Connection pressure at which \c ctf was computed.
-    double pressure{0.0};
-
-    /// Reference values from the previous fracture solve; reserved for
-    /// pressure interpolation of the connection factor between solves
+    /// Connection pressure at which \c ctf was computed.  Reserved for a
+    /// future pressure interpolation of the connection factor between solves
     /// (not yet enabled -- needs validation).
-    double ref_ctf{0.0};
-    double ref_pressure{0.0};
+    double pressure{0.0};
 
     /// Fracture connection factor at the given connection pressure.
     ///
-    /// The pressure argument is reserved for interpolating between
-    /// (pressure, ctf) and (ref_pressure, ref_ctf); until that is
-    /// validated the stored factor is returned unchanged.
+    /// The pressure argument is reserved for a future interpolation of the
+    /// connection factor between solves; until that is validated the stored
+    /// factor is returned unchanged.
     double wellIndex(const double /* connection_pressure */) const
     {
         return this->ctf;
