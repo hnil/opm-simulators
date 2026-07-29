@@ -1824,6 +1824,14 @@ protected:
 
         if (topologyChanged) {
             this->model().linearizer().eraseMatrix();
+
+            // A cell that has only just appeared has no history: it did not exist at the
+            // start of the time step, so there is no earlier state to have changed from.
+            // Give it the state it starts with, which is what says its mass has not moved
+            // by coming into existence.  Without this the accumulation term reaches for a
+            // previous state that was never stored.
+            this->model().solution(/*timeIdx=*/1) = this->model().solution(/*timeIdx=*/0);
+            this->model().invalidateIntensiveQuantitiesCache(/*timeIdx=*/1);
         }
 
         this->model().invalidateAndUpdateIntensiveQuantities(/*timeIdx=*/0);
