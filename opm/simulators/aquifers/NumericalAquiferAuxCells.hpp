@@ -121,7 +121,7 @@ public:
     { conns.insert(conns.end(), this->connections_.begin(), this->connections_.end()); }
 
     //! Not in the constructor: needs the compressed mapping of the distributed grid.
-    void buildConnections()
+    void buildConnections() override
     {
         const auto& vanguard = simulator_.vanguard();
         const auto& eclState = vanguard.eclState();

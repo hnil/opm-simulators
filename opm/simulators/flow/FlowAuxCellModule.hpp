@@ -68,6 +68,11 @@ public:
     Scalar dofVolume(unsigned localIdx) const override
     { return this->bulkVolume(localIdx); }
 
+    //! Called at registration, once the grid is distributed; a module whose
+    //! connections appear later has nothing to do here.
+    virtual void buildConnections()
+    {}
+
     //! Report each connection once; it is assembled from both sides, so twice doubles the flux.
     virtual void connections(std::vector<Connection>& conns) const = 0;
 
