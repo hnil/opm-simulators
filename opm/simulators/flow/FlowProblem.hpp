@@ -1322,7 +1322,8 @@ public:
      * *every* auxiliary module -- the well model among them, whose contribution is
      * applied separately and would be counted twice.
      */
-    void linearizeAuxCellModules(SparseMatrixAdapter& matrix, GlobalEqVector& residual)
+    void linearizeAuxCellModules(GetPropType<TypeTag, Properties::SparseMatrixAdapter>& matrix,
+                                 GlobalEqVector& residual)
     {
         for (const auto& module : auxCellModules_) {
             module->linearize(matrix, residual);
