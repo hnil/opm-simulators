@@ -90,6 +90,7 @@ public:
         }
 
         this->checkAquiferCellsAreNotInterior();
+        this->checkNoWellPerforatesAnAquiferCell();
     }
 
     unsigned numDofs() const override
@@ -336,6 +337,35 @@ private:
         }
 
         return static_cast<unsigned>(pos->second);
+    }
+
+    //! A completion in an aquifer cell would be silently dropped once the aquifer
+    //! is taken out of the grid, so it is refused.
+    void checkNoWellPerforatesAnAquiferCell() const
+    {
+        const auto& schedule = simulator_.vanguard().schedule();
+
+        for (std::size_t step = 0; step < schedule.size(); ++step) {
+            for (const auto& well : schedule.getWells(step)) {
+                for (const auto& conn : well.getConnections()) {
+                    if (this->cartesianToLocal_.count(conn.global_index()) == 0) {
+                        continue;
+                    }
+
+                    OPM_THROW(std::runtime_error,
+                              fmt::format("Well {} perforates cell ({},{},{}), which an "
+                                          "AQUNUM record claims for numerical aquifer {}. "
+                                          "Representing the aquifer outside the grid takes "
+                                          "that cell out of the grid, so the completion "
+                                          "would be silently dropped. Run this deck with "
+                                          "--numerical-aquifer-mode=grid.",
+                                          well.name(),
+                                          conn.getI() + 1, conn.getJ() + 1, conn.getK() + 1,
+                                          this->cells_.at(this->localOf(conn.global_index()))
+                                              ->aquifer_id));
+                }
+            }
+        }
     }
 
     //! Removing an interior cell would open a hole (or a PINCH bridge) the grid-cell
