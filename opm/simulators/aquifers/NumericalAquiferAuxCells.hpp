@@ -101,6 +101,7 @@ public:
         // The cells these records name were deactivated when the grid was built, which
         // is what makes room for the aquifer to live outside it.
         this->checkAquiferCellsAreNotInterior();
+        this->checkNoWellPerforatesAnAquiferCell();
     }
 
     unsigned numDofs() const override
@@ -388,6 +389,46 @@ private:
         }
 
         return static_cast<unsigned>(pos->second);
+    }
+
+    /*!
+     * \brief Refuse a well that perforates one of the aquifer's own cells.
+     *
+     * A completion names a cell of the input grid.  With the aquifer inside the grid that
+     * cell is there to be perforated, and the well produces from or injects into the
+     * aquifer directly; with the aquifer outside it, the cell is not in the grid at all
+     * and the completion maps to nothing.  It would simply be dropped, which is a
+     * different well from the one the deck describes and nothing would say so.
+     *
+     * Rare, and odd modelling -- but silent, which is why it is refused.  Connecting a
+     * well to an auxiliary cell is possible in principle; what is missing is the route
+     * from a completion's cartesian index to a degree of freedom that has none.
+     */
+    void checkNoWellPerforatesAnAquiferCell() const
+    {
+        const auto& schedule = simulator_.vanguard().schedule();
+
+        for (std::size_t step = 0; step < schedule.size(); ++step) {
+            for (const auto& well : schedule.getWells(step)) {
+                for (const auto& conn : well.getConnections()) {
+                    if (this->cartesianToLocal_.count(conn.global_index()) == 0) {
+                        continue;
+                    }
+
+                    OPM_THROW(std::runtime_error,
+                              fmt::format("Well {} perforates cell ({},{},{}), which an "
+                                          "AQUNUM record claims for numerical aquifer {}. "
+                                          "Representing the aquifer outside the grid takes "
+                                          "that cell out of the grid, so the completion "
+                                          "would be silently dropped. Run this deck with "
+                                          "--numerical-aquifer-mode=grid.",
+                                          well.name(),
+                                          conn.getI() + 1, conn.getJ() + 1, conn.getK() + 1,
+                                          this->cells_.at(this->localOf(conn.global_index()))
+                                              ->aquifer_id));
+                }
+            }
+        }
     }
 
     /*!
