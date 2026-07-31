@@ -90,6 +90,7 @@ AdaptiveTimeStepping(const UnitSystem& unit_system,
     , timestep_after_event_{
         Parameters::Get<Parameters::TimeStepAfterEventInDays<Scalar>>() * 24 * 60 * 60} // 1e30
     , use_newton_iteration_{false}
+    , timestep_quantization_{Parameters::Get<Parameters::TimeStepQuantization>()} // 0 (disabled)
     , min_time_step_before_shutting_problematic_wells_{
         Parameters::Get<Parameters::MinTimeStepBeforeShuttingProblematicWellsInDays>() * unit::day}
     , report_(report)
@@ -127,6 +128,7 @@ AdaptiveTimeStepping(double max_next_tstep,
     , full_timestep_initially_{Parameters::Get<Parameters::FullTimeStepInitially>()} // false
     , timestep_after_event_{tuning.TMAXWC} // 1e30
     , use_newton_iteration_{false}
+    , timestep_quantization_{Parameters::Get<Parameters::TimeStepQuantization>()} // 0 (disabled)
     , min_time_step_before_shutting_problematic_wells_{
         Parameters::Get<Parameters::MinTimeStepBeforeShuttingProblematicWellsInDays>() * unit::day}
     , report_(report)
@@ -963,6 +965,19 @@ run()
 
             assert(dt_estimate > 0);
             dt_estimate = maybeRestrictTimeStepGrowth_(dt, dt_estimate, restarts);
+            // Optionally snap the accepted-step suggestion onto a fixed logarithmic
+            // lattice. The controllers respond continuously to the solution (through
+            // relativeChange(), and for the iteration-count part through an integer that
+            // itself moves with the solution), so round-off-level differences in the
+            // residual reach the step size and from there the whole trajectory. Making
+            // the step size locally constant in the estimate stops differences smaller
+            // than the lattice spacing from propagating. Applied after the growth
+            // restriction so the lattice is not immediately clobbered by that clamp, and
+            // only on this (converged) path so the chop-and-retry thresholds still see
+            // the exact values they are compared against. The timer may still shorten the
+            // final step(s) of a report step to land on the report boundary; that is
+            // deterministic and must be preserved.
+            dt_estimate = quantizeTimeStep_(dt_estimate);
             restarts = 0;         // solver converged, reset restarts counter
 
             maybeReportSubStep_(substep_report);
@@ -1526,6 +1541,24 @@ timeStepControlComputeEstimate_(const double dt, const int iterations,
     const SolutionTimeErrorSolverWrapper<Solver> relative_change{solver_()};
     return this->adaptive_time_stepping_.time_step_control_->computeTimeStepSize(
         dt, iterations, relative_change, substepTimer);
+}
+
+template <class TypeTag>
+template <class Solver>
+double
+AdaptiveTimeStepping<TypeTag>::SubStepIteration<Solver>::
+quantizeTimeStep_(const double dt) const
+{
+    const int subdivisions = this->adaptive_time_stepping_.timestep_quantization_;
+    if (subdivisions <= 0 || !(dt > 0.0) || !std::isfinite(dt)) {
+        return dt;
+    }
+    // Lattice points are 2^(k/subdivisions) seconds; relative spacing is
+    // 2^(1/subdivisions) - 1, independent of the anchor. Note the lattice is anchored in
+    // SI units, so the values look arbitrary when printed in days (86400 is not a power
+    // of two) -- irrelevant for the purpose, which only needs a fixed multiplicative grid.
+    const double exponent = std::log2(dt) * subdivisions;
+    return std::exp2(std::round(exponent) / subdivisions);
 }
 
 template <class TypeTag>
