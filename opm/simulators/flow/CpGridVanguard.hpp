@@ -253,9 +253,7 @@ public:
                              this->numJacobiBlocks(), this->enableEclOutput());
 #endif
 
-        this->updateGridView_();
-        this->updateCartesianToCompressedMapping_();
-        this->updateCellThickness_();
+        this->updateDerivedGridState_();
 
 #if HAVE_MPI
         this->distributeFieldProps_(this->eclState());
@@ -264,6 +262,14 @@ public:
         // Must be done after the field properties have been distributed, since the
         // DEPTH property is needed on all ranks to honour DEPTH in the EDIT section.
         this->updateCellDepths_();
+    }
+
+    //! \brief Recompute what the vanguard derives from the leaf grid; cell depths excepted.
+    void updateDerivedGridState_()
+    {
+        this->updateGridView_();
+        this->updateCartesianToCompressedMapping_();
+        this->updateCellThickness_();
     }
 
     /*!
@@ -277,9 +283,9 @@ public:
             OpmLog::info("\nAdding LGRs to the grid and updating its leaf grid view");
             this->addLgrsUpdateLeafView(lgrs, lgrs.size(), *this->grid_);
 
-            this->updateGridView_();
+            // Refinement renumbers the leaf, so the Cartesian->compressed map is stale.
+            this->updateDerivedGridState_();
             this->updateCellDepths_();
-            this->updateCellThickness_();
 
             if (this->grid_->comm().size()>1) {
                 // Add LGRs and update the leaf grid view in the global (undistributed) simulation grid.
