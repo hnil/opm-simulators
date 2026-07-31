@@ -38,6 +38,7 @@ struct TimeStepControl { static constexpr auto value = "pid+newtoniteration"; };
 struct TimeStepControlTolerance { static constexpr double value = 1e-1; };
 struct TimeStepControlTargetIterations { static constexpr int value = 30; };
 struct TimeStepControlTargetNewtonIterations { static constexpr int value = 8; };
+struct TimeStepControlIterationDeadband { static constexpr int value = 0; };
 struct TimeStepControlDecayRate { static constexpr double value = 0.75; };
 struct TimeStepControlGrowthRate { static constexpr double  value = 1.25; };
 struct TimeStepControlDecayDampingFactor { static constexpr double value = 1.0;  };

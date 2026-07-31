@@ -276,19 +276,21 @@ namespace Opm
                                          const double growthDampingFactor,
                                          const double tol,
                                          const double minTimeStepBasedOnIterations,
+                                         const int iterationDeadband,
                                          const bool verbose)
         : PIDTimeStepControl( tol, verbose )
         , target_iterations_( target_iterations )
         , decayDampingFactor_( decayDampingFactor )
         , growthDampingFactor_( growthDampingFactor )
         , minTimeStepBasedOnIterations_(minTimeStepBasedOnIterations)
+        , iterationDeadband_(iterationDeadband)
         , verbose_(verbose)
     {}
 
     PIDAndIterationCountTimeStepControl
     PIDAndIterationCountTimeStepControl::serializationTestObject()
     {
-        return PIDAndIterationCountTimeStepControl{1, 2.0, 3.0, 4.0, 5.0, true};
+        return PIDAndIterationCountTimeStepControl{1, 2.0, 3.0, 4.0, 5.0, 6, true};
     }
 
     double
@@ -300,15 +302,34 @@ namespace Opm
         double dtEstimatePID = PIDTimeStepControl :: computeTimeStepSize( dt, iterations, relChange, substepTimer);
 
         // adjust timesteps based on target iteration
+        //
+        // The off-target distance is measured from the edge of the dead band rather than
+        // from target_iterations_ itself, so that the response stays continuous across the
+        // band edge instead of jumping by iterationDeadband_/target_iterations_ there.
+        // With the default iterationDeadband_ == 0 both branches reduce to the classic
+        // (iterations - target)/target expressions.
         double dtEstimateIter;
-        if (iterations > target_iterations_) {
-            double off_target_fraction = double(iterations - target_iterations_) / target_iterations_;
+        if (iterationDeadband_ > 0 &&
+            std::abs(iterations - target_iterations_) <= iterationDeadband_)
+        {
+            // Inside the dead band the iteration count carries no actionable signal. The
+            // value is combined with the PID estimate through std::min below, so "no
+            // signal" has to mean "no constraint" -- returning dt itself would instead cap
+            // the step at its current length and forbid all growth for as long as the count
+            // stays in the band. Same convention as PIDTimeStepControl uses when its error
+            // history is not yet usable.
+            dtEstimateIter = std::numeric_limits<double>::max();
+        }
+        else if (iterations > target_iterations_ + iterationDeadband_) {
+            double off_target_fraction =
+                double(iterations - target_iterations_ - iterationDeadband_) / target_iterations_;
             dtEstimateIter = dt / (1.0 + off_target_fraction * decayDampingFactor_);
             if (dtEstimateIter < minTimeStepBasedOnIterations_) {
                 dtEstimateIter = minTimeStepBasedOnIterations_;
             }
         } else {
-            double off_target_fraction = double(target_iterations_ - iterations) / target_iterations_;
+            double off_target_fraction =
+                double(target_iterations_ - iterationDeadband_ - iterations) / target_iterations_;
             // Be a bit more careful when increasing.
             dtEstimateIter = dt * (1.0 + off_target_fraction * growthDampingFactor_);
         }
@@ -327,6 +348,7 @@ namespace Opm
                this->decayDampingFactor_ == ctrl.decayDampingFactor_ &&
                this->growthDampingFactor_ == ctrl.growthDampingFactor_ &&
                this->minTimeStepBasedOnIterations_ == ctrl.minTimeStepBasedOnIterations_ &&
+               this->iterationDeadband_ == ctrl.iterationDeadband_ &&
                this->verbose_ == ctrl.verbose_;
     }
 

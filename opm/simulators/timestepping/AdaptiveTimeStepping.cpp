@@ -126,6 +126,12 @@ void registerAdaptiveParameters()
     Parameters::Register<Parameters::TimeStepControlTargetNewtonIterations>
         ("The number of Newton iterations which the time step control scheme "
          "should aim for (if applicable)");
+    Parameters::Register<Parameters::TimeStepControlIterationDeadband>
+        ("Half-width of a dead band around the target iteration count in which the "
+         "iteration-count part of the time step control leaves the step size unchanged. "
+         "The iteration count is integer valued, so reacting to a difference of one "
+         "iteration feeds round-off-level differences in the residual into the time step "
+         "sequence. 0 (default) reproduces the classic behaviour");
     Parameters::Register<Parameters::TimeStepControlDecayRate>
         ("The decay rate of the time step size of the number of "
          "target iterations is exceeded");
@@ -189,6 +195,7 @@ createController(const UnitSystem& unitSystem)
              const int iterations =  Parameters::Get<Parameters::TimeStepControlTargetIterations>();
              const double decayDampingFactor = Parameters::Get<Parameters::TimeStepControlDecayDampingFactor>();
              const double growthDampingFactor = Parameters::Get<Parameters::TimeStepControlGrowthDampingFactor>();
+             const int iterationDeadband = Parameters::Get<Parameters::TimeStepControlIterationDeadband>();
              return RetVal{
                  TimeStepControlType::PIDAndIterationCount,
                  std::make_unique<PIDAndIterationCountTimeStepControl>(iterations,
@@ -196,6 +203,7 @@ createController(const UnitSystem& unitSystem)
                                                                        growthDampingFactor,
                                                                        tol,
                                                                        0.0, // should be zero for target *linear* iterations
+                                                                       iterationDeadband,
                                                                        verbose),
                  false
              };
@@ -206,6 +214,7 @@ createController(const UnitSystem& unitSystem)
              const double decayDampingFactor = Parameters::Get<Parameters::TimeStepControlDecayDampingFactor>();
              const double growthDampingFactor = Parameters::Get<Parameters::TimeStepControlGrowthDampingFactor>();
              const double nonDimensionalMinTimeStepIterations = Parameters::Get<Parameters::MinTimeStepBasedOnNewtonIterations>();
+             const int iterationDeadband = Parameters::Get<Parameters::TimeStepControlIterationDeadband>();
              // the min time step can be reduced by the newton iteration numbers
              double minTimeStepReducedByIterations = unitSystem.to_si(UnitSystem::measure::time,
                                                                       nonDimensionalMinTimeStepIterations);
@@ -216,6 +225,7 @@ createController(const UnitSystem& unitSystem)
                                                                        growthDampingFactor,
                                                                        tol,
                                                                        minTimeStepReducedByIterations,
+                                                                       iterationDeadband,
                                                                        verbose),
                  true
              };
