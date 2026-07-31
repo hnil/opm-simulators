@@ -30,8 +30,16 @@
 #include <opm/simulators/flow/AdaptiveLgr.hpp>
 #include <opm/simulators/flow/CpGridVanguard.hpp>
 
+// A grid backend may require a refinement builder to be registered before a
+// post-construction refinement request.  opm-gridrefined does, for a deck
+// without CARFIN: it only retains the corner-point description when the deck
+// declares LGRs, so its own fallback has nothing to build from.  Upstream
+// opm-grid refines from the grid it already holds and has no such notion.
+#if __has_include(<opm/grid/cpgrid/refinement/RefinementBuilder.hpp>)
+#define OPM_ADAPTIVE_HAVE_REFINEMENT_BUILDER 1
 #include <opm/grid/cpgrid/refinement/ConformingBlockBuilder.hpp>
 #include <opm/grid/cpgrid/refinement/RefinementBuilder.hpp>
+#endif
 
 #include <array>
 #include <memory>
@@ -94,14 +102,7 @@ public:
             return;
         }
 
-        // Build the conforming refinement builder from the coarse input grid's
-        // corner-point description and register it for the refinement call.
         const auto& inputGrid = this->eclState().getInputGrid();
-        const std::array<int,3> dims = inputGrid.getNXYZ();
-        std::vector<int> actnum = inputGrid.getACTNUM();
-        auto previous = Opm::Refinement::setBuilder(
-            std::make_unique<Opm::Refinement::ConformingBlockBuilder>(
-                dims, inputGrid.getCOORD(), inputGrid.getZCORN(), std::move(actnum)));
 
         std::vector<std::array<int,3>> cellsPerDim, startIJK, endIJK;
         std::vector<std::string> names;
@@ -114,6 +115,19 @@ public:
         OpmLog::info("\nAdaptive refinement (--adaptive-lgr): refining "
                      + std::to_string(boxes.size())
                      + " box(es) on the coarse grid post-construction");
+
+        // Refine through the grid's own entry point, exactly as a deck CARFIN
+        // does.
+#if OPM_ADAPTIVE_HAVE_REFINEMENT_BUILDER
+        // This backend needs a builder supplied for a deck with no CARFIN,
+        // since it retains the corner-point description only when the deck
+        // declares LGRs.  Build one from the input grid for the duration of
+        // the call and restore whatever was registered before.
+        std::vector<int> actnum = inputGrid.getACTNUM();
+        auto previous = Opm::Refinement::setBuilder(
+            std::make_unique<Opm::Refinement::ConformingBlockBuilder>(
+                inputGrid.getNXYZ(), inputGrid.getCOORD(), inputGrid.getZCORN(),
+                std::move(actnum)));
         try {
             this->grid_->addLgrsUpdateLeafView(cellsPerDim, startIJK, endIJK, names);
         }
@@ -122,6 +136,9 @@ public:
             throw;
         }
         Opm::Refinement::setBuilder(std::move(previous));
+#else
+        this->grid_->addLgrsUpdateLeafView(cellsPerDim, startIJK, endIJK, names);
+#endif
 
         // Same post-refinement bookkeeping the base addLgrs() does for a deck
         // CARFIN: refresh the leaf view, rebuild the stale Cartesian->compressed
