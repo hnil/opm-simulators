@@ -126,6 +126,11 @@ void registerAdaptiveParameters()
     Parameters::Register<Parameters::TimeStepControlTargetNewtonIterations>
         ("The number of Newton iterations which the time step control scheme "
          "should aim for (if applicable)");
+    Parameters::Register<Parameters::TimeStepQuantization>
+        ("Snap the suggested time step onto a logarithmic lattice with this many "
+         "subdivisions per doubling, so that differences below the lattice spacing cannot "
+         "propagate into the time step sequence. 4 gives ~19% spacing, 8 ~9%. "
+         "0 (default) disables quantization");
     Parameters::Register<Parameters::TimeStepControlIterationDeadband>
         ("Half-width of a dead band around the target iteration count in which the "
          "iteration-count part of the time step control leaves the step size unchanged. "

@@ -51,6 +51,7 @@ struct TimeStepControlRejectCompletedStep { static constexpr bool value = false;
 struct TimeStepControlToleranceTestVersion { static constexpr auto value = "standard"; };
 struct TimeStepControlMaxReductionTimeStep { static constexpr double value = 0.1; };
 struct TimeStepControlParameters { static constexpr auto value = "0.125;0.25;0.125;0.75;0.25"; };
+struct TimeStepQuantization { static constexpr int value = 0; };
 
 } // namespace Opm::Parameters
 
@@ -312,6 +313,8 @@ private:
         double timeStepControlComputeEstimate_(const double dt,
                                                const int iterations,
                                                const AdaptiveSimulatorTimer& substepTimer) const;
+        //! \brief Snap a time step suggestion onto a logarithmic lattice (no-op if disabled)
+        double quantizeTimeStep_(const double dt) const;
         bool timeStepVerbose_() const;
         void updateSuggestedNextStep_();
         bool useNewtonIteration_() const;
@@ -442,6 +445,7 @@ protected:
     bool full_timestep_initially_{false};    //!< beginning with the size of the time step from data file
     double timestep_after_event_{};          //!< suggested size of timestep after an event
     bool use_newton_iteration_{false};       //!< use newton iteration count for adaptive time step control
+    int timestep_quantization_{0};            //!< subdivisions per doubling of the time step lattice (0 = off)
 
     //! < shut problematic wells when time step size in days are less than this
     double min_time_step_before_shutting_problematic_wells_{};
