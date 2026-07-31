@@ -358,9 +358,7 @@ public:
                              this->numJacobiBlocks(), this->enableEclOutput());
 #endif
 
-        this->updateGridView_();
-        this->updateCartesianToCompressedMapping_();
-        this->updateCellThickness_();
+        this->updateDerivedGridState_();
 
 #if HAVE_MPI
         this->distributeFieldProps_(this->eclState());
@@ -369,6 +367,22 @@ public:
         // Must be done after the field properties have been distributed, since the
         // DEPTH property is needed on all ranks to honour DEPTH in the EDIT section.
         this->updateCellDepths_();
+    }
+
+    /*!
+     * \brief Recompute everything the vanguard derives from the grid.
+     *
+     * Needed after every change to the leaf grid -- load balancing and local
+     * refinement both renumber the leaf cells.  Kept in one method so a
+     * future grid-changing step cannot miss one of the updates.  Cell depths
+     * are not included: they need the distributed field properties, so each
+     * caller updates them once those are available.
+     */
+    void updateDerivedGridState_()
+    {
+        this->updateGridView_();
+        this->updateCartesianToCompressedMapping_();
+        this->updateCellThickness_();
     }
 
     /*!
@@ -382,9 +396,13 @@ public:
             OpmLog::info("\nAdding LGRs to the grid and updating its leaf grid view");
             this->addLgrsUpdateLeafView(lgrs, lgrs.size(), *this->grid_);
 
-            this->updateGridView_();
+            // Refinement changed the leaf cell count and ordering, so the
+            // state derived at load-balance time -- in particular the
+            // (level-zero-only) Cartesian->compressed map used to resolve
+            // coarse well connections -- is stale and must be rebuilt before
+            // well connections are resolved.
+            this->updateDerivedGridState_();
             this->updateCellDepths_();
-            this->updateCellThickness_();
 
             // The global-view refinement + id sync below is the original
             // implementation's way to make refined cell ids globally
