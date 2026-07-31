@@ -166,8 +166,13 @@ public:
         // build time, so reconstruct it once from each leaf cell's parent
         // Cartesian (globalCell()) + index-in-parent + the static CARFIN box,
         // and look the connection up there.
-        if (this->grid().maxLevel() == 0 && this->grid().leafHasParentCellIndices()) {
-            return this->compressedIndexForInteriorLGRFlat_(lgr_tag, lgr_level, conn);
+        // leafHasParentCellIndices() reports a leaf that carries refined cells
+        // without per-level grids; only some CpGrid backends can produce that, so
+        // ask whether the grid knows the question at all.
+        if constexpr (requires { this->grid().leafHasParentCellIndices(); }) {
+            if (this->grid().maxLevel() == 0 && this->grid().leafHasParentCellIndices()) {
+                return this->compressedIndexForInteriorLGRFlat_(lgr_tag, lgr_level, conn);
+            }
         }
 
         if (ParentType::lgrMappers_.has_value() == false) {
@@ -671,10 +676,14 @@ public:
             // per-cell arrays) it will index out of bounds and fail loudly. A
             // correct run is unaffected. Default off => zero impact on the
             // achieved (rank-interior / refine-before) behaviour.
-            if (std::getenv("OPM_LGR_POISON_REFINED") != nullptr) {
-                this->grid_->poisonRefinedGlobalCell(-1);
-                OpmLog::info("\n[canary] poisoned refined leaf cells' global Cartesian index "
-                             "(OPM_LGR_POISON_REFINED): any late re-derivation will now fail loudly.");
+            // The canary is a diagnostic some CpGrid backends offer; where it
+            // is absent the option simply has nothing to do.
+            if constexpr (requires { this->grid_->poisonRefinedGlobalCell(-1); }) {
+                if (std::getenv("OPM_LGR_POISON_REFINED") != nullptr) {
+                    this->grid_->poisonRefinedGlobalCell(-1);
+                    OpmLog::info("\n[canary] poisoned refined leaf cells' global Cartesian index "
+                                 "(OPM_LGR_POISON_REFINED): any late re-derivation will now fail loudly.");
+                }
             }
         }
     }

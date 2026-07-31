@@ -34,7 +34,16 @@
 
 #include <opm/grid/cpgrid/GridHelpers.hpp>
 #include <opm/grid/cpgrid/LevelCartesianIndexMapper.hpp>
+
+// Some CpGrid backends refine from a corner-point description retained at
+// construction rather than from the grid itself, and need it handed to a
+// separately built grid.  Upstream opm-grid refines from the grid it holds.
+#if __has_include(<opm/grid/cpgrid/refinement/GridStateWriter.hpp>)
+#define OPM_HAVE_REFINEMENT_BUILDER 1
 #include <opm/grid/cpgrid/refinement/GridStateWriter.hpp>
+#else
+#define OPM_HAVE_REFINEMENT_BUILDER 0
+#endif
 
 #include <opm/input/eclipse/EclipseState/EclipseState.hpp>
 #include <opm/input/eclipse/Schedule/Schedule.hpp>
@@ -620,19 +629,29 @@ doCreateGrids_(const bool edge_conformal, EclipseState& eclState)
         // only for output.
         if (this->grid_->comm().size() > 1 && input_grid != nullptr) {
             if (const auto& lgrs = eclState.getLgrs(); lgrs.size() > 0) {
-                // grid_ is still undistributed here, so its level-zero data
-                // carries the retained corner-point input the builder needs.
+#if OPM_HAVE_REFINEMENT_BUILDER
+                // This backend refines from a retained corner-point
+                // description rather than from the grid itself, so hand the
+                // fresh grid the copy that grid_ (still undistributed here)
+                // is holding.  Without it there is nothing to refine from and
+                // the I/O rank is left without a refined reference grid.
                 auto retained = Opm::Refinement::GridStateWriter::retainedCornerPointInput(
                     *this->grid_->currentData().front());
-                if (retained) {
+                const bool canRefine = static_cast<bool>(retained);
+#else
+                constexpr bool canRefine = true;
+#endif
+                if (canRefine) {
                     auto outGrid = std::make_unique<Dune::CpGrid>(Dune::MPIHelper::getLocalCommunicator());
                     outGrid->processEclipseFormat(input_grid, nullptr,
                                                   /* isPeriodic = */ false,
                                                   /* flipNormals = */ false,
                                                   /* clipZ = */ false,
                                                   edge_conformal);
+#if OPM_HAVE_REFINEMENT_BUILDER
                     Opm::Refinement::GridStateWriter::setRetainedCornerPointInput(
                         *outGrid->currentData().front(), retained);
+#endif
                     this->addLgrsUpdateLeafView(lgrs, lgrs.size(), *outGrid);
                     this->outputGrid_ = std::move(outGrid);
                     this->outputCartesianIndexMapper_ =
