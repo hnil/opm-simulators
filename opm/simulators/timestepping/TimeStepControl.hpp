@@ -176,12 +176,22 @@ namespace Opm
         /// \param tol                          tolerance for the relative changes of the numerical solution to be
         ///                                     accepted in one time step
         /// \param minTimeStepBasedOnIterations time step suggestion from target iterations should not be below this
+        /// \param iterationDeadband            half-width of a dead band around target_iterations in which the
+        ///                                     iteration-count heuristic leaves the time step unchanged. The
+        ///                                     iteration count is an integer-valued, hence discontinuous,
+        ///                                     function of the solution; reacting to a change of +-1 iteration
+        ///                                     couples round-off-level differences in the residual into the time
+        ///                                     step sequence, from where they grow to tolerance level. A dead
+        ///                                     band of 1-2 suppresses that coupling while retaining the
+        ///                                     heuristic's response to genuinely hard or easy steps.
+        ///                                     0 (default) reproduces the classic behaviour exactly.
         /// \param verbose                      if true, get some output
         PIDAndIterationCountTimeStepControl(const int target_iterations,
                                             const double decayDampingFactor,
                                             const double growthDampingFactor,
                                             const double tol,
                                             const double minTimeStepBasedOnIterations,
+                                            const int iterationDeadband,
                                             const bool verbose);
 
         static PIDAndIterationCountTimeStepControl serializationTestObject();
@@ -206,6 +216,7 @@ namespace Opm
             serializer(decayDampingFactor_);
             serializer(growthDampingFactor_);
             serializer(minTimeStepBasedOnIterations_);
+            serializer(iterationDeadband_);
             serializer(verbose_);
         }
 
@@ -216,6 +227,7 @@ namespace Opm
         const double decayDampingFactor_ = 1.0;
         const double growthDampingFactor_ = 3.2;
         const double minTimeStepBasedOnIterations_ = 0.0;
+        const int iterationDeadband_ = 0;
         const bool verbose_ = false;
     };
 
