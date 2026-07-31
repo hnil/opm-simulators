@@ -316,8 +316,10 @@ protected:
             // transmissibility distance vector and yields NaN where the parent
             // cell has zero permeability.  Use the per-leaf-cell geometry centroid
             // (LookUpCellCentroid) for such a leaf instead.
+            // Testing the grid *type* is not enough: not every CpGrid backend
+            // has this query, so test for the member itself.
             bool refinedFlatLeaf = false;
-            if constexpr (std::is_same_v<Grid, Dune::CpGrid>) {
+            if constexpr (requires { this->gridView().grid().leafHasParentCellIndices(); }) {
                 refinedFlatLeaf = this->gridView().grid().leafHasParentCellIndices();
             }
             bool useEclipse = !isCpGrid ||
