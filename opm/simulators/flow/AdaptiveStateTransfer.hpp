@@ -20,7 +20,8 @@
  *        (dynamic grid refinement, phase 1 -- steps S3-S5 of
  *        opm-gridrefined docs/DYNAMIC-REFINEMENT-FLOW-PLAN.md).
  *
- * The per-cell state is keyed by CpGridData::stableCellId(): the plain
+ * The per-cell state is keyed by a construction-stable id (see
+ * stableCellIds() below): the plain
  * Cartesian index for coarse cells and the packed (parent Cartesian, child
  * lattice index) for refined cells -- invariant across grid rebuilds, so the
  * same map works for an unchanged grid (identity), for refinement (child
@@ -45,6 +46,9 @@
 #include <opm/models/utils/propertysystem.hh>
 #include <opm/models/utils/basicproperties.hh>
 
+#include <opm/common/ErrorMacros.hpp>
+
+#include <cassert>
 #include <cstdint>
 #include <stdexcept>
 #include <unordered_map>
@@ -65,6 +69,50 @@ struct AdaptiveCellState
 
 using AdaptiveStateMap = std::unordered_map<std::int64_t, AdaptiveCellState>;
 
+//! Number of low bits reserved for a cell's index within its parent.
+inline constexpr int adaptiveChildBits = 20;
+//! Tag bit distinguishing a refined cell's id from a plain Cartesian index.
+inline constexpr std::int64_t adaptiveRefinedTag = std::int64_t(1) << 62;
+
+//! Construction-stable id per leaf cell, in leaf index order.
+//!
+//! A refined leaf cell carries its level-zero ancestor's Cartesian index in
+//! globalCell(), which alone is therefore not unique; pair it with the cell's
+//! index within its parent and tag the result, so refined and coarse ids never
+//! collide.  An unrefined cell keeps its plain Cartesian index.
+//!
+//! Computed here from the public grid interface rather than from a
+//! grid-internal helper, so this works against any CpGrid implementation.
+template <class Grid, class GridView>
+std::vector<std::int64_t> stableCellIds(const Grid& grid, const GridView& gridView)
+{
+    // With more than one refinement level, getIdxInParentCell() is the index
+    // in the *immediate* parent, so (level-zero ancestor, idxInParent) is no
+    // longer injective.  Nested refinement needs a full ancestry path.
+    if (grid.maxLevel() > 1) {
+        OPM_THROW(std::logic_error,
+                  "Adaptive state transfer supports at most one refinement "
+                  "level; nested refinement needs a full ancestry key.");
+    }
+
+    const auto& globalCell = grid.globalCell();
+    std::vector<std::int64_t> ids(globalCell.size());
+
+    for (const auto& elem : elements(gridView)) {
+        const auto idx = gridView.indexSet().index(elem);
+        const std::int64_t cart = globalCell[idx];
+        if (!elem.hasFather()) {
+            ids[idx] = cart;
+            continue;
+        }
+        const std::int64_t child = elem.getIdxInParentCell();
+        assert(child >= 0 && child < (std::int64_t(1) << adaptiveChildBits));
+        ids[idx] = adaptiveRefinedTag | (cart << adaptiveChildBits) | child;
+    }
+
+    return ids;
+}
+
 //! Extract the transferable state of every leaf cell, keyed by stableCellId.
 //! Call with an explicit TypeTag: extractAdaptiveState<TypeTag>(sim).
 template <class TypeTag>
@@ -75,7 +123,7 @@ extractAdaptiveState(GetPropType<TypeTag, Properties::Simulator>& simulator)
     using ElementContext = GetPropType<TypeTag, Properties::ElementContext>;
 
     const auto& grid = simulator.vanguard().grid();
-    const auto stableIds = grid.currentData().back()->stableCellId();
+    const auto stableIds = stableCellIds(grid, simulator.gridView());
 
     AdaptiveStateMap state;
     state.reserve(stableIds.size());
@@ -124,14 +172,14 @@ remapAdaptiveState(const AdaptiveStateMap& state,
                    GetPropType<TypeTag, Properties::Simulator>& simulator)
 {
     const auto& grid = simulator.vanguard().grid();
-    const auto stableIds = grid.currentData().back()->stableCellId();
+    const auto stableIds = stableCellIds(grid, simulator.gridView());
     const std::size_t n = stableIds.size();
 
-    // stableCellId packing (CpGridData::stableCellId, design D3): refined cell
-    // = refinedTag | parentCart<<childBits | childIdx; coarse cell = plain
+    // Id packing (see stableCellIds above): refined cell =
+    // refinedTag | parentCart<<childBits | childIdx; coarse cell = plain
     // Cartesian index.
-    constexpr int childBits = 20;
-    constexpr std::int64_t refinedTag = std::int64_t(1) << 62;
+    constexpr int childBits = adaptiveChildBits;
+    constexpr std::int64_t refinedTag = adaptiveRefinedTag;
 
     // Restriction buckets: plain average of the old refined children per
     // parent Cartesian index (phase 1; pv-weighted avg and max/min ops are the
