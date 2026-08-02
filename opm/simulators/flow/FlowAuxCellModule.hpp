@@ -97,6 +97,11 @@ public:
     //! Grid cell to take the initial state from; equilibration needs geometry.
     virtual unsigned initialisationPartner(unsigned localIdx) const = 0;
 
+    //! CNV scales by pore volume; a fracture cell's is too small for that to mean
+    //! anything, so its module may opt out (the material balance still counts it).
+    virtual bool participatesInCnv() const
+    { return true; }
+
     //! Inactive (preallocated) cells have empty rows; the module conditions them in linearize().
     virtual bool isActive(unsigned /*localIdx*/) const
     { return true; }
