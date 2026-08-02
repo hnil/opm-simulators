@@ -159,6 +159,18 @@ public:
     virtual unsigned initialisationPartner(unsigned localIdx) const = 0;
 
     /*!
+     * \brief Whether these cells enter the CNV convergence measure.
+     *
+     * CNV scales a cell's residual by its pore volume, which presumes the pore volume is
+     * commensurate with the flow through the cell.  For a fracture cell -- an aperture
+     * times an area -- it is not: the scaled residual dwarfs any tolerance while the mass
+     * it represents is negligible.  Such a module opts out here; its cells remain in the
+     * material balance, which weighs them by that same small mass.
+     */
+    virtual bool participatesInCnv() const
+    { return true; }
+
+    /*!
      * \brief Whether this auxiliary cell currently takes part in the flow problem.
      *
      * A module may preallocate degrees of freedom it does not use yet -- fracture cells
