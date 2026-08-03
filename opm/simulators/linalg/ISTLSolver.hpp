@@ -390,7 +390,16 @@ std::unique_ptr<Matrix> blockJacobiAdjacency(const Grid& grid,
             try {
                 initPrepare(M,b);
 
-                prepareFlexibleSolver();
+                try {
+                    prepareFlexibleSolver();
+                }
+                catch (...) {
+                    // Keep the system that broke the preconditioner: this only runs on
+                    // the failure path, and the alternative is a "Singular matrix" with
+                    // no way of knowing which row earned it.
+                    Helper::writeSystem(simulator_, M, b, comm_.get());
+                    throw;
+                }
             } OPM_CATCH_AND_RETHROW_AS_CRITICAL_ERROR("This is likely due to a faulty linear solver JSON specification. Check for errors related to missing nodes.");
         }
 
