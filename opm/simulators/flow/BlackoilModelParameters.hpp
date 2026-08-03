@@ -140,6 +140,7 @@ struct RelaxedPressureTolMsw { static constexpr Scalar value = 1e4; };
 struct MaximumNumberOfWellSwitches { static constexpr int value = 3; };
 struct WellControlFlipFlopHold { static constexpr int value = 0; };
 struct WellInnerControlPin { static constexpr int value = 0; };
+struct NewtonConfirmIterations { static constexpr int value = 0; };
 struct MaximumNumberOfGroupSwitches { static constexpr int value = 3; };
 struct UseAverageDensityMsWells { static constexpr bool value = false; };
 struct LocalWellSolveControlSwitching { static constexpr bool value = true; };
@@ -330,6 +331,10 @@ public:
     /// outer iterations whose inner solve switched control away and back
     /// (net-zero flip pair). 0 disables the pin.
     int well_inner_control_pin_;
+    /// Take this many additional full Newton iterations after the convergence
+    /// criterion is first met, shrinking the tolerance halo the accepted state
+    /// carries. 0 disables.
+    int newton_confirm_iterations_;
 
     /// Maximum number of times group can switch to the same control
     int max_number_of_group_switches_;

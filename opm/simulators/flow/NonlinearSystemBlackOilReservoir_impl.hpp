@@ -172,8 +172,23 @@ initialLinearization(SimulatorReportSingle& report,
     // the step is not considered converged until at least minIter iterations is done
     {
         auto convrep = getConvergence(timer, maxIter, residual_norms);
-        report.converged = convrep.converged() &&
-                           this->simulator_.problem().iterationContext().iteration() >= minIter;
+        const int it_now = this->simulator_.problem().iterationContext().iteration();
+        report.converged = convrep.converged() && it_now >= minIter;
+        // Optional converge-and-confirm: hold back acceptance for a few more
+        // full Newton iterations after the criterion is first met, so the
+        // accepted state carries a residual well below the tolerance rather
+        // than just under it (shrinks the per-step tolerance halo).
+        if (report.converged && this->param_.newton_confirm_iterations_ > 0) {
+            if (this->first_converged_iteration_ < 0) {
+                this->first_converged_iteration_ = it_now;
+            }
+            if (it_now < this->first_converged_iteration_ +
+                             this->param_.newton_confirm_iterations_ &&
+                it_now < maxIter)
+            {
+                report.converged = false;
+            }
+        }
         ConvergenceReport::Severity severity = convrep.severityOfWorstFailure();
         this->convergence_reports_.back().report.push_back(std::move(convrep));
 
@@ -210,6 +225,7 @@ nonlinearIteration(const SimulatorTimerInterface& timer,
     if (this->simulator_.problem().iterationContext().needsTimestepInit()) {
         this->residual_norms_history_.clear();
         this->conv_monitor_.reset();
+        this->first_converged_iteration_ = -1;
         this->current_relaxation_ = 1.0;
         this->dx_old_ = 0.0;
         this->convergence_reports_.push_back({timer.reportStepNum(), timer.currentStepNum(), {}});

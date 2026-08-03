@@ -167,6 +167,9 @@ protected:
     WellModel& well_model_;
     SimulatorReportSingle failureReport_;
     std::vector<StepReport> convergence_reports_;
+    /// Iteration at which the convergence criterion was first met this
+    /// timestep attempt (-1 = not yet); used by converge-and-confirm.
+    int first_converged_iteration_ = -1;
     ComponentName compNames_{};
     std::vector<std::vector<Scalar>> residual_norms_history_;
     Scalar current_relaxation_;
