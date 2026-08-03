@@ -946,18 +946,23 @@ namespace Opm
         }
         auto& ws = well_state.well(this->index_of_well_);
         if (zero_rates) {
-            const auto msg = fmt::format("updateIPRImplicit: Well {} has zero rate, IPRs might be problematic", this->name());
+            // The implicit IPR differentiates the converged well equation, and a well
+            // with all rates at zero has not converged onto anything to differentiate --
+            // typical for a well whose structure was just rebuilt mid-step, which starts
+            // from a fresh state.  An operability check on the resulting numbers can shut
+            // a perfectly healthy well.  Fall back to the explicit IPR, which needs no
+            // rates, exactly as the note below always suggested.
+            const auto msg = fmt::format("updateIPRImplicit: Well {} has zero rate; "
+                                         "using the explicit IPR instead", this->name());
             deferred_logger.debug(msg);
-            /*
-            // could revert to standard approach here:
+
             updateIPR(simulator, deferred_logger);
             for (int comp_idx = 0; comp_idx < this->num_conservation_quantities_; ++comp_idx){
-                const int idx = this->activeCompToActivePhaseIdx(comp_idx);
+                const int idx = FluidSystem::activeCompToActivePhaseIdx(comp_idx);
                 ws.implicit_ipr_a[idx] = this->ipr_a_[comp_idx];
                 ws.implicit_ipr_b[idx] = this->ipr_b_[comp_idx];
             }
             return;
-            */
         }
 
         std::ranges::fill(ws.implicit_ipr_a, 0.0);
