@@ -21,8 +21,15 @@
 #define OPM_PERFORATIONDATA_HEADER_INCLUDED
 
 #include <cstddef>
+#include <limits>
 
 namespace Opm {
+
+/// Marks a perforation created at runtime against a degree of freedom that has
+/// no schedule connection -- a fracture cell represented outside the grid.
+/// Consumers that map a perforation back to its ECL connection must skip these.
+inline constexpr std::size_t AUX_PERFORATION_ECL_INDEX =
+    std::numeric_limits<std::size_t>::max();
 
 /// Static data associated with a well perforation.
 template<class Scalar>
