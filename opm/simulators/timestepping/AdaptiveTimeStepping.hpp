@@ -52,6 +52,7 @@ struct TimeStepControlToleranceTestVersion { static constexpr auto value = "stan
 struct TimeStepControlMaxReductionTimeStep { static constexpr double value = 0.1; };
 struct TimeStepControlParameters { static constexpr auto value = "0.125;0.25;0.125;0.75;0.25"; };
 struct TimeStepQuantization { static constexpr int value = 0; };
+struct TimeStepControlSuccessFloor { static constexpr double value = 0.0; };
 
 } // namespace Opm::Parameters
 
@@ -315,6 +316,8 @@ private:
                                                const AdaptiveSimulatorTimer& substepTimer) const;
         //! \brief Snap a time step suggestion onto a logarithmic lattice (no-op if disabled)
         double quantizeTimeStep_(const double dt) const;
+        //! \brief Floor a suggestion against recently demonstrated success (no-op if disabled)
+        double applySuccessFloor_(const double dt_estimate);
         bool timeStepVerbose_() const;
         void updateSuggestedNextStep_();
         bool useNewtonIteration_() const;
@@ -326,6 +329,11 @@ private:
         const bool final_step_;
         std::string cause_of_failure_;
         AdaptiveTimeStepping<TypeTag>& adaptive_time_stepping_;
+        //! converged substep lengths since the last failed attempt; the
+        //! optional success floor is taken against their median so the
+        //! controller cannot ratchet dt far below demonstrated capability
+        //! without an actual failure (a failure clears the window)
+        std::vector<double> recent_converged_dt_{};
     };
 
 public:
@@ -446,6 +454,7 @@ protected:
     double timestep_after_event_{};          //!< suggested size of timestep after an event
     bool use_newton_iteration_{false};       //!< use newton iteration count for adaptive time step control
     int timestep_quantization_{0};            //!< subdivisions per doubling of the time step lattice (0 = off)
+    double timestep_success_floor_{0.0};      //!< floor dt at this fraction of the median recent converged dt (0 = off)
 
     //! < shut problematic wells when time step size in days are less than this
     double min_time_step_before_shutting_problematic_wells_{};

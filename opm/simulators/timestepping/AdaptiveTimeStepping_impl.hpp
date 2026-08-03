@@ -91,6 +91,7 @@ AdaptiveTimeStepping(const UnitSystem& unit_system,
         Parameters::Get<Parameters::TimeStepAfterEventInDays<Scalar>>() * 24 * 60 * 60} // 1e30
     , use_newton_iteration_{false}
     , timestep_quantization_{Parameters::Get<Parameters::TimeStepQuantization>()} // 0 (disabled)
+    , timestep_success_floor_{Parameters::Get<Parameters::TimeStepControlSuccessFloor>()} // 0 (disabled)
     , min_time_step_before_shutting_problematic_wells_{
         Parameters::Get<Parameters::MinTimeStepBeforeShuttingProblematicWellsInDays>() * unit::day}
     , report_(report)
@@ -129,6 +130,7 @@ AdaptiveTimeStepping(double max_next_tstep,
     , timestep_after_event_{tuning.TMAXWC} // 1e30
     , use_newton_iteration_{false}
     , timestep_quantization_{Parameters::Get<Parameters::TimeStepQuantization>()} // 0 (disabled)
+    , timestep_success_floor_{Parameters::Get<Parameters::TimeStepControlSuccessFloor>()} // 0 (disabled)
     , min_time_step_before_shutting_problematic_wells_{
         Parameters::Get<Parameters::MinTimeStepBeforeShuttingProblematicWellsInDays>() * unit::day}
     , report_(report)
@@ -978,6 +980,16 @@ run()
             // final step(s) of a report step to land on the report boundary; that is
             // deterministic and must be preserved.
             dt_estimate = quantizeTimeStep_(dt_estimate);
+            // Optionally floor the suggestion against recently demonstrated
+            // success: most dt reductions happen on *converged* steps, where
+            // no failure signal exists to correct an overly pessimistic
+            // controller response, and the min() composition of the
+            // PID+iteration controller can only ever veto growth. The floor
+            // is taken against the median converged step length since the
+            // last failed attempt; any failure clears the window, so the
+            // chop-and-retry path is unaffected.
+            this->recent_converged_dt_.push_back(dt);
+            dt_estimate = applySuccessFloor_(dt_estimate);
             restarts = 0;         // solver converged, reset restarts counter
 
             maybeReportSubStep_(substep_report);
@@ -1114,6 +1126,8 @@ void
 AdaptiveTimeStepping<TypeTag>::SubStepIteration<Solver>::
 chopTimeStep_(const double new_time_step)
 {
+    // a failure invalidates the success-floor window
+    this->recent_converged_dt_.clear();
     setTimeStep_(new_time_step);
     if (solverVerbose_()) {
         const auto msg = fmt::format(fmt::runtime("{}\nTimestep chopped to {} days\n"),
@@ -1567,6 +1581,28 @@ quantizeTimeStep_(const double dt) const
     // of two) -- irrelevant for the purpose, which only needs a fixed multiplicative grid.
     const double exponent = std::log2(dt) * subdivisions;
     return std::exp2(std::round(exponent) / subdivisions);
+}
+
+template <class TypeTag>
+template <class Solver>
+double
+AdaptiveTimeStepping<TypeTag>::SubStepIteration<Solver>::
+applySuccessFloor_(const double dt_estimate)
+{
+    const double frac = this->adaptive_time_stepping_.timestep_success_floor_;
+    if (frac <= 0.0 || this->recent_converged_dt_.empty()) {
+        return dt_estimate;
+    }
+    // median over a short window (bounded so ancient successes cannot pin
+    // the floor after conditions change)
+    constexpr std::size_t max_window = 5;
+    if (this->recent_converged_dt_.size() > max_window) {
+        this->recent_converged_dt_.erase(this->recent_converged_dt_.begin());
+    }
+    auto window = this->recent_converged_dt_;
+    std::nth_element(window.begin(), window.begin() + window.size()/2, window.end());
+    const double median = window[window.size()/2];
+    return std::max(dt_estimate, frac * median);
 }
 
 template <class TypeTag>

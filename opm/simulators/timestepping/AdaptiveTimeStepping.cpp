@@ -131,6 +131,12 @@ void registerAdaptiveParameters()
          "subdivisions per doubling, so that differences below the lattice spacing cannot "
          "propagate into the time step sequence. 4 gives ~19% spacing, 8 ~9%. "
          "0 (default) disables quantization");
+    Parameters::Register<Parameters::TimeStepControlSuccessFloor>
+        ("Floor the suggested time step at this fraction of the median of the "
+         "recent converged substep lengths (taken since the last failed attempt), "
+         "so the controller cannot ratchet the step far below demonstrated "
+         "capability without an actual convergence failure. A failure clears the "
+         "window, so chop-and-retry is unaffected. 0 (default) disables the floor");
     Parameters::Register<Parameters::TimeStepControlIterationDeadband>
         ("Half-width of a dead band around the target iteration count in which the "
          "iteration-count part of the time step control leaves the step size unchanged. "
