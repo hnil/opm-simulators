@@ -84,6 +84,7 @@ BlackoilModelParameters<Scalar>::BlackoilModelParameters()
     check_well_operability_iter_ = Parameters::Get<Parameters::EnableWellOperabilityCheckIter>();
     max_number_of_well_switches_ = Parameters::Get<Parameters::MaximumNumberOfWellSwitches>();
     well_control_flip_flop_hold_ = Parameters::Get<Parameters::WellControlFlipFlopHold>();
+    well_inner_control_pin_ = Parameters::Get<Parameters::WellInnerControlPin>();
     max_number_of_group_switches_ = Parameters::Get<Parameters::MaximumNumberOfGroupSwitches>();
     use_average_density_ms_wells_ = Parameters::Get<Parameters::UseAverageDensityMsWells>();
     local_well_solver_control_switching_ = Parameters::Get<Parameters::LocalWellSolveControlSwitching>();
@@ -256,6 +257,12 @@ void BlackoilModelParameters<Scalar>::registerParameters()
          "control it just left). Switches to group control are never refused. "
          "Values below 2 hold before the constraint scan has settled and are "
          "not recommended. 0 (default) disables the hold");
+    Parameters::Register<Parameters::WellInnerControlPin>
+        ("Pin a well's control mode in the inner well solve after this many "
+         "consecutive outer Newton iterations whose inner solve switched the "
+         "control away and back (a net-zero flip pair). The well solution then "
+         "stops changing control between outer iterations; the outer control "
+         "update keeps its authority. 0 (default) disables the pin");
     Parameters::Register<Parameters::MaximumNumberOfGroupSwitches>
         ("Maximum number of times a group can switch to the same control");
     Parameters::Register<Parameters::UseAverageDensityMsWells>

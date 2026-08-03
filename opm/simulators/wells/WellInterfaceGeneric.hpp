@@ -430,6 +430,15 @@ protected:
     /// Whether the flip-flop hold is active for the rest of this attempt.
     bool control_held_ = false;
 
+    /// Control/status switch count of the most recent inner well solve;
+    /// stored by the derived classes' iterateWellEqWithSwitching.
+    int last_inner_switch_count_ = 0;
+    /// Consecutive outer iterations whose inner solve flip-flopped (>=2
+    /// switches, net-zero control change).
+    int inner_flip_streak_ = 0;
+    /// Whether the inner-solve control is pinned for the rest of this attempt.
+    bool inner_control_pinned_ = false;
+
     bool changed_to_open_this_step_ = true;
 };
 

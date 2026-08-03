@@ -603,7 +603,8 @@ namespace Opm
                 } else {
                     converged = this->iterateWellEqWithSwitching(
                         simulator, dt, inj_controls, prod_controls, groupStateHelper, well_state,
-                        /*fixed_control=*/false, /*fixed_status=*/false, /*solving_with_zero_rate=*/false
+                        /*fixed_control=*/this->inner_control_pinned_,
+                        /*fixed_status=*/false, /*solving_with_zero_rate=*/false
                     );
                 }
             }
@@ -638,6 +639,28 @@ namespace Opm
                 }
             }
         }
+        // Inner flip-pair detection for the optional control pin: the inner
+        // solve switched control at least twice and ended where it started, so
+        // the well is cycling on a control boundary inside every outer
+        // iteration -- invisible to the outer switch log, which only sees net
+        // changes. After the configured number of consecutive such outer
+        // iterations, pin the inner-solve control for the rest of the attempt.
+        if (this->param_.well_inner_control_pin_ > 0 && !this->inner_control_pinned_) {
+            const bool flip_pair = this->last_inner_switch_count_ >= 2 &&
+                ws.production_cmode == pmode_orig &&
+                ws.injection_cmode == imode_orig;
+            this->inner_flip_streak_ = flip_pair ? this->inner_flip_streak_ + 1 : 0;
+            if (this->inner_flip_streak_ >= this->param_.well_inner_control_pin_) {
+                this->inner_control_pinned_ = true;
+                deferred_logger.info(
+                    fmt::format("    Well {} switches control away and back inside the "
+                                "local solve of {} consecutive Newton iterations; pinning "
+                                "its local-solve control for the remainder of this time "
+                                "step attempt.",
+                                this->name(), this->inner_flip_streak_));
+            }
+        }
+
         // Add debug info for problematic group targets
         if (this->isProducer() &&  ws.production_cmode == Well::ProducerCMode::GRUP && ws.use_group_target_fallback) {
             assert(ws.group_target && ws.group_target_fallback);
@@ -696,7 +719,8 @@ namespace Opm
         // solve well-equation
         converged = this->iterateWellEqWithSwitching(
             simulator, dt, inj_controls, prod_controls, groupStateHelper, well_state,
-            /*fixed_control=*/false, /*fixed_status=*/false, /*solving_with_zero_rate=*/false
+            /*fixed_control=*/this->inner_control_pinned_,
+            /*fixed_status=*/false, /*solving_with_zero_rate=*/false
         );
 
 
@@ -724,7 +748,8 @@ namespace Opm
                     ws.thp = this->getTHPConstraint(summary_state);
                     converged = this->iterateWellEqWithSwitching(
                         simulator, dt, inj_controls, prod_controls, groupStateHelper, well_state,
-                        /*fixed_control=*/false, /*fixed_status=*/false, /*solving_with_zero_rate=*/false
+                        /*fixed_control=*/this->inner_control_pinned_,
+                        /*fixed_status=*/false, /*solving_with_zero_rate=*/false
                     );
                 }
             }
@@ -760,7 +785,7 @@ namespace Opm
                                                              prod_controls,
                                                              groupStateHelper,
                                                              well_state,
-                                                             /*fixed_control=*/false,
+                                                             /*fixed_control=*/this->inner_control_pinned_,
                                                              /*fixed_status=*/false,
                                                              /*solving_with_zero_rate=*/false);
             }

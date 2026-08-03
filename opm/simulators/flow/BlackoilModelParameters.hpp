@@ -139,6 +139,7 @@ struct RelaxedPressureTolMsw { static constexpr Scalar value = 1e4; };
 
 struct MaximumNumberOfWellSwitches { static constexpr int value = 3; };
 struct WellControlFlipFlopHold { static constexpr int value = 0; };
+struct WellInnerControlPin { static constexpr int value = 0; };
 struct MaximumNumberOfGroupSwitches { static constexpr int value = 3; };
 struct UseAverageDensityMsWells { static constexpr bool value = false; };
 struct LocalWellSolveControlSwitching { static constexpr bool value = true; };
@@ -325,6 +326,10 @@ public:
     /// Hold a well's control for the rest of the timestep attempt after this
     /// many immediate control reversals (A->B->A). 0 disables the hold.
     int well_control_flip_flop_hold_;
+    /// Pin a well's control in the inner well solve after this many consecutive
+    /// outer iterations whose inner solve switched control away and back
+    /// (net-zero flip pair). 0 disables the pin.
+    int well_inner_control_pin_;
 
     /// Maximum number of times group can switch to the same control
     int max_number_of_group_switches_;

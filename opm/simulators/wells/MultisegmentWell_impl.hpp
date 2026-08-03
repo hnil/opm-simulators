@@ -1826,6 +1826,8 @@ namespace Opm
             }
         }
 
+        this->last_inner_switch_count_ = switch_count;
+
         if (converged) {
             if (allow_switching){
                 // update operability if status change
