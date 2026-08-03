@@ -83,6 +83,7 @@ BlackoilModelParameters<Scalar>::BlackoilModelParameters()
     check_well_operability_ = Parameters::Get<Parameters::EnableWellOperabilityCheck>();
     check_well_operability_iter_ = Parameters::Get<Parameters::EnableWellOperabilityCheckIter>();
     max_number_of_well_switches_ = Parameters::Get<Parameters::MaximumNumberOfWellSwitches>();
+    well_control_flip_flop_hold_ = Parameters::Get<Parameters::WellControlFlipFlopHold>();
     max_number_of_group_switches_ = Parameters::Get<Parameters::MaximumNumberOfGroupSwitches>();
     use_average_density_ms_wells_ = Parameters::Get<Parameters::UseAverageDensityMsWells>();
     local_well_solver_control_switching_ = Parameters::Get<Parameters::LocalWellSolveControlSwitching>();
@@ -249,6 +250,12 @@ void BlackoilModelParameters<Scalar>::registerParameters()
         ("Enable the well operability checking during iterations");
     Parameters::Register<Parameters::MaximumNumberOfWellSwitches>
         ("Maximum number of times a well can switch to the same control");
+    Parameters::Register<Parameters::WellControlFlipFlopHold>
+        ("Hold a well's control mode for the remainder of the timestep attempt "
+         "after this many immediate control reversals (switching back to the "
+         "control it just left). Switches to group control are never refused. "
+         "Values below 2 hold before the constraint scan has settled and are "
+         "not recommended. 0 (default) disables the hold");
     Parameters::Register<Parameters::MaximumNumberOfGroupSwitches>
         ("Maximum number of times a group can switch to the same control");
     Parameters::Register<Parameters::UseAverageDensityMsWells>

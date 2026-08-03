@@ -423,6 +423,13 @@ protected:
 
     std::vector<std::string> well_control_log_;
 
+    /// Number of immediate control reversals (switching back to the control
+    /// just left) seen this timestep attempt; drives the optional flip-flop
+    /// hold. Like well_control_log_, reset by well re-creation each attempt.
+    int control_reversal_count_ = 0;
+    /// Whether the flip-flop hold is active for the rest of this attempt.
+    bool control_held_ = false;
+
     bool changed_to_open_this_step_ = true;
 };
 

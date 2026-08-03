@@ -138,6 +138,7 @@ template<class Scalar>
 struct RelaxedPressureTolMsw { static constexpr Scalar value = 1e4; };
 
 struct MaximumNumberOfWellSwitches { static constexpr int value = 3; };
+struct WellControlFlipFlopHold { static constexpr int value = 0; };
 struct MaximumNumberOfGroupSwitches { static constexpr int value = 3; };
 struct UseAverageDensityMsWells { static constexpr bool value = false; };
 struct LocalWellSolveControlSwitching { static constexpr bool value = true; };
@@ -321,6 +322,9 @@ public:
 
     /// Maximum number of times a well can switch to the same control
     int max_number_of_well_switches_;
+    /// Hold a well's control for the rest of the timestep attempt after this
+    /// many immediate control reversals (A->B->A). 0 disables the hold.
+    int well_control_flip_flop_hold_;
 
     /// Maximum number of times group can switch to the same control
     int max_number_of_group_switches_;

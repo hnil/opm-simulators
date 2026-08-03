@@ -215,6 +215,12 @@ namespace Opm
         const int episodeIdx = simulator.episodeIndex();
         const auto& iterCtx = simulator.problem().iterationContext();
         const int nupcol = schedule[episodeIdx].nupcol();
+
+        if (this->control_held_) {
+            // Flip-flop hold active for the remainder of this attempt.
+            return false;
+        }
+
         const bool oscillating =
             std::ranges::count(this->well_control_log_, from) >= this->param_.max_number_of_well_switches_;
         if (oscillating && !is_grup) { // we would like to avoid ending up as GRUP
@@ -232,6 +238,11 @@ namespace Opm
             }
             return false;
         }
+        // Remember the current control so a refused switch can be undone --
+        // the check functions below write the new mode into ws directly.
+        const auto prev_inj_cmode = ws.injection_cmode;
+        const auto prev_prod_cmode = ws.production_cmode;
+
         bool changed = false;
         if (iog == IndividualOrGroup::Individual) {
             changed = this->checkIndividualConstraints(ws, summaryState, deferred_logger);
@@ -247,11 +258,44 @@ namespace Opm
         // checking whether control changed
         if (changed) {
             std::string to;
+            bool to_is_grup = false;
             if (well.isInjector()) {
                 to = WellInjectorCMode2String(ws.injection_cmode);
+                to_is_grup = ws.injection_cmode == Well::InjectorCMode::GRUP;
             } else {
                 to = WellProducerCMode2String(ws.production_cmode);
+                to_is_grup = ws.production_cmode == Well::ProducerCMode::GRUP;
             }
+
+            // Optional flip-flop hold: an immediate reversal is a switch back
+            // to the control this well most recently left. After the allowed
+            // number of reversals, refuse further switches for the remainder
+            // of this attempt so the Newton iteration can settle instead of
+            // chasing an oscillating control assignment. Switches to group
+            // control are never refused (group targets keep their authority),
+            // and NLDD local solves are exempt like the oscillation freeze.
+            if (this->param_.well_control_flip_flop_hold_ > 0 &&
+                !iterCtx.inLocalSolve() &&
+                !this->well_control_log_.empty() &&
+                this->well_control_log_.back() == to)
+            {
+                ++this->control_reversal_count_;
+                if (!to_is_grup &&
+                    this->control_reversal_count_ >= this->param_.well_control_flip_flop_hold_)
+                {
+                    ws.injection_cmode = prev_inj_cmode;
+                    ws.production_cmode = prev_prod_cmode;
+                    this->control_held_ = true;
+                    deferred_logger.info(
+                        fmt::format("    Control mode for well {} is flip-flopping ({} <-> {}); "
+                                    "holding {} for the remainder of this time step attempt "
+                                    "after {} reversals.",
+                                    this->name(), from, to, from,
+                                    this->control_reversal_count_));
+                    return false;
+                }
+            }
+
             std::ostringstream ss;
             ss << "    Switching control mode for well " << this->name()
                << " from " << from
