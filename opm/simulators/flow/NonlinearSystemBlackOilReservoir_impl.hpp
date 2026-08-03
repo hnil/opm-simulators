@@ -37,6 +37,7 @@
 #include <opm/simulators/flow/countGlobalCells.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <filesystem>
 #include <functional>
@@ -310,8 +311,10 @@ typename NonlinearSystemBlackOilReservoir<TypeTag>::Scalar
 NonlinearSystemBlackOilReservoir<TypeTag>::
 relativeChange() const
 {
-    Scalar resultDelta = 0.0;
-    Scalar resultDenom = 0.0;
+    // Compensated: relativeChange() feeds the PID time step controller, so
+    // its low-order digits reach the time step sequence directly.
+    NeumaierSum<Scalar> resultDelta;
+    NeumaierSum<Scalar> resultDenom;
 
     const auto& elemMapper = this->simulator_.model().elementMapper();
     const auto& gridView = this->simulator_.gridView();
@@ -386,10 +389,10 @@ relativeChange() const
         }
     }
 
-    resultDelta = gridView.comm().sum(resultDelta);
-    resultDenom = gridView.comm().sum(resultDenom);
+    const Scalar delta = gridView.comm().sum(resultDelta.value());
+    const Scalar denom = gridView.comm().sum(resultDenom.value());
 
-    return resultDenom > 0.0 ? resultDelta / resultDenom : 0.0;
+    return denom > 0.0 ? delta / denom : 0.0;
 }
 
 template <class TypeTag>
@@ -583,8 +586,13 @@ localConvergenceData(std::vector<Scalar>& R_sum,
                      std::vector<int>& maxCoeffCell)
 {
     OPM_TIMEBLOCK(localConvergenceData);
-    Scalar pvSumLocal = 0.0;
-    Scalar numAquiferPvSumLocal = 0.0;
+    // Compensated accumulators: these sums feed convergence decisions, whose
+    // accept/reject outcomes amplify round-off into diverging trajectories --
+    // see utils/NeumaierSum.hpp.
+    NeumaierSum<Scalar> pvSumLocal;
+    NeumaierSum<Scalar> numAquiferPvSumLocal;
+    std::vector<NeumaierSum<Scalar>> B_avg_acc(B_avg.size());
+    std::vector<NeumaierSum<Scalar>> R_sum_acc(R_sum.size());
     const auto& model = this->simulator_.model();
     const auto& problem = this->simulator_.problem();
 
@@ -611,7 +619,7 @@ localConvergenceData(std::vector<Scalar>& R_sum,
         }
 
         this->getMaxCoeff(cell_idx, intQuants, fs, residual, pvValue,
-                          B_avg, R_sum, maxCoeff, maxCoeffCell);
+                          B_avg_acc, R_sum_acc, maxCoeff, maxCoeffCell);
     }
 
     OPM_END_PARALLEL_TRY_CATCH("NonlinearSystemBlackOilReservoir::localConvergenceData() failed: ", this->grid_.comm());
@@ -619,10 +627,11 @@ localConvergenceData(std::vector<Scalar>& R_sum,
     // compute local average in terms of global number of elements
     const int bSize = B_avg.size();
     for (int i = 0; i < bSize; ++i) {
-        B_avg[i] /= Scalar(this->global_nc_);
+        B_avg[i] = B_avg_acc[i].value() / Scalar(this->global_nc_);
+        R_sum[i] = R_sum_acc[i].value();
     }
 
-    return {pvSumLocal, numAquiferPvSumLocal};
+    return {pvSumLocal.value(), numAquiferPvSumLocal.value()};
 }
 
 template <class TypeTag>
@@ -656,6 +665,9 @@ characteriseCnvPvSplit(const std::vector<Scalar>& B_avg, const double dt)
     };
 
     auto& [splitPV, cellCntPV] = cnvPvSplit;
+    // Compensated: these pore-volume pools feed the relaxed-CNV acceptance
+    // decision (relax_pv_fraction_cnv), a knife-edge threshold.
+    std::array<NeumaierSum<double>, 3> splitPV_acc{};
 
     const auto& model = this->simulator().model();
     const auto& problem = this->simulator().problem();
@@ -686,7 +698,7 @@ characteriseCnvPvSplit(const std::vector<Scalar>& B_avg, const double dt)
         const auto ix = (maxCnv > this->param_.tolerance_cnv_)
             + (maxCnv > this->param_.tolerance_cnv_relaxed_);
 
-        splitPV[ix] += static_cast<double>(pvValue);
+        splitPV_acc[ix] += static_cast<double>(pvValue);
         ++cellCntPV[ix];
 
         // For dP and dS check, we need cell indices of [1] violations
@@ -700,6 +712,8 @@ characteriseCnvPvSplit(const std::vector<Scalar>& B_avg, const double dt)
     OPM_END_PARALLEL_TRY_CATCH("NonlinearSystemBlackOilReservoir::characteriseCnvPvSplit() failed: ",
                                this->grid_.comm());
 
+    std::transform(splitPV_acc.begin(), splitPV_acc.end(), splitPV.begin(),
+                   [](const auto& acc) { return acc.value(); });
     this->grid_.comm().sum(splitPV  .data(), splitPV  .size());
     this->grid_.comm().sum(cellCntPV.data(), cellCntPV.size());
 
@@ -1097,8 +1111,8 @@ getMaxCoeff(const unsigned cell_idx,
             const FluidState& fs,
             const Residual& modelResid,
             const Scalar pvValue,
-            std::vector<Scalar>& B_avg,
-            std::vector<Scalar>& R_sum,
+            std::vector<NeumaierSum<Scalar>>& B_avg,
+            std::vector<NeumaierSum<Scalar>>& R_sum,
             std::vector<Scalar>& maxCoeff,
             std::vector<int>& maxCoeffCell)
 {

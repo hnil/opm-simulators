@@ -32,6 +32,7 @@
 #include <opm/grid/common/SubGridPart.hpp>
 
 #include <opm/simulators/aquifers/AquiferGridUtils.hpp>
+#include <opm/simulators/utils/NeumaierSum.hpp>
 
 #include <opm/simulators/flow/countGlobalCells.hpp>
 #include <opm/simulators/flow/NlddReporting.hpp>
@@ -722,6 +723,10 @@ private:
         const auto& elemEndIt = gridView.template end</*codim=*/0>();
         IsNumericalAquiferCell isNumericalAquiferCell(gridView.grid());
 
+        // Compensated accumulators; see utils/NeumaierSum.hpp.
+        std::vector<NeumaierSum<Scalar>> B_avg_acc(B_avg.size());
+        std::vector<NeumaierSum<Scalar>> R_sum_acc(R_sum.size());
+
         for (auto elemIt = gridView.template begin</*codim=*/0>();
              elemIt != elemEndIt;
              ++elemIt)
@@ -747,14 +752,15 @@ private:
             }
 
             model_.getMaxCoeff(cell_idx, intQuants, fs, modelResid, pvValue,
-                               B_avg, R_sum, maxCoeff, maxCoeffCell);
+                               B_avg_acc, R_sum_acc, maxCoeff, maxCoeffCell);
         }
 
         // compute local average in terms of global number of elements
         const int bSize = B_avg.size();
         for ( int i = 0; i<bSize; ++i )
         {
-            B_avg[ i ] /= Scalar(domain.cells.size());
+            B_avg[ i ] = B_avg_acc[ i ].value() / Scalar(domain.cells.size());
+            R_sum[ i ] = R_sum_acc[ i ].value();
         }
 
         return {pvSumLocal, numAquiferPvSumLocal};

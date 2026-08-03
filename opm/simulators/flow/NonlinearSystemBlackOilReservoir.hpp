@@ -25,6 +25,7 @@
 #define OPM_NONLINEAR_SYSTEM_BLACK_OIL_RESERVOIR_HEADER_INCLUDED
 
 #include <opm/simulators/aquifers/BlackoilAquiferModel.hpp>
+#include <opm/simulators/utils/NeumaierSum.hpp>
 
 #include <opm/simulators/flow/NonlinearSystem.hpp>
 
@@ -277,8 +278,8 @@ public:
                      const FluidState& fs,
                      const Residual& modelResid,
                      const Scalar pvValue,
-                     std::vector<Scalar>& B_avg,
-                     std::vector<Scalar>& R_sum,
+                     std::vector<NeumaierSum<Scalar>>& B_avg,
+                     std::vector<NeumaierSum<Scalar>>& R_sum,
                      std::vector<Scalar>& maxCoeff,
                      std::vector<int>& maxCoeffCell);
 
