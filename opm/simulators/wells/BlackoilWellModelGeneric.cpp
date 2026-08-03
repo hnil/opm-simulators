@@ -425,6 +425,34 @@ initializeWellPerfData()
             ++connection_index;
         }
 
+        // Perforations of degrees of freedom outside the grid -- fracture cells
+        // represented as auxiliary DOFs -- follow the schedule connections, so
+        // that every consumer sized from this list covers them.  Their ecl_index
+        // is a sentinel: there is no schedule connection to map back to.
+        if (const auto auxPos = this->auxiliary_perforations_.find(well.name());
+            (auxPos != this->auxiliary_perforations_.end()) && !auxPos->second.empty())
+        {
+            if (well.isMultiSegment()) {
+                OPM_THROW(std::runtime_error,
+                          fmt::format("Well {} is multi-segment; perforations of "
+                                      "auxiliary degrees of freedom are not supported "
+                                      "for multi-segment wells yet.", well.name()));
+            }
+
+            for (const auto& aux : auxPos->second) {
+                auto& pd = well_perf_data_[well_index].emplace_back(aux);
+                pd.ecl_index = AUX_PERFORATION_ECL_INDEX;
+                if (pd.satnum_id == 0 && well_perf_data_[well_index].size() > 1) {
+                    pd.satnum_id = well_perf_data_[well_index].front().satnum_id;
+                }
+
+                parallelWellInfo.pushBackEclIndex(connection_index_above,
+                                                  connection_index);
+                connection_index_above = connection_index;
+                ++connection_index;
+            }
+        }
+
         parallelWellInfo.endReset();
 
         checker.checkAllConnectionsFound();
@@ -1815,6 +1843,17 @@ getMaxWellConnections() const
                 if (compressed_idx >= 0) { // Ignore connections in inactive/remote cells.
                     compressed_well_perforations.push_back(compressed_idx);
                 }
+            }
+        }
+
+        // Perforations of auxiliary degrees of freedom are not schedule
+        // connections, so they are added here by hand; the CPR pressure system
+        // needs their coupling entries in its pattern like any other perforation.
+        if (const auto auxPos = this->auxiliary_perforations_.find(well);
+            auxPos != this->auxiliary_perforations_.end())
+        {
+            for (const auto& aux : auxPos->second) {
+                compressed_well_perforations.push_back(aux.cell_index);
             }
         }
 

@@ -239,6 +239,31 @@ public:
 
     std::vector<int> getCellsForConnections(const Well& well) const;
 
+    /*!
+     * \brief Register perforations of degrees of freedom that have no schedule
+     *        connection.
+     *
+     * A fracture represented as auxiliary cells is perforated directly by degree of
+     * freedom index; there is no COMPDAT record to route it through.  The perforations
+     * are appended after the well's schedule connections when the perforation data is
+     * (re)built, and registering them flags the well structure as dynamically changed so
+     * the next beginTimeStep() rebuilds the local wells, their state and their equations
+     * through the same path an ACTIONX-driven COMPDAT does.
+     *
+     * An empty list clears the well's auxiliary perforations.
+     */
+    void setAuxiliaryPerforations(const std::string& well,
+                                  std::vector<PerforationData<Scalar>> perfs)
+    {
+        auto& stored = this->auxiliary_perforations_[well];
+        if (stored == perfs) {
+            return; // nothing changed; do not force a structure rebuild
+        }
+
+        stored = std::move(perfs);
+        this->wellStructureChangedDynamically_ = true;
+    }
+
     bool reportStepStarts() const { return report_step_starts_; }
 
     void updateClosedWellsThisStep(const std::string& well_name) const
@@ -578,6 +603,11 @@ protected:
     WellGroupEvents report_step_start_events_; //!< Well group events at start of report step
 
     bool wellStructureChangedDynamically_{false};
+
+    //! Perforations of degrees of freedom outside the grid (fracture cells
+    //! represented as auxiliary DOFs), per well.  Appended after the schedule
+    //! connections in initializeWellPerfData().
+    std::unordered_map<std::string, std::vector<PerforationData<Scalar>>> auxiliary_perforations_;
 
     // Store maps of group name and new group controls for output
     std::map<std::string, std::vector<Group::ProductionCMode>> switched_prod_groups_;

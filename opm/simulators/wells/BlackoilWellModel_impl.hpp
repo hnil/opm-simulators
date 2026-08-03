@@ -771,8 +771,14 @@ namespace Opm {
             return FluidSystem::gasPhaseIdx;
         }();
 
-        auto cellPressures = std::vector<Scalar>(this->local_num_cells_, Scalar{0});
-        auto cellTemperatures = std::vector<Scalar>(this->local_num_cells_, Scalar{0});
+        // Sized over every degree of freedom: a well may perforate an auxiliary
+        // DOF (a fracture cell represented outside the grid), and the well state
+        // initialises that perforation's pressure from this array.  A short array
+        // here reads as a zero connection pressure, which the operability check
+        // then interprets as unbounded backflow and shuts the well.
+        const auto numDof = this->simulator_.model().numTotalDof();
+        auto cellPressures = std::vector<Scalar>(numDof, Scalar{0});
+        auto cellTemperatures = std::vector<Scalar>(numDof, Scalar{0});
 
         auto elemCtx = ElementContext { this->simulator_ };
         const auto& gridView = this->simulator_.vanguard().gridView();
@@ -790,6 +796,16 @@ namespace Opm {
         }
         OPM_END_PARALLEL_TRY_CATCH("BlackoilWellModel::initializeWellState() failed: ",
                                    this->simulator_.vanguard().grid().comm());
+
+        // The auxiliary degrees of freedom are not reachable through the grid
+        // loop above; read their state directly.
+        for (auto dof = this->local_num_cells_; dof < numDof; ++dof) {
+            const auto& fs = this->simulator_.model()
+                .intensiveQuantities(dof, /*timeIdx=*/0).fluidState();
+
+            cellPressures[dof] = fs.pressure(pressIx).value();
+            cellTemperatures[dof] = fs.temperature(0).value();
+        }
 
         this->wellState().init(cellPressures, cellTemperatures, this->schedule(), this->wells_ecl_,
                                this->local_parallel_well_info_, timeStepIdx,
@@ -2139,8 +2155,12 @@ namespace Opm {
     BlackoilWellModel<TypeTag>::extractLegacyDepth_()
     {
         const auto& eclProblem = simulator_.problem();
-        depth_.resize(local_num_cells_);
-        for (unsigned cellIdx = 0; cellIdx < local_num_cells_; ++cellIdx) {
+        // Over every degree of freedom, not only the grid cells: a well may
+        // perforate an auxiliary DOF (a fracture cell represented outside the
+        // grid), and the perforation depths are read from this array.
+        const auto numDof = simulator_.model().numTotalDof();
+        depth_.resize(numDof);
+        for (unsigned cellIdx = 0; cellIdx < numDof; ++cellIdx) {
             depth_[cellIdx] = eclProblem.dofCenterDepth(cellIdx);
         }
     }

@@ -51,6 +51,7 @@
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
+#include <limits>
 #include <vector>
 
 #include <fmt/format.h>
@@ -691,6 +692,15 @@ reportConnections(std::vector<data::Connection>& connections,
         // through globalCellIdxMap (= CpGrid::globalCell()) would yield
         // the level-0 ancestor's Cartesian -- shared by all refined
         // siblings under one coarse parent -- which aliases the cell.
+        if (perf_data.ecl_index[i] == AUX_PERFORATION_ECL_INDEX) {
+            // A perforation of an auxiliary degree of freedom has no grid cell and
+            // no schedule connection; give it an index nothing will match, so the
+            // per-connection output simply does not report it.
+            connections[i].index = std::numeric_limits<std::size_t>::max();
+            connections[i].lgr_grid = 0;
+            continue;
+        }
+
         connections[i].index = (perf_data.grid_id[i] > 0)
             ? perf_data.global_index[i]
             : globalCellIdxMap[perf_data.cell_index[i]];

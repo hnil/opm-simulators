@@ -79,6 +79,9 @@ applyCleaning(const WellInterfaceGeneric<Scalar, IndexTraits>& well,
     const auto nperf = well.numLocalPerfs();
     for (int perf = 0; perf < nperf; ++perf) {
         const auto perf_ecl_index = well.perforationData()[perf].ecl_index;
+        if (perf_ecl_index == AUX_PERFORATION_ECL_INDEX) {
+            continue; // no schedule connection, no filter-cake data
+        }
         const auto& connection = connections[perf_ecl_index];
         if (!connection.filterCakeActive())
             continue;
@@ -156,6 +159,9 @@ updateSkinFactorsAndMultipliers(const WellInterfaceGeneric<Scalar, IndexTraits>&
 
     for (int perf = 0; perf < nperf; ++perf) {
         const auto perf_ecl_index = well.perforationData()[perf].ecl_index;
+        if (perf_ecl_index == AUX_PERFORATION_ECL_INDEX) {
+            continue; // no schedule connection, no filter-cake data
+        }
         const auto& connection = connections[perf_ecl_index];
         if (!connection.filterCakeActive())
             continue;

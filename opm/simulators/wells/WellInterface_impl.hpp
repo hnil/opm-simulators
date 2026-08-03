@@ -1940,6 +1940,9 @@ namespace Opm
 
         // Solve quadratic equations for connection rates satisfying the ipr and the flow-dependent skin.
         // If more than one solution, pick the one corresponding to lowest absolute rate (smallest skin).
+        if (ws.perf_data.ecl_index[perf] == AUX_PERFORATION_ECL_INDEX) {
+            return; // no schedule connection, no flow-dependent skin data
+        }
         const auto& connection = this->well_ecl_.getConnections()[ws.perf_data.ecl_index[perf]];
         const Scalar Kh = connection.Kh();
         const Scalar scaling = std::numbers::pi * Kh * connection.wpimult();
@@ -2040,6 +2043,11 @@ namespace Opm
                                     rv, getValue(intQuants.fluidState().Rvw()));
         };
 
+        if (ws.perf_data.ecl_index[perf] == AUX_PERFORATION_ECL_INDEX) {
+            // No schedule connection, so no D-factor data either.
+            return 0.0;
+        }
+
         const auto& connection = this->well_ecl_.getConnections()
             [ws.perf_data.ecl_index[perf]];
 
@@ -2054,9 +2062,16 @@ namespace Opm
                                            SingleWellStateType& ws) const
     {
         auto connCF = [&connIx = std::as_const(ws.perf_data.ecl_index),
-                       &conns = this->well_ecl_.getConnections()]
+                       &conns = this->well_ecl_.getConnections(),
+                       &wi = std::as_const(this->well_index_)]
             (const int perf)
         {
+            // A perforation of an auxiliary degree of freedom has no schedule
+            // connection; its factor is the one it was registered with.
+            if (connIx[perf] == AUX_PERFORATION_ECL_INDEX) {
+                return wi[perf];
+            }
+
             return conns[connIx[perf]].CF();
         };
 
