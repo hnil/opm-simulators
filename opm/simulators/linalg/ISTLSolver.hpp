@@ -417,7 +417,15 @@ std::unique_ptr<Matrix> blockJacobiAdjacency(const Grid& grid,
             try {
                 initPrepare(M,b);
 
-                prepareFlexibleSolver();
+                try {
+                    prepareFlexibleSolver();
+                }
+                catch (...) {
+                    // Keep the system that broke the preconditioner, so a singular block
+                    // can be traced to its row.  Failure path only.
+                    Helper::writeSystem(simulator_, M, b, comm_.get());
+                    throw;
+                }
             }
             catch (const Dune::MatrixBlockError&) {
                 // A singular matrix block found while building the
