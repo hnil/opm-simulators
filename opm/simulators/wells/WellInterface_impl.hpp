@@ -2415,10 +2415,16 @@ namespace Opm
         const auto& intQuants = simulator.model().intensiveQuantities(cell_idx, /*timeIdx=*/0);
         const auto& materialLawManager = simulator.problem().materialLawManager();
 
+        // The material law manager covers grid elements only; outside the grid, use
+        // the cell's own mobility.
+        const bool isAuxiliaryDof =
+            static_cast<unsigned>(cell_idx) >= simulator.model().numGridDof();
+
         // either use mobility of the perforation cell or calculate its own
         // based on passing the saturation table index
         const int satid = this->saturation_table_number_[local_perf_index] - 1;
-        const int satid_elem = materialLawManager.satnumRegionIdx(cell_idx);
+        const int satid_elem = isAuxiliaryDof ? satid
+            : materialLawManager.satnumRegionIdx(cell_idx);
         if (satid == satid_elem) { // the same saturation number is used. i.e. just use the mobilty from the cell
             for (unsigned phaseIdx = 0; phaseIdx < FluidSystem::numPhases; ++phaseIdx) {
                 if (!FluidSystem::phaseIsActive(phaseIdx)) {
