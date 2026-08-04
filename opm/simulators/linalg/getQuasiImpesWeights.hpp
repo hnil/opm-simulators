@@ -247,6 +247,9 @@ namespace Amg
         using Evaluation = typename std::decay_t<decltype(model.localLinearizer(ThreadManager::threadId()).localResidual().residual(0))>
             ::block_type;
 
+        using LocalResidual = std::decay_t<
+            decltype(model.localLinearizer(ThreadManager::threadId()).localResidual())>;
+
         VectorBlockType rhs(0.0);
         rhs[pressureVarIndex] = 1.0;
 
@@ -255,6 +258,115 @@ namespace Amg
         VectorBlockType bweights;
         MatrixBlockType block_transpose;
         Dune::FieldVector<Evaluation, numEq> storage;
+
+        // Turn one degree of freedom's accumulation term into its weight.  Only the
+        // storage derivatives and the volume the storage is scaled by enter it.
+        const auto weightFromStorage = [pressureVarIndex, &rhs, &block_transpose, &elemCtx]
+            (const auto& stor, const auto storage_scale, auto& bw, const int globalDofIdx)
+        {
+            const double pressure_scale = 50e5;
+
+            // Build the transposed matrix directly to avoid separate transpose step
+            for (int ii = 0; ii < numEq; ++ii) {
+                for (int jj = 0; jj < numEq; ++jj) {
+                    block_transpose[jj][ii] = stor[ii].derivative(jj)/storage_scale;
+                    if (jj == pressureVarIndex) {
+                        block_transpose[jj][ii] *= pressure_scale;
+                    }
+                }
+            }
+            try {
+                block_transpose.solve(bw, rhs);
+            }
+            catch (const Dune::FMatrixError&) {
+                // Rank-deficient storage derivatives: there is no weight vector here.
+                // Deliberately no fallback (it would make the CPR pressure system
+                // singular); name the cell instead.
+                const auto& vanguard = elemCtx.simulator().vanguard();
+                const auto numCells = static_cast<int>(vanguard.gridView().size(0));
+                throw std::runtime_error {
+                    fmt::format("Singular storage matrix when forming the CPR "
+                                "pressure weights for degree of freedom {} ({}).  The "
+                                "storage derivatives there are rank deficient, so the "
+                                "pressure equation cannot be formed.",
+                                globalDofIdx,
+                                globalDofIdx < numCells
+                                    ? fmt::format("Cartesian index {}",
+                                                  vanguard.cartesianIndex(globalDofIdx))
+                                    : std::string("auxiliary degree of freedom"))
+                };
+            }
+
+            const double abs_max =
+                *std::ranges::max_element(bw,
+                                          [](double a, double b)
+                                          { return std::fabs(a) < std::fabs(b); });
+            // probably a scaling which could give approximately total compressibility would be better
+            bw /=  std::fabs(abs_max); // given normal densities this scales weights to about 1.
+        };
+
+        // Walk the degrees of freedom when that is possible: the accumulation term of a
+        // degree of freedom is a function of its own intensive quantities and its own
+        // volume, so no element is needed to form it -- and a degree of freedom appended
+        // after the grid has no element to be reached through.
+        //
+        // It takes two things the element walk gets from the ElementContext: intensive
+        // quantities by index, which is what the cache is, and a storage term computed
+        // from them alone, which the TPFA local residual has and the element-by-element
+        // one does not.  Those are also precisely the conditions under which a degree of
+        // freedom outside the grid can exist at all -- the TPFA linearizer is the one
+        // that assembles their equations -- so when either is missing there is nothing
+        // beyond the grid to miss, and the element walk below is complete.
+        if constexpr (requires (Dune::FieldVector<Evaluation, numEq>& s, const Model& m)
+                      {
+                          LocalResidual::template computeStorage<Evaluation>
+                              (s, m.intensiveQuantities(0u, 0u));
+                          m.intensiveQuantityCacheEnabled();
+                          m.dofTotalVolume(0);
+                      })
+        {
+            if (model.intensiveQuantityCacheEnabled()) {
+                const auto numDof = static_cast<int>(model.numTotalDof());
+                const auto dt = elemCtx.simulator().timeStepSize();
+
+                OPM_BEGIN_PARALLEL_TRY_CATCH();
+#ifdef _OPENMP
+#pragma omp parallel for private(bweights, block_transpose, storage) if(enable_thread_parallel)
+#endif
+                const auto& matrix = model.linearizer().jacobian().istlMatrix();
+
+                for (int dofIdx = 0; dofIdx < numDof; ++dofIdx) {
+                    const auto& intQuants =
+                        model.intensiveQuantities(static_cast<unsigned>(dofIdx), /*timeIdx=*/0);
+
+                    const auto scvVolume =
+                        model.dofTotalVolume(dofIdx) * intQuants.extrusionFactor();
+
+                    // The true-IMPES weight is the accumulation term scaled by the volume
+                    // it accumulates in, so a degree of freedom occupying no volume has
+                    // no such weight: dividing by it gives NaN, and the whole linear
+                    // solve with it.  A reserved but not yet occupied auxiliary degree of
+                    // freedom is exactly that -- it carries an identity row until
+                    // something claims it -- and the weight its own row implies is what is
+                    // wanted for it.  Grid cells always have a volume, so this never fires
+                    // where there are no auxiliary degrees of freedom.
+                    if (!(scvVolume > 0.0)) {
+                        weights[dofIdx] = quasiImpesWeightForRow<VectorBlockType>
+                            (matrix, dofIdx, pressureVarIndex, /*transpose=*/false);
+                        continue;
+                    }
+
+                    LocalResidual::template computeStorage<Evaluation>(storage, intQuants);
+
+                    weightFromStorage(storage, scvVolume / dt, bweights, dofIdx);
+                    weights[dofIdx] = bweights;
+                }
+                OPM_END_PARALLEL_TRY_CATCH("getTrueImpesWeights() failed: ",
+                                           elemCtx.simulator().vanguard().grid().comm());
+
+                return;
+            }
+        }
 
         OPM_BEGIN_PARALLEL_TRY_CATCH();
 #ifdef _OPENMP
@@ -272,64 +384,17 @@ namespace Amg
 
                 auto extrusionFactor = localElemCtx.intensiveQuantities(0, /*timeIdx=*/0).extrusionFactor();
                 auto scvVolume = localElemCtx.stencil(/*timeIdx=*/0).subControlVolume(0).volume() * extrusionFactor;
-                auto storage_scale = scvVolume / localElemCtx.simulator().timeStepSize();
-                const double pressure_scale = 50e5;
 
-                // Build the transposed matrix directly to avoid separate transpose step
-                for (int ii = 0; ii < numEq; ++ii) {
-                    for (int jj = 0; jj < numEq; ++jj) {
-                        block_transpose[jj][ii] = storage[ii].derivative(jj)/storage_scale;
-                        if (jj == pressureVarIndex) {
-                            block_transpose[jj][ii] *= pressure_scale;
-                        }
-                    }
-                }
-                try {
-                    block_transpose.solve(bweights, rhs);
-                }
-                catch (const Dune::FMatrixError&) {
-                    // Rank-deficient storage derivatives: no combination of the
-                    // mass balances has a storage term that depends on pressure
-                    // alone, so there is no weight vector to compute here.
-                    //
-                    // Deliberately no fallback value.  bweights is indexed by
-                    // equation while rhs is indexed by primary variable, so
-                    // substituting rhs would put unit weight on whichever
-                    // equation happens to share the pressure variable's index -
-                    // an arbitrary choice that goes on to make the CPR pressure
-                    // system itself singular.  Name the cell instead, so the
-                    // cause can be found.
-                    const auto globalDofIdx =
-                        localElemCtx.globalSpaceIndex(/*spaceIdx=*/0, /*timeIdx=*/0);
-
-                    throw std::runtime_error {
-                        fmt::format("Singular storage matrix when forming the CPR "
-                                    "pressure weights for cell {} (Cartesian index "
-                                    "{}).  The storage derivatives of that cell are "
-                                    "rank deficient, so the pressure equation cannot "
-                                    "be formed there.",
-                                    globalDofIdx,
-                                    localElemCtx.simulator().vanguard()
-                                        .cartesianIndex(globalDofIdx))
-                    };
-                }
-
-                const double abs_max =
-                    *std::ranges::max_element(bweights,
-                                              [](double a, double b)
-                                              { return std::fabs(a) < std::fabs(b); });
-                // probably a scaling which could give approximately total compressibility would be better
-                bweights /=  std::fabs(abs_max); // given normal densities this scales weights to about 1.
+                weightFromStorage(storage,
+                                  scvVolume / localElemCtx.simulator().timeStepSize(),
+                                  bweights,
+                                  localElemCtx.globalSpaceIndex(/*spaceIdx=*/0, /*timeIdx=*/0));
 
                 const auto index = localElemCtx.globalSpaceIndex(/*spaceIdx=*/0, /*timeIdx=*/0);
                 weights[index] = bweights;
             }
         }
         OPM_END_PARALLEL_TRY_CATCH("getTrueImpesWeights() failed: ", elemCtx.simulator().vanguard().grid().comm());
-
-        getAuxiliaryDofWeights(model.linearizer().jacobian().istlMatrix(),
-                               static_cast<int>(model.numGridDof()),
-                               pressureVarIndex, /*transpose=*/false, weights);
     }
 
     template <class Vector, class ElementContext, class Model, class ElementChunksType>
