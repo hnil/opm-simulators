@@ -2002,6 +2002,18 @@ public:
     bool storeIntensiveQuantities() const
     { return enableIntensiveQuantityCache_ || enableThermodynamicHints_; }
 
+    /*!
+     * \brief Whether the intensive quantities of any degree of freedom can be had by
+     *        index, without an element to reach it through.
+     *
+     * The cache is what makes that possible, and it is also what gives a degree of
+     * freedom outside the grid intensive quantities at all -- there is no element to
+     * compute them from.  Code that wants to walk the degrees of freedom rather than the
+     * elements has to know which of the two it can do.
+     */
+    bool intensiveQuantityCacheEnabled() const
+    { return enableIntensiveQuantityCache_; }
+
     const Timer& prePostProcessTimer() const
     { return prePostProcessTimer_; }
 

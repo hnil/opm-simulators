@@ -301,7 +301,7 @@ namespace Amg
     }
 
     template <class Vector, class ElementContext, class Model, class ElementChunksType>
-    void getTrueImpesWeightsAnalytic(int pressureVarIndex,
+    void getTrueImpesWeightsAnalytic([[maybe_unused]] int pressureVarIndex,
                                      Vector& weights,
                                      const ElementContext& elemCtx,
                                      const Model& model,
@@ -328,6 +328,73 @@ namespace Amg
         const auto& solution = model.solution(/*timeIdx*/ 0);
         VectorBlockType bweights;
 
+        // The weight of one degree of freedom.  It is a function of that degree of
+        // freedom's fluid state and primary variables and of nothing else -- no
+        // neighbours, no geometry -- so it can be had by index as readily as by element.
+        const auto weightOf = [&solution]
+            (const auto& intQuants, const auto index, auto& bw)
+        {
+            const auto& fs = intQuants.fluidState();
+
+            if (FluidSystem::phaseIsActive(FluidSystem::waterPhaseIdx)) {
+                const unsigned activeCompIdx = FluidSystem::canonicalToActiveCompIdx(
+                    FluidSystem::solventComponentIndex(FluidSystem::waterPhaseIdx));
+                bw[activeCompIdx]
+                    = Toolbox::template decay<LhsEval>(1 / fs.invB(FluidSystem::waterPhaseIdx));
+            }
+
+            double denominator = 1.0;
+            double rs = Toolbox::template decay<double>(fs.Rs());
+            double rv = Toolbox::template decay<double>(fs.Rv());
+            const auto& priVars = solution[index];
+            if (priVars.primaryVarsMeaningGas() == PrimaryVariables::GasMeaning::Rv) {
+                rs = 0.0;
+            }
+            if (priVars.primaryVarsMeaningGas() == PrimaryVariables::GasMeaning::Rs) {
+                rv = 0.0;
+            }
+            if (FluidSystem::phaseIsActive(FluidSystem::oilPhaseIdx)
+                && FluidSystem::phaseIsActive(FluidSystem::gasPhaseIdx)) {
+                denominator = Toolbox::template decay<LhsEval>(1 - rs * rv);
+            }
+
+            if (FluidSystem::phaseIsActive(FluidSystem::oilPhaseIdx)) {
+                const unsigned activeCompIdx = FluidSystem::canonicalToActiveCompIdx(
+                    FluidSystem::solventComponentIndex(FluidSystem::oilPhaseIdx));
+                bw[activeCompIdx] = Toolbox::template decay<LhsEval>(
+                    (1 / fs.invB(FluidSystem::oilPhaseIdx) - rs / fs.invB(FluidSystem::gasPhaseIdx))
+                    / denominator);
+            }
+            if (FluidSystem::phaseIsActive(FluidSystem::gasPhaseIdx)) {
+                const unsigned activeCompIdx = FluidSystem::canonicalToActiveCompIdx(
+                    FluidSystem::solventComponentIndex(FluidSystem::gasPhaseIdx));
+                bw[activeCompIdx] = Toolbox::template decay<LhsEval>(
+                    (1 / fs.invB(FluidSystem::gasPhaseIdx) - rv / fs.invB(FluidSystem::oilPhaseIdx))
+                    / denominator);
+            }
+        };
+
+        // Walking the degrees of freedom is what this wants to do: it needs no element,
+        // and the auxiliary degrees of freedom appended after the grid have none to be
+        // reached through.  It is possible exactly when their intensive quantities can be
+        // had by index, which is also the condition under which they exist at all -- so
+        // when the cache is off there is nothing beyond the grid to miss, and the element
+        // walk below is complete.
+        if (model.intensiveQuantityCacheEnabled()) {
+            const auto numDof = static_cast<int>(model.numTotalDof());
+
+#ifdef _OPENMP
+#pragma omp parallel for private(bweights) if(enable_thread_parallel)
+#endif
+            for (int dofIdx = 0; dofIdx < numDof; ++dofIdx) {
+                weightOf(model.intensiveQuantities(static_cast<unsigned>(dofIdx), /*timeIdx=*/0),
+                         dofIdx, bweights);
+                weights[dofIdx] = bweights;
+            }
+
+            return;
+        }
+
         // Use OpenMP to parallelize over element chunks (runtime controlled via if clause)
         OPM_BEGIN_PARALLEL_TRY_CATCH();
 #ifdef _OPENMP
@@ -343,54 +410,12 @@ namespace Amg
                 localElemCtx.updatePrimaryIntensiveQuantities(/*timeIdx=*/0);
 
                 const auto index = localElemCtx.globalSpaceIndex(/*spaceIdx=*/0, /*timeIdx=*/0);
-                const auto& intQuants = localElemCtx.intensiveQuantities(/*spaceIdx=*/0, /*timeIdx=*/0);
-                const auto& fs = intQuants.fluidState();
-
-                if (FluidSystem::phaseIsActive(FluidSystem::waterPhaseIdx)) {
-                    const unsigned activeCompIdx = FluidSystem::canonicalToActiveCompIdx(
-                        FluidSystem::solventComponentIndex(FluidSystem::waterPhaseIdx));
-                    bweights[activeCompIdx]
-                        = Toolbox::template decay<LhsEval>(1 / fs.invB(FluidSystem::waterPhaseIdx));
-                }
-
-                double denominator = 1.0;
-                double rs = Toolbox::template decay<double>(fs.Rs());
-                double rv = Toolbox::template decay<double>(fs.Rv());
-                const auto& priVars = solution[index];
-                if (priVars.primaryVarsMeaningGas() == PrimaryVariables::GasMeaning::Rv) {
-                    rs = 0.0;
-                }
-                if (priVars.primaryVarsMeaningGas() == PrimaryVariables::GasMeaning::Rs) {
-                    rv = 0.0;
-                }
-                if (FluidSystem::phaseIsActive(FluidSystem::oilPhaseIdx)
-                    && FluidSystem::phaseIsActive(FluidSystem::gasPhaseIdx)) {
-                    denominator = Toolbox::template decay<LhsEval>(1 - rs * rv);
-                }
-
-                if (FluidSystem::phaseIsActive(FluidSystem::oilPhaseIdx)) {
-                    const unsigned activeCompIdx = FluidSystem::canonicalToActiveCompIdx(
-                        FluidSystem::solventComponentIndex(FluidSystem::oilPhaseIdx));
-                    bweights[activeCompIdx] = Toolbox::template decay<LhsEval>(
-                        (1 / fs.invB(FluidSystem::oilPhaseIdx) - rs / fs.invB(FluidSystem::gasPhaseIdx))
-                        / denominator);
-                }
-                if (FluidSystem::phaseIsActive(FluidSystem::gasPhaseIdx)) {
-                    const unsigned activeCompIdx = FluidSystem::canonicalToActiveCompIdx(
-                        FluidSystem::solventComponentIndex(FluidSystem::gasPhaseIdx));
-                    bweights[activeCompIdx] = Toolbox::template decay<LhsEval>(
-                        (1 / fs.invB(FluidSystem::gasPhaseIdx) - rv / fs.invB(FluidSystem::oilPhaseIdx))
-                        / denominator);
-                }
-
+                weightOf(localElemCtx.intensiveQuantities(/*spaceIdx=*/0, /*timeIdx=*/0),
+                         index, bweights);
                 weights[index] = bweights;
             }
         }
         OPM_END_PARALLEL_TRY_CATCH("getTrueImpesAnalyticWeights() failed: ", elemCtx.simulator().vanguard().grid().comm());
-
-        getAuxiliaryDofWeights(model.linearizer().jacobian().istlMatrix(),
-                               static_cast<int>(model.numGridDof()),
-                               pressureVarIndex, /*transpose=*/false, weights);
     }
 } // namespace Amg
 
