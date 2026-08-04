@@ -454,11 +454,26 @@ namespace Amg
         // walk below is complete.
         if (model.intensiveQuantityCacheEnabled()) {
             const auto numDof = static_cast<int>(model.numTotalDof());
+            const auto& matrix = model.linearizer().jacobian().istlMatrix();
 
 #ifdef _OPENMP
 #pragma omp parallel for private(bweights) if(enable_thread_parallel)
 #endif
             for (int dofIdx = 0; dofIdx < numDof; ++dofIdx) {
+                // A degree of freedom occupying no volume holds no fluid, so there is no
+                // fluid state to take a weight from -- and the cached one, which nothing
+                // has had reason to keep current, is not required to mean anything.  A
+                // reserved but unoccupied auxiliary degree of freedom is exactly that; it
+                // carries an identity row until something claims it, and the weight that
+                // row implies is both defined and the one that belongs to it.  A grid
+                // cell always has a volume, so this cannot fire where there are no
+                // auxiliary degrees of freedom.
+                if (!(model.dofTotalVolume(dofIdx) > 0.0)) {
+                    weights[dofIdx] = quasiImpesWeightForRow<VectorBlockType>
+                        (matrix, dofIdx, pressureVarIndex, /*transpose=*/false);
+                    continue;
+                }
+
                 weightOf(model.intensiveQuantities(static_cast<unsigned>(dofIdx), /*timeIdx=*/0),
                          dofIdx, bweights);
                 weights[dofIdx] = bweights;
