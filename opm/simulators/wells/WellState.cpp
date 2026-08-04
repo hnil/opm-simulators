@@ -61,6 +61,31 @@ namespace {
 using P2PCommunicatorType = Dune::Point2PointCommunicator<Dune::SimpleMessageBuffer>;
 using MessageBufferType = P2PCommunicatorType::MessageBufferType;
 
+/// Number of perforations to spread a well's rate over.
+///
+/// The schedule's open connections, plus any perforation that does not come from the
+/// schedule at all -- a perforation of a degree of freedom outside the grid, which the
+/// connection list cannot describe.  The count has to be the global one, because a
+/// perforation's share of the rate must not depend on how the well is distributed over
+/// the ranks; the schedule part already is, and the auxiliary part is summed to match.
+///
+/// Without the auxiliary term every perforation is given the whole well rate, so a well
+/// with n perforations starts the step injecting n times its target.
+template <typename Scalar, typename IndexTraits>
+Scalar globalPerforationCount(const Opm::Well& ecl_well,
+                              const Opm::SingleWellState<Scalar, IndexTraits>& ws)
+{
+    const auto& eclIndex = ws.perf_data.ecl_index;
+
+    const auto localAux = std::count(eclIndex.begin(), eclIndex.end(),
+                                     Opm::AUX_PERFORATION_ECL_INDEX);
+
+    const auto globalAux = ws.parallel_info.get().communication()
+        .sum(static_cast<int>(localAux));
+
+    return static_cast<Scalar>(ecl_well.getConnections().num_open() + globalAux);
+}
+
 class PackUnpackXConn : public P2PCommunicatorType::DataHandleInterface
 {
 public:
@@ -328,7 +353,7 @@ init(const std::vector<Scalar>& cellPressures,
         auto& ws = this->well(w);
         auto& perf_data = ws.perf_data;
         const int num_perf_this_well = perf_data.size();
-        const auto global_num_perf_this_well = ecl_well.getConnections().num_open();
+        const auto global_num_perf_this_well = globalPerforationCount<Scalar>(ecl_well, ws);
 
         for (int perf = 0; perf < num_perf_this_well; ++perf) {
             if (wells_ecl[w].getStatus() == Well::Status::OPEN) {
@@ -436,7 +461,7 @@ init(const std::vector<Scalar>& cellPressures,
             } else {
                 const auto num_perf_this_well = new_well.perf_data.size();
                 const auto global_num_perf_this_well =
-                    static_cast<Scalar>(wells_ecl[w].getConnections().num_open());
+                    globalPerforationCount<Scalar>(wells_ecl[w], new_well);
 
                 auto target_rate = new_well.perf_data.phase_rates.begin();
                 for (auto perf_index = 0*num_perf_this_well; perf_index < num_perf_this_well; ++perf_index) {
