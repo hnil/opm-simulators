@@ -366,6 +366,12 @@ namespace Opm {
             this->wellStructureChangedDynamically_ = false;
         }
 
+        // Degrees of freedom outside the grid can appear, move or change depth during
+        // the run -- a fracture cell exists only once the fracture has been solved -- and
+        // the perforation depths are read from this array when a well is initialised.
+        // Taken at the start of the step, when the auxiliary modules have been rebound.
+        extractLegacyDepth_();
+
         this->resetWGState();
         const int reportStepIdx = simulator_.episodeIndex();
 
