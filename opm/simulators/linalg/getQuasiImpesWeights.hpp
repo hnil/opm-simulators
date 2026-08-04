@@ -299,6 +299,7 @@ namespace Amg
                 const double dt = elemCtx.simulator().timeStepSize();
                 const auto& localResidual =
                     model.localLinearizer(ThreadManager::threadId()).localResidual();
+                const auto& matrix = model.linearizer().jacobian().istlMatrix();
 
                 OPM_BEGIN_PARALLEL_TRY_CATCH();
 #ifdef _OPENMP
@@ -308,6 +309,12 @@ namespace Amg
                     const auto& intQuants = model.intensiveQuantities(dofIdx, /*timeIdx=*/0);
                     localResidual.template computeStorage<Evaluation>(storage, intQuants);
                     const double scvVolume = model.dofTotalVolume(dofIdx) * intQuants.extrusionFactor();
+                    // No volume, no accumulation to scale by: take the row's own weight.
+                    if (!(scvVolume > 0.0)) {
+                        weights[dofIdx] = quasiImpesWeightForRow<VectorBlockType>
+                            (matrix, dofIdx, pressureVarIndex, /*transpose=*/false);
+                        continue;
+                    }
                     weights[dofIdx] = weightFromStorage(storage, scvVolume / dt, dofIdx);
                 }
                 OPM_END_PARALLEL_TRY_CATCH("getTrueImpesWeights() failed: ", vanguard.grid().comm());
@@ -418,10 +425,17 @@ namespace Amg
         // intensive quantities can be read by index; that also covers those without one.
         if (model.intensiveQuantityCacheEnabled()) {
             const int numDof = static_cast<int>(model.numTotalDof());
+            const auto& matrix = model.linearizer().jacobian().istlMatrix();
 #ifdef _OPENMP
 #pragma omp parallel for if(enable_thread_parallel)
 #endif
             for (int dofIdx = 0; dofIdx < numDof; ++dofIdx) {
+                // A volumeless DOF holds no fluid; its own row gives the weight.
+                if (!(model.dofTotalVolume(dofIdx) > 0.0)) {
+                    weights[dofIdx] = quasiImpesWeightForRow<VectorBlockType>
+                        (matrix, dofIdx, pressureVarIndex, /*transpose=*/false);
+                    continue;
+                }
                 weights[dofIdx] = weightOf(model.intensiveQuantities(dofIdx, /*timeIdx=*/0), dofIdx);
             }
             return;
