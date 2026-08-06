@@ -803,6 +803,7 @@ checkFinite(DeferredLogger& deferred_logger, std::string_view context) const
     }
 }
 
+
 #include <opm/simulators/utils/InstantiationIndicesMacros.hpp>
 
 INSTANTIATE_TYPE_INDICES(StandardWellPrimaryVariables, double)

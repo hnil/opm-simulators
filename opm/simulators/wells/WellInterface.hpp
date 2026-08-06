@@ -263,6 +263,7 @@ public:
                                                   const Well::ProductionControls& prod_controls,
                                                   const Scalar WQTotal,
                                                   WellStateType& well_state,
+                                                  const std::vector<Scalar>& surface_fractions,
                                                   const bool fixed_control,
                                                   const bool fixed_status,
                                                   const bool solving_with_zero_rate);

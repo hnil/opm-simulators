@@ -715,6 +715,7 @@ getWQTotal() const
     return evaluation_[0][WQTotal];
 }
 
+
 template<class FluidSystem, class Indices>
 void
 MultisegmentWellPrimaryVariables<FluidSystem,Indices>::
