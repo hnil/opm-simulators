@@ -32,6 +32,7 @@
 
 #include <opm/simulators/linalg/istlsparsematrixadapter.hh>
 #include <opm/simulators/linalg/matrixblock.hh>
+#include <opm/simulators/linalg/MatrixScalingReport.hpp>
 #include <opm/simulators/linalg/SmallDenseMatrixUtils.hpp>
 #include <opm/simulators/wells/WellInterfaceGeneric.hpp>
 
@@ -161,6 +162,9 @@ void StandardWellEquations<Scalar, IndexTraits, numEq>::apply(BVector& r) const
 template<typename Scalar, typename IndexTraits, int numEq>
 void StandardWellEquations<Scalar, IndexTraits, numEq>::invert()
 {
+    // Diagnostic: the well D block before inversion. Gated on OPM_SCALING_REPORT.
+    detail::reportDynamicBlock(duneD_[0][0], "well-D");
+
     invDuneD_ = duneD_; // Not strictly need if not cpr with well contributions is used
     detail::invertMatrix(invDuneD_[0][0]);
 }

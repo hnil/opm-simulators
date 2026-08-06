@@ -42,6 +42,7 @@
 #include <opm/simulators/linalg/ExtractParallelGridInformationToISTL.hpp>
 #include <opm/simulators/linalg/FlowLinearSolverParameters.hpp>
 #include <opm/simulators/linalg/matrixblock.hh>
+#include <opm/simulators/linalg/MatrixScalingReport.hpp>
 #include <opm/simulators/linalg/istlsparsematrixadapter.hh>
 #include <opm/simulators/linalg/PreconditionerWithUpdate.hpp>
 #include <opm/simulators/linalg/WellOperators.hpp>
@@ -54,6 +55,7 @@
 
 #include <fmt/format.h>
 
+#include <algorithm>
 #include <any>
 #include <cstddef>
 #include <fstream>
@@ -420,6 +422,13 @@ std::unique_ptr<Matrix> blockJacobiAdjacency(const Grid& grid,
             try {
                 initPrepare(M,b);
 
+                // Diagnostic: equilibrate before the preconditioner is built, so
+                // it sees the scaled system. Undone again in solve().
+                if (detail::scalingEquilibrateMode() > 0) {
+                    detail::computeEquilibration(getMatrix(), eqRowScale_, eqColScale_);
+                    detail::applyEquilibration(getMatrix(), eqRowScale_, eqColScale_);
+                }
+
                 prepareFlexibleSolver();
             }
             catch (const Dune::MatrixBlockError&) {
@@ -470,9 +479,31 @@ std::unique_ptr<Matrix> blockJacobiAdjacency(const Grid& grid,
                                     comm_.get());
             }
 
+            // Diagnostic: per-variable/per-equation magnitudes of the assembled
+            // system. Gated on OPM_SCALING_REPORT, no-op otherwise.
+            detail::reportMatrixScaling(getMatrix(), "reservoir");
+
             // Solve system.
             Dune::InverseOperatorResult result;
-            {
+            if (detail::scalingEquilibrateMode() > 0) {
+                OPM_TIMEBLOCK(flexibleSolverApply);
+                assert(flexibleSolver_[activeSolverNum_].solver_);
+                // The residual is also the object the convergence criteria read,
+                // so scale a copy rather than *rhs_ itself.
+                Vector scaledRhs(*rhs_);
+                detail::scaleBlockVector(scaledRhs, eqRowScale_);
+                flexibleSolver_[activeSolverNum_].solver_->apply(x, scaledRhs, result);
+                detail::scaleBlockVector(x, eqColScale_);
+
+                // Powers of two, so this restores the matrix exactly.
+                std::vector<Scalar> invRow(eqRowScale_.size()), invCol(eqColScale_.size());
+                std::transform(eqRowScale_.begin(), eqRowScale_.end(), invRow.begin(),
+                               [](const Scalar s) { return Scalar{1} / s; });
+                std::transform(eqColScale_.begin(), eqColScale_.end(), invCol.begin(),
+                               [](const Scalar s) { return Scalar{1} / s; });
+                detail::applyEquilibration(getMatrix(), invRow, invCol);
+            }
+            else {
                 OPM_TIMEBLOCK(flexibleSolverApply);
                 assert(flexibleSolver_[activeSolverNum_].solver_);
                 flexibleSolver_[activeSolverNum_].solver_->apply(x, *rhs_, result);
@@ -656,6 +687,7 @@ std::unique_ptr<Matrix> blockJacobiAdjacency(const Grid& grid,
                                                      *element_chunks_,
                                                      enableThreadParallel
                             );
+                            this->applyRowScaleToWeights(weights);
                             return weights;
                         };
                 } else if  (weightsType == "trueimpesanalytic" ) {
@@ -671,6 +703,7 @@ std::unique_ptr<Matrix> blockJacobiAdjacency(const Grid& grid,
                                                              *element_chunks_,
                                                              enableThreadParallel
                             );
+                            this->applyRowScaleToWeights(weights);
                             return weights;
                         };
                 } else {
@@ -702,6 +735,26 @@ std::unique_ptr<Matrix> blockJacobiAdjacency(const Grid& grid,
         // non-const to be able to scale the linear system
         Matrix* matrix_;
         Vector *rhs_;
+
+        // Diagnostic equilibration scales, see OPM_SCALING_EQUILIBRATE.
+        std::vector<Scalar> eqRowScale_, eqColScale_;
+
+        // The storage-derived CPR weights (trueimpes*) are computed from
+        // computeStorage(), so they cannot see a row scaling R applied to the
+        // assembled matrix. Consistency demands w -> R^-1 w, which quasiimpes
+        // gets automatically by solving on the scaled matrix; apply it here for
+        // the storage-derived variants. No-op when equilibration is off.
+        void applyRowScaleToWeights(Vector& weights) const
+        {
+            if (detail::scalingEquilibrateMode() <= 0 || eqRowScale_.empty()) {
+                return;
+            }
+            for (auto& w : weights) {
+                for (std::size_t i = 0; i < eqRowScale_.size(); ++i) {
+                    w[i] /= eqRowScale_[i];
+                }
+            }
+        }
 
         int activeSolverNum_ = 0;
         std::vector<detail::FlexibleSolverInfo<Matrix,Vector,CommunicationType>> flexibleSolver_;
