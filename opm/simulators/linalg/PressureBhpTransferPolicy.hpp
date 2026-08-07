@@ -20,6 +20,7 @@
 
 #pragma once
 
+#include <opm/common/ErrorMacros.hpp>
 #include <opm/common/TimingMacros.hpp>
 
 #include <opm/simulators/linalg/matrixblock.hh>
@@ -28,6 +29,8 @@
 
 #include <dune/istl/paamg/pinfo.hh>
 #include <opm/simulators/linalg/WellOperators.hpp>
+
+#include <fmt/format.h>
 
 #include <cstddef>
 
@@ -121,6 +124,8 @@ namespace Opm
             using CoarseMatrix = typename CoarseOperator::matrix_type;
             const auto& fineLevelMatrix = fineOperator.getmat();
             const auto& nw = fineOperator.getNumberOfExtraEquations();
+            fineMatrixRows_ = fineLevelMatrix.N();
+            fineMatrixNonzeroes_ = fineLevelMatrix.nonzeroes();
             if (prm_.get<bool>("add_wells")) {
                 const std::size_t average_elements_per_row
                     = static_cast<std::size_t>(std::ceil(fineLevelMatrix.nonzeroes() / fineLevelMatrix.N()));
@@ -174,6 +179,23 @@ namespace Opm
     {
         OPM_TIMEBLOCK(calculateCoarseEntries);
         const auto& fineMatrix = fineOperator.getmat();
+
+        // The walk below steps through the coarse matrix in lockstep with the fine one,
+        // so it is only meaningful when the coarse system was built for this fine
+        // sparsity.  If the fine matrix has been rebuilt with a different shape and the
+        // solver failed to notice -- it identifies the matrix by address, and a rebuilt
+        // one can be handed the old allocation -- the mismatched iterator is written
+        // through regardless of what it points at, in a release build with no assertion
+        // to stop it.  Refuse loudly instead.
+        OPM_ERROR_IF((fineMatrix.N() != fineMatrixRows_)
+                     || (fineMatrix.nonzeroes() != fineMatrixNonzeroes_),
+                     fmt::format("CPR coarse system was built for a different fine matrix "
+                                 "({} rows, {} nonzeroes; this one has {} rows, {} "
+                                 "nonzeroes). The linear solver must be recreated when "
+                                 "the matrix changes shape.",
+                                 fineMatrixRows_, fineMatrixNonzeroes_,
+                                 fineMatrix.N(), fineMatrix.nonzeroes()));
+
         *coarseLevelMatrix_ = 0;
         auto rowCoarse = coarseLevelMatrix_->begin();
         for (auto row = fineMatrix.begin(), rowEnd = fineMatrix.end(); row != rowEnd; ++row, ++rowCoarse) {
@@ -269,6 +291,10 @@ private:
     const int pressure_var_index_;
     std::shared_ptr<Communication> coarseLevelCommunication_;
     std::shared_ptr<typename CoarseOperator::matrix_type> coarseLevelMatrix_;
+    //! Shape of the fine matrix the coarse system was built for; the lockstep walk in
+    //! calculateCoarseEntries() is meaningless for any other.
+    std::size_t fineMatrixRows_ = 0;
+    std::size_t fineMatrixNonzeroes_ = 0;
 };
 
 } // namespace Opm
