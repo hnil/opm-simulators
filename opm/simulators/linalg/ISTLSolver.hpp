@@ -360,13 +360,18 @@ std::unique_ptr<Matrix> blockJacobiAdjacency(const Grid& grid,
 
         void initPrepare(const Matrix& M, Vector& b)
         {
-            // matrix_ starts out null, so this also covers the first call.
-            const bool matrix_changed = &M != matrix_;
+            // matrix_ starts out null, so this also covers the first call.  A rebuilt
+            // matrix can reuse the freed block's address, so the shape is part of the
+            // identity; missing the change lets CPR walk a stale coarse sparsity.
+            const bool matrix_changed = (&M != matrix_)
+                || (M.N() != matrixRows_) || (M.nonzeroes() != matrixNonzeroes_);
 
             if (matrix_changed) {
                 // The matrix object is no longer the one the solver was built
                 // for, so the solver has to be rebuilt rather than updated.
                 force_recreate_ = true;
+                matrixRows_ = M.N();
+                matrixNonzeroes_ = M.nonzeroes();
 
                 // model will not change the matrix object. Hence simply store a pointer
                 // to the original one with a deleter that does nothing.
@@ -726,6 +731,10 @@ std::unique_ptr<Matrix> blockJacobiAdjacency(const Grid& grid,
         // set when initPrepare detects a different matrix object; cleared by
         // shouldCreateSolver() (hence mutable in an otherwise const query)
         mutable bool force_recreate_ = false;
+        //! Shape of the matrix last prepared for, so a rebuilt matrix is recognised
+        //! even when the allocator hands it the old one's address.
+        std::size_t matrixRows_ = 0;
+        std::size_t matrixNonzeroes_ = 0;
     }; // end ISTLSolver
 
 } // namespace Opm
