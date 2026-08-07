@@ -252,7 +252,10 @@ nonlinearIterationNewton(const SimulatorTimerInterface& timer,
         perfTimer.start();
         report.total_newton_iterations = 1;
 
-        const unsigned nc = this->simulator_.model().numGridDof();
+        // The Jacobian and the residual are sized for the total number of DOFs, i.e.
+        // they include the rows contributed by auxiliary modules.  The solution vector
+        // handed to the linear solver has to match.
+        const unsigned nc = this->simulator_.model().numTotalDof();
         BVector x(nc);
 
         linear_solve_setup_time_ = 0.0;
@@ -615,6 +618,57 @@ localConvergenceData(std::vector<Scalar>& R_sum,
     }
 
     OPM_END_PARALLEL_TRY_CATCH("NonlinearSystemBlackOilReservoir::localConvergenceData() failed: ", this->grid_.comm());
+
+    // Auxiliary cells carry the same equations but are not reachable through the grid,
+    // so the loop above never sees them.  Their residual has to enter the convergence
+    // measures like any other cell's, otherwise the Newton iteration would be declared
+    // converged while their mass balance is still violated.
+    //
+    // Two qualifications, both for cells a module has reserved rather than described:
+    //
+    //  - A dormant cell has no volume and an identity row, so it contributes nothing --
+    //    and its zero pore volume would turn the per-cell CNV into a division by zero.
+    //
+    //  - A module may keep its cells out of the CNV measure altogether.  A fracture
+    //    cell's pore volume is an aperture times an area, minute against any sensible
+    //    flow, so its scaled residual dwarfs the tolerance while the mass involved is
+    //    negligible; its conservation is still guarded by the material balance, which
+    //    weighs it by that same tiny mass.  The pore volume joins the aquifer pool so
+    //    the CNV pv-split does not count it as eligible either.
+    std::vector<Scalar> discardedCoeff;
+    std::vector<int> discardedCell;
+    for (const auto& module : problem.auxCellModules()) {
+        const bool inCnv = module->participatesInCnv();
+
+        for (unsigned localIdx = 0; localIdx < module->numDofs(); ++localIdx) {
+            if (!module->isActive(localIdx)) {
+                continue;
+            }
+
+            const auto cell_idx = static_cast<unsigned>(module->localToGlobalDof(localIdx));
+            const auto& intQuants = model.intensiveQuantities(cell_idx, /*timeIdx=*/0);
+            const auto& fs = intQuants.fluidState();
+
+            const auto pvValue = problem.referencePorosity(cell_idx, /*timeIdx=*/0) *
+                                 model.dofTotalVolume(cell_idx);
+            pvSumLocal += pvValue;
+
+            if (inCnv) {
+                this->getMaxCoeff(cell_idx, intQuants, fs, residual, pvValue,
+                                  B_avg, R_sum, maxCoeff, maxCoeffCell);
+            }
+            else {
+                numAquiferPvSumLocal += pvValue;
+
+                // Same accumulation into the material balance and the averaged
+                // formation-volume factors; only the CNV maximum is discarded.
+                discardedCoeff.assign(maxCoeff.size(), 0.0);
+                discardedCell.assign(maxCoeffCell.size(), -1);
+                this->getMaxCoeff(cell_idx, intQuants, fs, residual, pvValue,
+                                  B_avg, R_sum, discardedCoeff, discardedCell);
+            }
+        }
+    }
 
     // compute local average in terms of global number of elements
     const int bSize = B_avg.size();

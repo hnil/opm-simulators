@@ -118,6 +118,9 @@ struct FlexibleSolverInfo
     std::unique_ptr<LinearOperatorExtra<Vector,Vector>> wellOperator_;
     AbstractPreconditionerType* pre_ = nullptr;
     std::size_t interiorCellNum_ = 0;
+    //! Degrees of freedom appended after the grid rows; owned by this rank by
+    //! construction, but not part of the interior prefix.
+    std::size_t numAuxiliaryDof_ = 0;
 };
 
 
@@ -416,7 +419,16 @@ std::unique_ptr<Matrix> blockJacobiAdjacency(const Grid& grid,
             try {
                 initPrepare(M,b);
 
-                prepareFlexibleSolver();
+                try {
+                    prepareFlexibleSolver();
+                }
+                catch (...) {
+                    // Keep the system that broke the preconditioner: this only runs on
+                    // the failure path, and the alternative is a "Singular matrix" with
+                    // no way of knowing which row earned it.
+                    Helper::writeSystem(simulator_, M, b, comm_.get());
+                    throw;
+                }
             } OPM_CATCH_AND_RETHROW_AS_CRITICAL_ERROR("This is likely due to a faulty linear solver JSON specification. Check for errors related to missing nodes.");
         }
 
@@ -530,6 +542,11 @@ std::unique_ptr<Matrix> blockJacobiAdjacency(const Grid& grid,
                         flexibleSolver_[activeSolverNum_].wellOperator_ = std::move(wellOp);
                     }
                 }
+                // Only known once the model has been built, which is after this solver is
+                // constructed -- hence here rather than in initialize().
+                flexibleSolver_[activeSolverNum_].numAuxiliaryDof_ =
+                    simulator_.model().numTotalDof() - simulator_.model().numGridDof();
+
                 std::function<Vector()> weightCalculator = this->getWeightsCalculator(prm_[activeSolverNum_], getMatrix(), pressureIndex);
                 OPM_TIMEBLOCK(flexibleSolverCreate);
                 flexibleSolver_[activeSolverNum_].create(getMatrix(),

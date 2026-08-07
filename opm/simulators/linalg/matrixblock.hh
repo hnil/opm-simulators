@@ -188,8 +188,27 @@ static inline K invertMatrix4(const Matrix<K>& matrix, Matrix<K>& inverse)
     // Note for maintainers: If updating this value, also update the value
     // in gpuistl/detail/deviceBlockOperations.hpp
     if (std::abs(det) < 1e-40) {
-        inverse = std::numeric_limits<K>::quiet_NaN();
-        throw NumericalProblem("Singular matrix");
+        // An absolute cutoff misreads scale as singularity: a perfectly
+        // well-conditioned block whose entries are around 1e-10 -- a fracture
+        // cell's equations, whose coefficients shrink with the aperture cubed --
+        // has a determinant near 1e-40 by magnitude alone.  Accept such a block
+        // when its determinant is commensurate with its scale, and keep
+        // rejecting exactly what was rejected before otherwise, so nothing that
+        // previously inverted changes behaviour.
+        K scale = 0.0;
+        for (int i = 0; i < 4; ++i) {
+            for (int j = 0; j < 4; ++j) {
+                scale = std::max(scale, std::abs(matrix[i][j]));
+            }
+        }
+
+        const K scale4 = (scale * scale) * (scale * scale);
+        if (!(std::abs(det) >= 1e-14 * scale4) || scale4 == 0.0) {
+            inverse = std::numeric_limits<K>::quiet_NaN();
+            throw NumericalProblem("Singular matrix");
+        }
+
+        inverse *= 1.0 / det;
     } else
       inverse *= 1.0 / det;
 

@@ -58,6 +58,7 @@
 #include <opm/simulators/flow/EquilInitializer.hpp>
 #include <opm/simulators/flow/FlowGenericProblem.hpp>
 // TODO: maybe we can name it FlowProblemProperties.hpp
+#include <opm/simulators/flow/FlowAuxCellModule.hpp>
 #include <opm/simulators/flow/FlowBaseProblemProperties.hpp>
 #include <opm/simulators/flow/FlowUtils.hpp>
 #include <opm/simulators/flow/TracerModel.hpp>
@@ -373,6 +374,12 @@ public:
         OPM_TIMEBLOCK(beginTimeStep);
         const int episodeIdx = this->episodeIndex();
         const int timeStepSize = this->simulator().timeStepSize();
+
+        // Any auxiliary cell still without a start-of-step accumulation gets one, before
+        // anything assembles.  A cell not yet handed out never earns one on its own: the
+        // linearizer fills the entry from the previous step's, and a cell that has been
+        // sitting idle has no previous step to have moved in.
+        this->seedAuxCellStorageCache_();
 
         this->beginTimeStep_(enableExperiments,
                              episodeIdx,
@@ -730,6 +737,12 @@ public:
      */
     Scalar dofCenterDepth(unsigned globalSpaceIdx) const
     {
+        // An auxiliary cell has no grid entity to take a depth from; it states its own,
+        // and that is what the gravity head between it and its neighbours is built from.
+        if (globalSpaceIdx >= this->model().numGridDof()) {
+            return this->auxCellDepth_(globalSpaceIdx);
+        }
+
         return this->simulator().vanguard().cellCenterDepth(globalSpaceIdx);
     }
 
@@ -798,7 +811,10 @@ public:
 
             unsigned tableIdx = 0;
             if (!this->rockTableIdx_.empty()) {
-                tableIdx = this->rockTableIdx_[globalSpaceIdx];
+                // Auxiliary DOFs have no entry here; they take the first ROCK region.
+                if (globalSpaceIdx < this->rockTableIdx_.size()) {
+                    tableIdx = this->rockTableIdx_[globalSpaceIdx];
+                }
             }
             return this->rockParams_[tableIdx].referencePressure;
         }
@@ -817,12 +833,12 @@ public:
 
     const MaterialLawParams& materialLawParams(unsigned globalDofIdx) const
     {
-        return materialLawManager_->materialLawParams(globalDofIdx);
+        return materialLawManager_->materialLawParams(auxCellSaturationProxy_(globalDofIdx));
     }
 
     const MaterialLawParams& materialLawParams(unsigned globalDofIdx, FaceDir::DirEnum facedir) const
     {
-        return materialLawManager_->materialLawParams(globalDofIdx, facedir);
+        return materialLawManager_->materialLawParams(auxCellSaturationProxy_(globalDofIdx), facedir);
     }
 
     /*!
@@ -975,13 +991,13 @@ public:
     solidEnergyLawParams(unsigned globalSpaceIdx,
                          unsigned /*timeIdx*/) const
     {
-        return this->thermalLawManager_->solidEnergyLawParams(globalSpaceIdx);
+        return this->thermalLawManager_->solidEnergyLawParams(auxCellSaturationProxy_(globalSpaceIdx));
     }
     const ThermalConductionLawParams &
     thermalConductionLawParams(unsigned globalSpaceIdx,
                                unsigned /*timeIdx*/)const
     {
-        return this->thermalLawManager_->thermalConductionLawParams(globalSpaceIdx);
+        return this->thermalLawManager_->thermalConductionLawParams(auxCellSaturationProxy_(globalSpaceIdx));
     }
 
     /*!
@@ -1034,6 +1050,15 @@ public:
             this->model().invalidateAndUpdateIntensiveQuantities(/*timeIdx*/1);
         }
 
+        // An auxiliary cell goes through the ordinary assembly whether or not it is in
+        // use, and that reaches for the accumulation of the previous time level.  The
+        // linearizer fills it on the first Newton iteration of a step, which is soon
+        // enough for a cell that is there from the start, but not for one still waiting to
+        // be handed out -- nor for one handed out after that iteration has gone by, which
+        // is when a fracture opens its cells.  Seed them all once here so that no
+        // auxiliary row can reach for an entry that was never written.
+        this->seedAuxCellStorageCache_();
+
         // initialize the wells. Note that this needs to be done after initializing the
         // intrinsic permeabilities and the after applying the initial solution because
         // the well model uses these...
@@ -1073,10 +1098,18 @@ public:
         // Add well contribution to source here.
         wellModel_.computeTotalRatesForDof(rate, globalDofIdx);
 
+        // A degree of freedom with no volume holds nothing and so can be the source of
+        // nothing -- an auxiliary cell that has been reserved but not yet put to use.
+        // Dividing by its volume below would turn a zero rate into a NaN.
+        const auto volume = this->model().dofTotalVolume(globalDofIdx);
+        if (volume <= 0.0) {
+            return;
+        }
+
         // convert the source term from the total mass rate of the
         // cell to the one per unit of volume as used by the model.
         for (unsigned eqIdx = 0; eqIdx < numEq; ++ eqIdx) {
-            rate[eqIdx] /= this->model().dofTotalVolume(globalDofIdx);
+            rate[eqIdx] /= volume;
 
             Valgrind::CheckDefined(rate[eqIdx]);
             assert(isfinite(rate[eqIdx]));
@@ -1151,7 +1184,10 @@ public:
 
         unsigned tableIdx = 0;
         if (!this->rockTableIdx_.empty())
-            tableIdx = this->rockTableIdx_[elementIdx];
+            // Auxiliary DOFs have no entry here; they take the first ROCK region.
+            if (elementIdx < this->rockTableIdx_.size()) {
+                tableIdx = this->rockTableIdx_[elementIdx];
+            }
 
         const auto& fs = intQuants.fluidState();
         LhsEval effectivePressure = decay<LhsEval>(fs.pressure(refPressurePhaseIdx_()));
@@ -1289,6 +1325,37 @@ public:
     const GlobalEqVector& drift() const
     {
         return drift_;
+    }
+
+    /*!
+     * \brief The auxiliary cell modules this problem owns.
+     *
+     * Exposed so that the parts of the simulator which have to know what lives outside
+     * the grid -- reporting, chiefly -- can find them without a second registry.
+     */
+    const std::vector<std::unique_ptr<FlowAuxCellModule<TypeTag>>>& auxCellModules() const
+    { return auxCellModules_; }
+
+    /*!
+     * \brief Give the auxiliary cell modules their turn at the linear system.
+     *
+     * Their degrees of freedom are assembled by the model's own local residual, like grid
+     * cells, so most of them have nothing to add here.  What they do own is the rows of
+     * the cells they have preallocated but not yet put to use: those have no volume and
+     * no connections, so nothing else writes to them, and an all-zero row is a singular
+     * matrix.  Conditioning them is the module's business, since only it knows which they
+     * are.
+     *
+     * Deliberately not the linearizer's linearizeAuxiliaryEquations(), which drives
+     * *every* auxiliary module -- the well model among them, whose contribution is
+     * applied separately and would be counted twice.
+     */
+    void linearizeAuxCellModules(GetPropType<TypeTag, Properties::SparseMatrixAdapter>& matrix,
+                                 GlobalEqVector& residual)
+    {
+        for (const auto& module : auxCellModules_) {
+            module->linearize(matrix, residual);
+        }
     }
 
 private:
@@ -1457,6 +1524,7 @@ protected:
         this->updatePlmixnum_();
 
         OPM_END_PARALLEL_TRY_CATCH("Invalid region numbers: ", vanguard.gridView().comm());
+        this->authorAuxCellRegions_();
         ////////////////////////////////
         // porosity
         updateReferencePorosity_();
@@ -1473,6 +1541,12 @@ protected:
         // fluid-matrix interactions (saturation functions; relperm/capillary pressure)
         materialLawManager_ = std::make_shared<EclMaterialLawManager>();
         materialLawManager_->initFromState(eclState);
+        // NOTE: sized by the grid degrees of freedom on purpose.  Extending this over the
+        // auxiliary cells does not work: initParamsForElements walks the elements into the
+        // endpoint-scaling and hysteresis machinery, which is keyed on grid entities
+        // throughout, so raising the count merely pushes that machinery off the end of its
+        // own arrays.  Auxiliary cells are given saturation-function parameters by
+        // redirecting materialLawParams() instead.
         materialLawManager_->initParamsForElements(eclState, this->model().numGridDof(),
                                                    this-> template fieldPropIntTypeOnLeafAssigner_<int>(),
                                                    this-> lookupIdxOnLevelZeroAssigner_());
@@ -1504,7 +1578,10 @@ protected:
 
         std::size_t numDof = this->model().numGridDof();
 
-        this->referencePorosity_[/*timeIdx=*/0].resize(numDof);
+        // Auxiliary cells have their own authored pore and bulk volume; sizing for them
+        // here keeps referencePorosity() answerable for every degree of freedom.
+        this->referencePorosity_[/*timeIdx=*/0].resize(this->model().numTotalDof());
+        this->authorAuxCellPorosity_();
 
         const auto& fp = eclState.fieldProps();
         const std::vector<double> porvData = this -> fieldPropDoubleOnLeafAssigner_()(fp, "PORV");
@@ -1533,7 +1610,11 @@ protected:
         const auto& eclState = vanguard.eclState();
 
         std::size_t numDof = this->model().numGridDof();
-        this->rockFraction_[/*timeIdx=*/0].resize(numDof);
+        this->rockFraction_[/*timeIdx=*/0].resize(this->model().numTotalDof(), 0.0);
+
+        // An auxiliary cell is a bookkeeping volume, not rock: it stores no heat of its
+        // own.  Leaving its rock fraction at zero is what expresses that, since the
+        // energy storage term is rockFraction times the rock's internal energy.
         // For the energy equation, we need the volume of the rock.
         // The volume of the rock is computed by rockFraction * geometric volume of the element.
         // The reference porosity is defined as porosity * ntg * pore-volume-multiplier.
@@ -1617,6 +1698,278 @@ protected:
     }
 
 protected:
+    /*!
+     * \brief Take ownership of an auxiliary cell module and register it with the model.
+     *
+     * Registration has to happen before the model sizes its per-DOF containers, which is
+     * why this is only ever called from registerAuxiliaryCellModules().  The module's
+     * connections are built afterwards, because they are expressed in global degree of
+     * freedom indices and the offset is only assigned on registration.
+     */
+    template <class Module>
+    Module& registerAuxCellModule_(std::unique_ptr<Module> module)
+    {
+        // Which rank owns a degree of freedom that has no geometry is a choice, and one
+        // that has to be made where the partition is made: every rank holding a cell the
+        // auxiliary cell connects to needs it at least as a copy, with its intensive
+        // quantities refreshed, and the owner has to be the only one contributing its
+        // accumulation.  None of that is in place yet -- the auxiliary degrees of freedom
+        // are not in the communication index set -- so refuse the combination rather than
+        // let each rank solve its own version of the aquifer.
+        if (this->simulator().gridView().comm().size() > 1) {
+            OPM_THROW(std::runtime_error,
+                      "Degrees of freedom outside the grid (numerical aquifers "
+                      "represented as auxiliary cells) are not supported in parallel "
+                      "yet. Run on one process, or use --numerical-aquifer-mode=grid.");
+        }
+
+        auto& ref = *module;
+        this->simulator().model().addAuxiliaryModule(&ref);
+        this->auxCellModules_.push_back(std::move(module));
+        ref.buildConnections();
+        return ref;
+    }
+
+    /*!
+     * \brief Map an auxiliary cell onto a grid cell for the per-element rock tables.
+     *
+     * The saturation-function machinery is built per grid element and stays that way:
+     * endpoint scaling and hysteresis are keyed on grid entities throughout, so the
+     * parameter tables cannot simply be extended over degrees of freedom that have no
+     * entity.  Instead an auxiliary cell borrows the parameters of a grid cell -- the one
+     * it is connected to and initialised from.
+     *
+     * That is exact when the two share a saturation region, which is the ordinary case
+     * (and the only one an aquifer is likely to present, being water-filled).  Where they
+     * differ, the borrowed curves are the wrong ones; giving auxiliary cells parameters of
+     * their own region is the follow-up, and needs the saturation-function tables to be
+     * addressable by region rather than by element.
+     */
+    unsigned auxCellSaturationProxy_(unsigned globalDofIdx) const
+    {
+        if (globalDofIdx < this->model().numGridDof()) {
+            return globalDofIdx;
+        }
+
+        for (const auto& module : this->auxCellModules_) {
+            const auto begin = static_cast<unsigned>(module->dofOffset());
+            if ((globalDofIdx >= begin) && (globalDofIdx < begin + module->numDofs())) {
+                return module->initialisationPartner(globalDofIdx - begin);
+            }
+        }
+
+        return 0;
+    }
+
+    //! Depth of an auxiliary cell, by global degree of freedom index.
+    Scalar auxCellDepth_(unsigned globalSpaceIdx) const
+    {
+        for (const auto& module : this->auxCellModules_) {
+            const auto begin = static_cast<unsigned>(module->dofOffset());
+            if ((globalSpaceIdx >= begin) && (globalSpaceIdx < begin + module->numDofs())) {
+                return module->depth(globalSpaceIdx - begin);
+            }
+        }
+
+        return 0.0;
+    }
+
+    /*!
+     * \brief Give the auxiliary cells their region numbers.
+     *
+     * The region arrays are built from the field properties over the grid, which leaves
+     * them one entry short of every degree of freedom the moment an auxiliary module adds
+     * any.  They are read by degree-of-freedom index -- pvtRegionIndex() is asked for one
+     * on the way to the PVT tables -- so a short array is an out-of-bounds read that ends
+     * up indexing the tables with whatever was next in memory.  An empty array means "one
+     * region", which needs no extending.
+     */
+    void authorAuxCellRegions_()
+    {
+        const auto numTotalDof = this->model().numTotalDof();
+        if (numTotalDof == this->model().numGridDof()) {
+            return;
+        }
+
+        const auto extend = [numTotalDof](auto& numbers, auto&& regionOf) {
+            if (numbers.empty()) {
+                return;
+            }
+
+            numbers.resize(numTotalDof, 0);
+            regionOf(numbers);
+        };
+
+        extend(this->pvtnum_, [this](auto& numbers) {
+            for (const auto& module : this->auxCellModules_) {
+                for (unsigned localIdx = 0; localIdx < module->numDofs(); ++localIdx) {
+                    numbers[module->localToGlobalDof(localIdx)] = module->pvtRegionIndex(localIdx);
+                }
+            }
+        });
+
+        extend(this->satnum_, [this](auto& numbers) {
+            for (const auto& module : this->auxCellModules_) {
+                for (unsigned localIdx = 0; localIdx < module->numDofs(); ++localIdx) {
+                    numbers[module->localToGlobalDof(localIdx)] = module->satRegionIndex(localIdx);
+                }
+            }
+        });
+
+        // The solvent and polymer models have no auxiliary-cell story yet; region zero is
+        // the only defensible placeholder, and it is what an absent array would give.
+        extend(this->miscnum_, [](auto&) {});
+        extend(this->plmixnum_, [](auto&) {});
+    }
+
+    /*!
+     * \brief Re-read everything the auxiliary cell modules author.
+     *
+     * A module whose cells change -- a fracture that opens new ones, or whose apertures
+     * move -- calls this to have the volumes, porosities and connection
+     * transmissibilities read again.  A change of *values* is all this covers; a change
+     * of *topology*, meaning a connection that did not exist before, additionally needs
+     * the sparsity pattern rebuilt, which is what eraseMatrix() below asks for.
+     */
+    void refreshAuxCellModules_(const bool topologyChanged)
+    {
+        if (this->auxCellModules_.empty()) {
+            return;
+        }
+
+        this->model().updateAuxiliaryDofVolumes();
+        this->authorAuxCellPorosity_();
+        this->referencePorosity_[1] = this->referencePorosity_[0];
+        this->applyAuxCellTransmissibilities_();
+
+        if (topologyChanged) {
+            this->model().linearizer().eraseMatrix();
+
+            // A cell that has only just appeared has no history: it did not exist at the
+            // start of the time step, so there is no earlier state to have changed from.
+            // Give it the state it starts with, which is what says its mass has not moved
+            // by coming into existence.  The grid cells keep theirs -- that is the state
+            // the step is measuring the change from.
+            auto& previous = this->model().solution(/*timeIdx=*/1);
+            const auto& current = this->model().solution(/*timeIdx=*/0);
+            for (unsigned dofIdx = this->model().numGridDof();
+                 dofIdx < this->model().numTotalDof(); ++dofIdx)
+            {
+                previous[dofIdx] = current[dofIdx];
+            }
+
+        }
+
+        this->model().invalidateAndUpdateIntensiveQuantities(/*timeIdx=*/0);
+
+        if (topologyChanged) {
+            this->seedAuxCellStorageCache_();
+        }
+    }
+
+    /*!
+     * \brief Give the auxiliary cells a start-of-step storage term.
+     *
+     * The linearizer keeps the accumulation of the previous time level in a cache, and
+     * fills it on the first Newton iteration of a step -- which a cell that appears part
+     * way through one has already missed.  Reaching for it then throws rather than
+     * quietly using a stale number, which is the right behaviour and exactly why it has
+     * to be filled here.
+     *
+     * The value is the accumulation the cell's own starting state implies, so that its
+     * mass is unchanged by the cell having come into existence.
+     */
+    void seedAuxCellStorageCache_()
+    {
+        using LocalResidual = GetPropType<TypeTag, Properties::LocalResidual>;
+        using EqVector = GetPropType<TypeTag, Properties::EqVector>;
+
+        using Linearizer = GetPropType<TypeTag, Properties::Linearizer>;
+
+        // Auxiliary cells carrying the model's equations exist only under a linearizer
+        // that assembles per degree of freedom, and only that one pairs with the local
+        // residual whose accumulation can be formed from a degree-of-freedom index alone.
+        if constexpr (!Linearizer::assemblesAuxiliaryDofEquations) {
+            return;
+        }
+        else {
+
+        auto& model = this->model();
+        if (!model.enableStorageCache()) {
+            return;
+        }
+
+        // Formed from the current state rather than from the previous time level's
+        // intensive quantities, which need not be kept at all when the first iteration's
+        // storage is recycled.  For these cells the two are the same: a cell that has
+        // just appeared starts the step where it is, and one that has not been handed out
+        // has not moved.
+        for (unsigned dofIdx = model.numGridDof(); dofIdx < model.numTotalDof(); ++dofIdx) {
+            if (model.storageCacheIsUpToDate(dofIdx, /*timeIdx=*/1)) {
+                continue;
+            }
+
+            EqVector storage;
+            LocalResidual::template computeStorage<Scalar>
+                (storage, model.intensiveQuantities(dofIdx, /*timeIdx=*/0));
+
+            model.updateCachedStorage(dofIdx, /*timeIdx=*/1, storage);
+        }
+
+        } // if constexpr
+    }
+
+    /*!
+     * \brief Fill in the reference porosity of the auxiliary cells.
+     *
+     * The model reads a porosity and multiplies it by the degree of freedom's total
+     * volume to recover a pore volume, so the two have to be authored consistently with
+     * the volume the module reports.
+     */
+    void authorAuxCellPorosity_()
+    {
+        for (const auto& module : this->auxCellModules_) {
+            for (unsigned localIdx = 0; localIdx < module->numDofs(); ++localIdx) {
+                const auto globalIdx = static_cast<unsigned>(module->localToGlobalDof(localIdx));
+                const auto bulkVolume = module->bulkVolume(localIdx);
+
+                this->referencePorosity_[/*timeIdx=*/0][globalIdx] = (bulkVolume > 0.0)
+                    ? module->poreVolume(localIdx) / bulkVolume
+                    : 0.0;
+            }
+        }
+    }
+
+    /*!
+     * \brief Publish the auxiliary modules' connection transmissibilities.
+     *
+     * The transmissibility store is keyed on the degree of freedom pair and does not care
+     * whether a connection came from a face, so an authored connection simply goes in
+     * alongside the geometric ones and problem.transmissibility() answers for it.  Called
+     * once the grid's own transmissibilities are final; a module whose values change with
+     * the solution refreshes them the same way.
+     */
+    void applyAuxCellTransmissibilities_()
+    {
+        using ConnectionVector = std::vector<typename FlowAuxCellModule<TypeTag>::Connection>;
+
+        for (const auto& module : this->auxCellModules_) {
+            ConnectionVector conns;
+            module->connections(conns);
+
+            for (const auto& conn : conns) {
+                this->transmissibilities_.setTransmissibility(conn.dof1, conn.dof2, conn.trans);
+
+                if constexpr (enableFullyImplicitThermal) {
+                    this->transmissibilities_
+                        .setThermalHalfTrans(conn.dof1, conn.dof2, conn.thermalHalfTrans12);
+                    this->transmissibilities_
+                        .setThermalHalfTrans(conn.dof2, conn.dof1, conn.thermalHalfTrans21);
+                }
+            }
+        }
+    }
+
     struct PffDofData_
     {
         ConditionalStorage<enableFullyImplicitThermal, Scalar> thermalHalfTransIn;
@@ -1800,7 +2153,10 @@ protected:
 
         unsigned tableIdx = 0;
         if (!this->rockTableIdx_.empty())
-            tableIdx = this->rockTableIdx_[elementIdx];
+            // Auxiliary DOFs have no entry here; they take the first ROCK region.
+            if (elementIdx < this->rockTableIdx_.size()) {
+                tableIdx = this->rockTableIdx_[elementIdx];
+            }
 
         const auto& fs = intQuants.fluidState();
         LhsEval effectivePressure = obtain(fs.pressure(refPressurePhaseIdx_()));
@@ -1830,6 +2186,11 @@ protected:
     }
 
     typename Vanguard::TransmissibilityType transmissibilities_;
+
+    //! Auxiliary modules whose degrees of freedom are cells (numerical aquifers, and
+    //! later fracture flow cells).  Owned here because their authored data feeds the
+    //! problem's own per-DOF tables.
+    std::vector<std::unique_ptr<FlowAuxCellModule<TypeTag>>> auxCellModules_;
 
     std::shared_ptr<EclMaterialLawManager> materialLawManager_;
     std::shared_ptr<EclThermalLawManager> thermalLawManager_;

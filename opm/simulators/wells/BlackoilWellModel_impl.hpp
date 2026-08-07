@@ -173,7 +173,10 @@ namespace Opm {
         // add the eWoms auxiliary module for the wells to the list
         simulator_.model().addAuxiliaryModule(this);
 
-        is_cell_perforated_.resize(local_num_cells_, false);
+        // Indexed by DOF index in computeTotalRatesForDof(), which the linearizer calls
+        // for every DOF of the model -- including those contributed by auxiliary
+        // modules -- so it has to span the whole DOF range, not just the grid cells.
+        is_cell_perforated_.resize(simulator_.model().numTotalDof(), false);
     }
 
 
@@ -363,6 +366,12 @@ namespace Opm {
             // dynamic change to the well structure during a report step.
             this->wellStructureChangedDynamically_ = false;
         }
+
+        // Degrees of freedom outside the grid can appear, move or change depth during
+        // the run -- a fracture cell exists only once the fracture has been solved -- and
+        // the perforation depths are read from this array when a well is initialised.
+        // Taken at the start of the step, when the auxiliary modules have been rebound.
+        extractLegacyDepth_();
 
         this->resetWGState();
         const int reportStepIdx = simulator_.episodeIndex();
@@ -776,8 +785,14 @@ namespace Opm {
             return FluidSystem::gasPhaseIdx;
         }();
 
-        auto cellPressures = std::vector<Scalar>(this->local_num_cells_, Scalar{0});
-        auto cellTemperatures = std::vector<Scalar>(this->local_num_cells_, Scalar{0});
+        // Sized over every degree of freedom: a well may perforate an auxiliary
+        // DOF (a fracture cell represented outside the grid), and the well state
+        // initialises that perforation's pressure from this array.  A short array
+        // here reads as a zero connection pressure, which the operability check
+        // then interprets as unbounded backflow and shuts the well.
+        const auto numDof = this->simulator_.model().numTotalDof();
+        auto cellPressures = std::vector<Scalar>(numDof, Scalar{0});
+        auto cellTemperatures = std::vector<Scalar>(numDof, Scalar{0});
 
         auto elemCtx = ElementContext { this->simulator_ };
         const auto& gridView = this->simulator_.vanguard().gridView();
@@ -795,6 +810,16 @@ namespace Opm {
         }
         OPM_END_PARALLEL_TRY_CATCH("BlackoilWellModel::initializeWellState() failed: ",
                                    this->simulator_.vanguard().grid().comm());
+
+        // The auxiliary degrees of freedom are not reachable through the grid
+        // loop above; read their state directly.
+        for (auto dof = this->local_num_cells_; dof < numDof; ++dof) {
+            const auto& fs = this->simulator_.model()
+                .intensiveQuantities(dof, /*timeIdx=*/0).fluidState();
+
+            cellPressures[dof] = fs.pressure(pressIx).value();
+            cellTemperatures[dof] = fs.temperature(0).value();
+        }
 
         this->wellState().init(cellPressures, cellTemperatures, this->schedule(), this->wells_ecl_,
                                this->local_parallel_well_info_, timeStepIdx,
@@ -1495,7 +1520,10 @@ namespace Opm {
                              const bool use_well_weights) const
     {
         int nw = this->numLocalWellsEnd();
-        int rdofs = local_num_cells_;
+        // The well rows sit behind every reservoir row of the pressure system, auxiliary
+        // ones included -- which is how the wells themselves index them, from the size of
+        // the weight vector (StandardWellEquations::extractCPRPressureMatrix).
+        int rdofs = simulator_.model().numTotalDof();
         for ( int i = 0; i < nw; i++ ) {
             int wdof = rdofs + i;
             jacobian[wdof][wdof] = 1.0;// better scaling ?
@@ -1545,7 +1573,12 @@ namespace Opm {
     addWellPressureEquationsStruct(PressureMatrix& jacobian) const
     {
         int nw =  this->numLocalWellsEnd();
-        int rdofs = local_num_cells_;
+        // Same numbering as addWellPressureEquations(): behind every reservoir row,
+        // auxiliary ones included.  Placing the well rows at the grid row count instead
+        // would have them land on top of the auxiliary rows, which is not merely a wrong
+        // value -- the extra columns break the assumption that the coarse pressure matrix
+        // has the fine matrix's sparsity pattern row for row.
+        int rdofs = simulator_.model().numTotalDof();
         const auto wellconnections = this->getMaxWellConnections();
         for (int i = 0; i < nw; ++i) {
             int wdof = rdofs + i;
@@ -2136,8 +2169,12 @@ namespace Opm {
     BlackoilWellModel<TypeTag>::extractLegacyDepth_()
     {
         const auto& eclProblem = simulator_.problem();
-        depth_.resize(local_num_cells_);
-        for (unsigned cellIdx = 0; cellIdx < local_num_cells_; ++cellIdx) {
+        // Over every degree of freedom, not only the grid cells: a well may
+        // perforate an auxiliary DOF (a fracture cell represented outside the
+        // grid), and the perforation depths are read from this array.
+        const auto numDof = simulator_.model().numTotalDof();
+        depth_.resize(numDof);
+        for (unsigned cellIdx = 0; cellIdx < numDof; ++cellIdx) {
             depth_[cellIdx] = eclProblem.dofCenterDepth(cellIdx);
         }
     }

@@ -405,6 +405,16 @@ void WellInterfaceGeneric<Scalar, IndexTraits>::initCompletions()
         }
         ++my_next_perf;
     }
+
+    // Perforations of auxiliary degrees of freedom have no schedule connection
+    // and so belong to no completion; they sit at the tail with a sentinel
+    // index, behind every schedule connection the loop above consumed.
+    while ((my_next_perf != perf_data_->end()) &&
+           (my_next_perf->ecl_index == AUX_PERFORATION_ECL_INDEX))
+    {
+        ++my_next_perf;
+    }
+
     assert(my_next_perf == perf_data_->end());
 }
 
