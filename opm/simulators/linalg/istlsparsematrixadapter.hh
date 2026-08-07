@@ -31,6 +31,9 @@
 #include <dune/common/fmatrix.hh>
 #include <dune/common/version.hh>
 
+#include <atomic>
+#include <cstddef>
+
 namespace Opm {
 namespace Linear {
 
@@ -76,6 +79,15 @@ public:
     template <class Set>
     void reserve(const std::vector<Set>& sparsityPattern)
     {
+        // Every pattern ever built gets its own number, handed out here -- the one
+        // place patterns are built -- so a consumer that cached anything shaped like
+        // this matrix can tell whether that shape still holds.  Nothing else
+        // identifies a rebuild reliably: the address can repeat when the allocator
+        // reuses the freed block, and row and nonzero counts can survive a rebuild
+        // that moved the entries.
+        static std::atomic<std::size_t> nextPatternVersion{0};
+        patternVersion_ = ++nextPatternVersion;
+
         // allocate raw matrix
         istlMatrix_.reset(new IstlMatrix(rows_, columns_, IstlMatrix::random));
 
@@ -185,11 +197,23 @@ public:
     void finalize()
     { }
 
+    /*!
+     * \brief Number identifying the sparsity pattern currently held.
+     *
+     * Assigned anew by every reserve(), never repeated within a run.  A consumer
+     * that cached anything shaped like this matrix -- a preconditioner hierarchy, a
+     * coarse system -- compares this against the value it saw when it built, and
+     * rebuilds on mismatch.  Zero means no pattern has been built yet.
+     */
+    std::size_t patternVersion() const
+    { return patternVersion_; }
+
 protected:
     size_t rows_;
     size_t columns_;
 
     std::unique_ptr<IstlMatrix> istlMatrix_;
+    std::size_t patternVersion_ = 0;
 };
 
 }} // namespace Linear, Opm

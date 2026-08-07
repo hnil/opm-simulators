@@ -396,6 +396,17 @@ std::unique_ptr<Matrix> blockJacobiAdjacency(const Grid& grid,
 
         void prepare(const SparseMatrixAdapter& M, Vector& b) override
         {
+            // The adapter numbers every sparsity pattern it builds, which is the one
+            // reliable identity a rebuilt matrix has: the address can repeat when the
+            // allocator reuses the freed block, and the shape checks in initPrepare can
+            // miss a rebuild that kept its row and nonzero counts.  Everything cached
+            // against the old pattern -- the preconditioner hierarchy, the CPR coarse
+            // system -- must be rebuilt with it.
+            if (M.patternVersion() != preparedPatternVersion_) {
+                preparedPatternVersion_ = M.patternVersion();
+                force_recreate_ = true;
+            }
+
             prepare(M.istlMatrix(), b);
         }
 
@@ -705,9 +716,13 @@ std::unique_ptr<Matrix> blockJacobiAdjacency(const Grid& grid,
         // shouldCreateSolver() (hence mutable in an otherwise const query)
         mutable bool force_recreate_ = false;
         //! Shape of the matrix last prepared for, so a rebuilt matrix is recognised
-        //! even when the allocator hands it the old one's address.
+        //! even when the allocator hands it the old one's address.  A fallback for
+        //! callers of the raw-matrix prepare(); the adapter overload compares the
+        //! authoritative pattern version instead.
         std::size_t matrixRows_ = 0;
         std::size_t matrixNonzeroes_ = 0;
+        //! Pattern version last prepared for (see IstlSparseMatrixAdapter).
+        std::size_t preparedPatternVersion_ = 0;
     }; // end ISTLSolver
 
 } // namespace Opm
