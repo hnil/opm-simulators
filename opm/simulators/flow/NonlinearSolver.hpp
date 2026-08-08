@@ -51,6 +51,8 @@ struct NewtonRelaxIncrement { static constexpr Scalar value = 0.1; };
 template<class Scalar>
 struct NewtonRelaxRelTol { static constexpr Scalar value = 0.2; };
 
+struct NewtonRelaxRecovery { static constexpr int value = 0; };
+
 struct NewtonRelaxationType { static constexpr auto value = "dampen"; };
 
 } // namespace Opm::Parameters
@@ -88,6 +90,7 @@ struct NonlinearSolverParameters
     Scalar relaxMax_;
     Scalar relaxIncrement_;
     Scalar relaxRelTol_;
+    int relaxRecovery_;
 
     NonlinearSolverParameters();
 
@@ -254,6 +257,11 @@ struct NonlinearSolverParameters
         }
 
         /// The greatest relaxation factor (i.e. smallest factor) allowed.
+        //! \brief Contracting iterations required before the relaxation factor recovers
+        //! (0 = never; the factor stays latched at its reduced value for the substep).
+        int relaxRecovery() const
+        { return param_.relaxRecovery_; }
+
         Scalar relaxMax() const
         { return param_.relaxMax_; }
 

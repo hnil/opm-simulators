@@ -148,6 +148,7 @@ NonlinearSolverParameters()
     relaxMax_ = Parameters::Get<Parameters::NewtonMaxRelax<Scalar>>();
     relaxIncrement_ = Parameters::Get<Parameters::NewtonRelaxIncrement<Scalar>>();
     relaxRelTol_ = Parameters::Get<Parameters::NewtonRelaxRelTol<Scalar>>();
+    relaxRecovery_ = Parameters::Get<Parameters::NewtonRelaxRecovery>();
 
     const auto& relaxationTypeString = Parameters::Get<Parameters::NewtonRelaxationType>();
     if (relaxationTypeString == "dampen") {
@@ -169,6 +170,7 @@ reset()
     relaxMax_ = 0.5;
     relaxIncrement_ = 0.1;
     relaxRelTol_ = 0.2;
+    relaxRecovery_ = 0;
 }
 
 template<class Scalar>
@@ -180,6 +182,11 @@ registerParameters()
     Parameters::Register<Parameters::NewtonRelaxIncrement<Scalar>>
         ("Amount by which the Newton relaxation factor is reduced each time an "
          "oscillation is detected");
+    Parameters::Register<Parameters::NewtonRelaxRecovery>
+        ("Number of consecutive Newton iterations with contracting residuals after which "
+         "the relaxation factor is walked back up towards 1. The factor otherwise only "
+         "ever decreases within a substep, so one oscillation early on damps every later "
+         "iteration. 0 (default) keeps the factor latched once reduced");
     Parameters::Register<Parameters::NewtonRelaxRelTol<Scalar>>
         ("Relative tolerance used to classify a residual history as oscillating "
          "rather than stagnating");
