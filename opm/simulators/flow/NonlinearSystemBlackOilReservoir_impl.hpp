@@ -674,6 +674,19 @@ localConvergenceData(std::vector<Scalar>& R_sum,
 
     const auto& residual = this->simulator_.model().linearizer().residual();
 
+    // Absolute PV floor for the CNV normalisation (0 disables); the average cell pore
+    // volume is cheap to form from static data.
+    Scalar cnv_pv_floor_ = 0.0;
+    if (this->param_.cnv_pv_floor_fraction_ > 0.0) {
+        NeumaierSum<Scalar> pvTot;
+        const unsigned n = model.numGridDof();
+        for (unsigned dof = 0; dof < n; ++dof) {
+            pvTot += problem.referencePorosity(dof, /*timeIdx=*/0) * model.dofTotalVolume(dof);
+        }
+        const Scalar avg = this->grid_.comm().sum(pvTot.value()) / Scalar(this->global_nc_);
+        cnv_pv_floor_ = this->param_.cnv_pv_floor_fraction_ * avg;
+    }
+
     ElementContext elemCtx(this->simulator_);
     const auto& gridView = this->simulator().gridView();
     IsNumericalAquiferCell isNumericalAquiferCell(gridView.grid());
@@ -694,7 +707,14 @@ localConvergenceData(std::vector<Scalar>& R_sum,
             numAquiferPvSumLocal += pvValue;
         }
 
-        this->getMaxCoeff(cell_idx, intQuants, fs, residual, pvValue,
+        // CNV divides the residual by the cell pore volume, so a cell with vanishing PV
+        // (inner radial cells, salt-clogged cells, degenerate geometry) is held to a
+        // divergently strict standard although its capacity to accumulate mass error is
+        // limited by throughput, not storage. Optionally bound the criterion for such
+        // cells by flooring the normalisation volume.
+        const auto pvNorm = std::max(pvValue, cnv_pv_floor_);
+
+        this->getMaxCoeff(cell_idx, intQuants, fs, residual, pvNorm,
                           B_avg_acc, R_sum_acc, maxCoeff, maxCoeffCell);
     }
 
