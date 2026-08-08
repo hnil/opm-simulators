@@ -2031,6 +2031,71 @@ namespace Opm {
     }
 
     template<typename TypeTag>
+    bool
+    BlackoilWellModel<TypeTag>::
+    ensembleSubIterate(const int max_sweeps)
+    {
+        auto logger_guard = this->groupStateHelper().pushLogger();
+        auto& local_deferredLogger = this->groupStateHelper().deferredLogger();
+        const int reportStepIdx = simulator_.episodeIndex();
+
+        auto controlSnapshot = [this]() {
+            std::vector<std::tuple<Well::ProducerCMode, Well::InjectorCMode, WellStatus>> snap;
+            snap.reserve(well_container_.size());
+            for (const auto& well : well_container_) {
+                const auto& ws = this->wellState().well(well->indexOfWell());
+                snap.emplace_back(ws.production_cmode, ws.injection_cmode, ws.status);
+            }
+            return snap;
+        };
+
+        // If the sweeps do not reach a fixed point, the ensemble is genuinely cycling
+        // (the collective flip-flop), and leaving the state wherever the last sweep
+        // happened to land makes things much worse.  Settle-or-restore: keep the result
+        // only if a full sweep changed nothing.
+        const auto ws0 = this->wellState();
+        const auto gs0 = this->groupState();
+
+        bool settled = false;
+        bool any_changed = false;
+        for (int sweep = 0; sweep < max_sweeps; ++sweep) {
+            const auto before = controlSnapshot();
+            for (const auto& well : well_container_) {
+                if (!well->isOperableAndSolvable()) {
+                    continue;
+                }
+                try {
+                    well->solveWellEquation(simulator_, this->groupStateHelper(),
+                                            this->wellState());
+                } catch (const std::exception& e) {
+                    local_deferredLogger.debug("Ensemble sub-iteration: well solve for " +
+                                               well->name() + " failed: " + e.what());
+                }
+            }
+            this->updateAndCommunicateGroupData(reportStepIdx,
+                                                /*update_wellgrouptarget*/ true);
+            const bool changed = (controlSnapshot() != before);
+            any_changed = any_changed || changed;
+            if (!changed) {
+                settled = true;
+                break;
+            }
+        }
+        if (!settled && any_changed) {
+            this->wellState() = ws0;
+            this->groupState() = gs0;
+            this->updateAndCommunicateGroupData(reportStepIdx,
+                                                /*update_wellgrouptarget*/ true);
+            local_deferredLogger.debug("Ensemble sub-iteration did not settle within " +
+                                       std::to_string(max_sweeps) +
+                                       " sweeps; state restored.");
+            any_changed = false;
+        }
+        updatePrimaryVariables();
+        return any_changed;
+    }
+
+    template<typename TypeTag>
     void
     BlackoilWellModel<TypeTag>::
     updateAverageFormationFactor()

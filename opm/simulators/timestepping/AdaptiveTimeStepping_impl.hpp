@@ -1135,9 +1135,18 @@ chopTimeStep_(const double new_time_step)
 {
     // a failure invalidates the success-floor window
     this->recent_converged_dt_.clear();
-    // ... and establishes a known-bad step length for the failure ceiling
-    this->last_failed_dt_ = this->substep_timer_.currentStepLength();
-    this->converged_since_failure_ = 0;
+    // ... and establishes a known-bad step length for the failure ceiling. Re-anchoring
+    // on a failure that happened *below* an active cap would ratchet the cap down
+    // geometrically, which is the downward ratchet the success floor exists to prevent,
+    // so only refresh the memory when the cap was not already in force.
+    const double failed_dt = this->substep_timer_.currentStepLength();
+    const double ceiling_frac = this->adaptive_time_stepping_.timestep_failure_ceiling_;
+    if ((this->last_failed_dt_ <= 0.0) ||
+        (failed_dt >= ceiling_frac * this->last_failed_dt_))
+    {
+        this->last_failed_dt_ = failed_dt;
+        this->converged_since_failure_ = 0;
+    }
     setTimeStep_(new_time_step);
     if (solverVerbose_()) {
         const auto msg = fmt::format(fmt::runtime("{}\nTimestep chopped to {} days\n"),

@@ -92,6 +92,7 @@ BlackoilModelParameters<Scalar>::BlackoilModelParameters()
     well_control_flip_flop_hold_ = Parameters::Get<Parameters::WellControlFlipFlopHold>();
     well_inner_control_pin_ = Parameters::Get<Parameters::WellInnerControlPin>();
     newton_confirm_iterations_ = Parameters::Get<Parameters::NewtonConfirmIterations>();
+    gate_ensemble_subiterate_ = Parameters::Get<Parameters::GateEnsembleSubIterate>();
     max_number_of_group_switches_ = Parameters::Get<Parameters::MaximumNumberOfGroupSwitches>();
     use_average_density_ms_wells_ = Parameters::Get<Parameters::UseAverageDensityMsWells>();
     local_well_solver_control_switching_ = Parameters::Get<Parameters::LocalWellSolveControlSwitching>();
@@ -288,6 +289,11 @@ void BlackoilModelParameters<Scalar>::registerParameters()
          "control away and back (a net-zero flip pair). The well solution then "
          "stops changing control between outer iterations; the outer control "
          "update keeps its authority. 0 (default) disables the pin");
+    Parameters::Register<Parameters::GateEnsembleSubIterate>
+        ("When an iteration is physically converged but blocked only by the well-group or "
+         "network gate, run up to this many sweeps of {solve all wells, refresh group "
+         "data} at frozen reservoir state to let the control ensemble settle, instead of "
+         "buying full Newton iterations for it. 0 (default) disables.");
     Parameters::Register<Parameters::NewtonConfirmIterations>
         ("Take this many additional full Newton iterations after the convergence "
          "criterion is first met. The accepted state then carries a residual well "

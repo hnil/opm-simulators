@@ -194,6 +194,18 @@ initialLinearization(SimulatorReportSingle& report,
         {
             ++report.relaxed_cnv_acceptances;
         }
+        // Physically converged but blocked only by the well-group/network gate: the
+        // control ensemble is lagging one outer iteration behind. Optionally settle it
+        // now with cheap sweeps at frozen reservoir instead of buying full Newton
+        // iterations (assembly + linear solve) one switch at a time. The next iteration
+        // still validates the result -- acceptance semantics are unchanged.
+        if (!report.converged &&
+            this->param_.gate_ensemble_subiterate_ > 0 &&
+            !convrep.reservoirFailed() && !convrep.wellFailed() &&
+            (convrep.wellGroupTargetsViolated() || convrep.networkNeedsMoreBalancing()))
+        {
+            this->wellModel().ensembleSubIterate(this->param_.gate_ensemble_subiterate_);
+        }
         ConvergenceReport::Severity severity = convrep.severityOfWorstFailure();
         this->convergence_reports_.back().report.push_back(std::move(convrep));
 

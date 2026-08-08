@@ -154,6 +154,7 @@ struct MaximumNumberOfWellSwitches { static constexpr int value = 3; };
 struct WellControlFlipFlopHold { static constexpr int value = 0; };
 struct WellInnerControlPin { static constexpr int value = 0; };
 struct NewtonConfirmIterations { static constexpr int value = 0; };
+struct GateEnsembleSubIterate { static constexpr int value = 0; };
 struct MaximumNumberOfGroupSwitches { static constexpr int value = 3; };
 struct UseAverageDensityMsWells { static constexpr bool value = false; };
 struct LocalWellSolveControlSwitching { static constexpr bool value = true; };
@@ -358,6 +359,10 @@ public:
     /// criterion is first met, shrinking the tolerance halo the accepted state
     /// carries. 0 disables.
     int newton_confirm_iterations_;
+
+    /// Sweeps of the well/group ensemble sub-iteration run when a step is
+    /// physically converged but blocked by a group/network gate (0 = off).
+    int gate_ensemble_subiterate_;
 
     /// Maximum number of times group can switch to the same control
     int max_number_of_group_switches_;

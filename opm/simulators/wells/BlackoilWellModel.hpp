@@ -560,6 +560,17 @@ template<class Scalar> class WellContributions;
                 return (std::abs(weight_factor) + 1e-13);
             }
 
+
+            //! \brief Settle the well/group control ensemble at frozen reservoir state.
+            //!
+            //! Runs up to \p max_sweeps sweeps of {solve each well's equations (with
+            //! control switching), refresh group data} until a full sweep changes no
+            //! control or status. Used when an iteration is physically converged but
+            //! blocked by the well-group gate: the gate otherwise buys full Newton
+            //! iterations purely to relax this algebraic lag, one switch at a time.
+            //! \return whether any control or status changed.
+            bool ensembleSubIterate(const int max_sweeps);
+
         protected:
             Simulator& simulator_;
 
