@@ -137,6 +137,12 @@ void registerAdaptiveParameters()
          "so the controller cannot ratchet the step far below demonstrated "
          "capability without an actual convergence failure. A failure clears the "
          "window, so chop-and-retry is unaffected. 0 (default) disables the floor");
+    Parameters::Register<Parameters::TimeStepControlFailureCeiling>
+        ("Cap the suggested time step at this fraction of the length of the most recent "
+         "failed attempt, until a few steps have converged under the cap or the report "
+         "step ends, so the controller does not walk straight back into a step length "
+         "that just failed. The mirror image of the success floor. "
+         "0 (default) disables the ceiling");
     Parameters::Register<Parameters::TimeStepControlIterationDeadband>
         ("Half-width of a dead band around the target iteration count in which the "
          "iteration-count part of the time step control leaves the step size unchanged. "

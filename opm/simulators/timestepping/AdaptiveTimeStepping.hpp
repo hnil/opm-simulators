@@ -54,6 +54,8 @@ struct TimeStepControlParameters { static constexpr auto value = "0.125;0.25;0.1
 struct TimeStepQuantization { static constexpr int value = 0; };
 struct TimeStepControlSuccessFloor { static constexpr double value = 0.0; };
 
+struct TimeStepControlFailureCeiling { static constexpr double value = 0.0; };
+
 } // namespace Opm::Parameters
 
 namespace Opm {
@@ -318,6 +320,8 @@ private:
         double quantizeTimeStep_(const double dt) const;
         //! \brief Floor a suggestion against recently demonstrated success (no-op if disabled)
         double applySuccessFloor_(const double dt_estimate);
+
+        double applyFailureCeiling_(const double dt_estimate);
         bool timeStepVerbose_() const;
         void updateSuggestedNextStep_();
         bool useNewtonIteration_() const;
@@ -334,6 +338,10 @@ private:
         //! controller cannot ratchet dt far below demonstrated capability
         //! without an actual failure (a failure clears the window)
         std::vector<double> recent_converged_dt_{};
+        //! Length of the most recent failed attempt, and how many steps have converged
+        //! since. Zero means no failure is currently remembered.
+        double last_failed_dt_{0.0};
+        int converged_since_failure_{0};
     };
 
 public:
@@ -455,6 +463,7 @@ protected:
     bool use_newton_iteration_{false};       //!< use newton iteration count for adaptive time step control
     int timestep_quantization_{0};            //!< subdivisions per doubling of the time step lattice (0 = off)
     double timestep_success_floor_{0.0};      //!< floor dt at this fraction of the median recent converged dt (0 = off)
+    double timestep_failure_ceiling_{0.0};    //!< cap dt at this fraction of the most recent failed dt (0 = off)
 
     //! < shut problematic wells when time step size in days are less than this
     double min_time_step_before_shutting_problematic_wells_{};

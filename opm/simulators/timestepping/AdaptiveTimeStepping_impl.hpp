@@ -92,6 +92,7 @@ AdaptiveTimeStepping(const UnitSystem& unit_system,
     , use_newton_iteration_{false}
     , timestep_quantization_{Parameters::Get<Parameters::TimeStepQuantization>()} // 0 (disabled)
     , timestep_success_floor_{Parameters::Get<Parameters::TimeStepControlSuccessFloor>()} // 0 (disabled)
+    , timestep_failure_ceiling_{Parameters::Get<Parameters::TimeStepControlFailureCeiling>()} // 0 (disabled)
     , min_time_step_before_shutting_problematic_wells_{
         Parameters::Get<Parameters::MinTimeStepBeforeShuttingProblematicWellsInDays>() * unit::day}
     , report_(report)
@@ -131,6 +132,7 @@ AdaptiveTimeStepping(double max_next_tstep,
     , use_newton_iteration_{false}
     , timestep_quantization_{Parameters::Get<Parameters::TimeStepQuantization>()} // 0 (disabled)
     , timestep_success_floor_{Parameters::Get<Parameters::TimeStepControlSuccessFloor>()} // 0 (disabled)
+    , timestep_failure_ceiling_{Parameters::Get<Parameters::TimeStepControlFailureCeiling>()} // 0 (disabled)
     , min_time_step_before_shutting_problematic_wells_{
         Parameters::Get<Parameters::MinTimeStepBeforeShuttingProblematicWellsInDays>() * unit::day}
     , report_(report)
@@ -990,6 +992,11 @@ run()
             // chop-and-retry path is unaffected.
             this->recent_converged_dt_.push_back(dt);
             dt_estimate = applySuccessFloor_(dt_estimate);
+            // Counterpart to the floor: the controller has no memory of failures, so
+            // after a chop it grows straight back toward the length that just failed and
+            // fails again -- a sawtooth whose retries are pure waste. Hold the suggestion
+            // below the known-bad length until a few steps have converged under the cap.
+            dt_estimate = applyFailureCeiling_(dt_estimate);
             restarts = 0;         // solver converged, reset restarts counter
 
             maybeReportSubStep_(substep_report);
@@ -1128,6 +1135,9 @@ chopTimeStep_(const double new_time_step)
 {
     // a failure invalidates the success-floor window
     this->recent_converged_dt_.clear();
+    // ... and establishes a known-bad step length for the failure ceiling
+    this->last_failed_dt_ = this->substep_timer_.currentStepLength();
+    this->converged_since_failure_ = 0;
     setTimeStep_(new_time_step);
     if (solverVerbose_()) {
         const auto msg = fmt::format(fmt::runtime("{}\nTimestep chopped to {} days\n"),
@@ -1603,6 +1613,27 @@ applySuccessFloor_(const double dt_estimate)
     std::nth_element(window.begin(), window.begin() + window.size()/2, window.end());
     const double median = window[window.size()/2];
     return std::max(dt_estimate, frac * median);
+}
+
+template <class TypeTag>
+template <class Solver>
+double
+AdaptiveTimeStepping<TypeTag>::SubStepIteration<Solver>::
+applyFailureCeiling_(const double dt_estimate)
+{
+    const double frac = this->adaptive_time_stepping_.timestep_failure_ceiling_;
+    if (frac <= 0.0 || this->last_failed_dt_ <= 0.0) {
+        return dt_estimate;
+    }
+    // Release the memory once the step length has been demonstrated a few times, so a
+    // single failure cannot cap the rest of the report step.
+    constexpr int successes_to_forget = 3;
+    if (++this->converged_since_failure_ >= successes_to_forget) {
+        this->last_failed_dt_ = 0.0;
+        this->converged_since_failure_ = 0;
+        return dt_estimate;
+    }
+    return std::min(dt_estimate, frac * this->last_failed_dt_);
 }
 
 template <class TypeTag>
