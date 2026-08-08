@@ -1135,17 +1135,24 @@ chopTimeStep_(const double new_time_step)
 {
     // a failure invalidates the success-floor window
     this->recent_converged_dt_.clear();
-    // ... and establishes a known-bad step length for the failure ceiling. Re-anchoring
-    // on a failure that happened *below* an active cap would ratchet the cap down
-    // geometrically, which is the downward ratchet the success floor exists to prevent,
-    // so only refresh the memory when the cap was not already in force.
-    const double failed_dt = this->substep_timer_.currentStepLength();
-    const double ceiling_frac = this->adaptive_time_stepping_.timestep_failure_ceiling_;
-    if ((this->last_failed_dt_ <= 0.0) ||
-        (failed_dt >= ceiling_frac * this->last_failed_dt_))
-    {
-        this->last_failed_dt_ = failed_dt;
-        this->converged_since_failure_ = 0;
+    // ... and feeds the failure-ceiling memory. A first failure at some dt is unavoidable
+    // discovery and is never taxed; only a RE-failure near an already-remembered dt (the
+    // sawtooth: the controller grew straight back into a known-bad step length) arms the
+    // cap. Released by simulation time: once the run has passed the moment that caused
+    // the trouble, the memory is irrelevant and must not delay recovery.
+    if (this->adaptive_time_stepping_.timestep_failure_ceiling_ > 0.0) {
+        const double t = this->substep_timer_.simulationTimeElapsed();
+        const double failed_dt = this->substep_timer_.currentStepLength();
+        const bool refailure = std::any_of(
+            this->failed_attempts_.begin(), this->failed_attempts_.end(),
+            [failed_dt](const auto& fa)
+            { return 0.70 * fa.second <= failed_dt && failed_dt <= 1.30 * fa.second; });
+        if (refailure) {
+            const double frac = this->adaptive_time_stepping_.timestep_failure_ceiling_;
+            this->ceiling_dt_ = frac * failed_dt;
+            this->ceiling_release_time_ = t + failed_dt;
+        }
+        this->failed_attempts_.emplace_back(t, failed_dt);
     }
     setTimeStep_(new_time_step);
     if (solverVerbose_()) {
@@ -1630,19 +1637,15 @@ double
 AdaptiveTimeStepping<TypeTag>::SubStepIteration<Solver>::
 applyFailureCeiling_(const double dt_estimate)
 {
-    const double frac = this->adaptive_time_stepping_.timestep_failure_ceiling_;
-    if (frac <= 0.0 || this->last_failed_dt_ <= 0.0) {
+    if (this->ceiling_dt_ <= 0.0) {
         return dt_estimate;
     }
-    // Release the memory once the step length has been demonstrated a few times, so a
-    // single failure cannot cap the rest of the report step.
-    constexpr int successes_to_forget = 3;
-    if (++this->converged_since_failure_ >= successes_to_forget) {
-        this->last_failed_dt_ = 0.0;
-        this->converged_since_failure_ = 0;
+    if (this->substep_timer_.simulationTimeElapsed() >= this->ceiling_release_time_) {
+        // the run has passed the region that caused the re-failures
+        this->ceiling_dt_ = 0.0;
         return dt_estimate;
     }
-    return std::min(dt_estimate, frac * this->last_failed_dt_);
+    return std::min(dt_estimate, this->ceiling_dt_);
 }
 
 template <class TypeTag>

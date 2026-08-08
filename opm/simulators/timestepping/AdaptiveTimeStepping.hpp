@@ -338,10 +338,12 @@ private:
         //! controller cannot ratchet dt far below demonstrated capability
         //! without an actual failure (a failure clears the window)
         std::vector<double> recent_converged_dt_{};
-        //! Length of the most recent failed attempt, and how many steps have converged
-        //! since. Zero means no failure is currently remembered.
-        double last_failed_dt_{0.0};
-        int converged_since_failure_{0};
+        //! Failed attempts this report step as (sim time, dt); the ceiling arms only when
+        //! a failure lands near an already-remembered dt (a RE-failure -- the sawtooth),
+        //! so first failures are never taxed.
+        std::vector<std::pair<double, double>> failed_attempts_{};
+        double ceiling_dt_{0.0};           //!< active cap (0 = not armed)
+        double ceiling_release_time_{0.0}; //!< sim time at which the cap expires
     };
 
 public:
