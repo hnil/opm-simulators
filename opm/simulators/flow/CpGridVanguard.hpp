@@ -697,10 +697,13 @@ public:
      * wells so the existing LGR connection path resolves them to the refined
      * leaf cells. Only runs when the grid is refined and trajectory wells exist.
      */
-    void recomputeWellTrajectoriesInLgr_()
+    //! \param replayOnCoarse also replay when the grid is unrefined, pulling
+    //! wells whose connections were previously re-derived into a (now removed)
+    //! refinement back onto the global grid. Used by the dynamic driver.
+    void recomputeWellTrajectoriesInLgr_(const bool replayOnCoarse = false)
     {
         auto& grid = *this->grid_;
-        if (grid.maxLevel() == 0) {
+        if (grid.maxLevel() == 0 && !replayOnCoarse) {
             return; // no refinement -> nothing to do
         }
 
@@ -847,7 +850,9 @@ public:
             return std::nullopt;
         };
 
-        OpmLog::info("\nRecomputing well-trajectory connections against the refined grid");
+        OpmLog::info(grid.maxLevel() > 0
+                     ? "\nRecomputing well-trajectory connections against the refined grid"
+                     : "\nRecomputing well-trajectory connections against the coarse grid");
         this->schedule().recomputeTrajectoryConnections(cellCorners, cellInfoFn);
 
         // Summarize the outcome (last report step) so refined-well placement

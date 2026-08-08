@@ -156,41 +156,55 @@ public:
         }
         if (!anyOff) {
             Base::addLgrs();
-            return;
         }
-
-        std::vector<std::array<int,3>> cellsPerDim, startIJK, endIJK;
-        std::vector<std::string> names;
-        for (std::size_t l = 0; l < lgrs.size(); ++l) {
-            const auto& c = lgrs.getLgr(l);
-            if (!lgrIsActive(c.NAME())) {
-                continue;
+        else {
+            std::vector<std::array<int,3>> cellsPerDim, startIJK, endIJK;
+            std::vector<std::string> names;
+            for (std::size_t l = 0; l < lgrs.size(); ++l) {
+                const auto& c = lgrs.getLgr(l);
+                if (!lgrIsActive(c.NAME())) {
+                    continue;
+                }
+                if (c.PARENT_NAME() != "GLOBAL") {
+                    throw std::runtime_error("LGRON/LGROFF with nested CARFIN ('"
+                                             + c.NAME() + "') is not supported");
+                }
+                cellsPerDim.push_back({c.NX()/(c.I2() + 1 - c.I1()),
+                                       c.NY()/(c.J2() + 1 - c.J1()),
+                                       c.NZ()/(c.K2() + 1 - c.K1())});
+                startIJK.push_back({c.I1(), c.J1(), c.K1()});
+                endIJK.push_back({c.I2() + 1, c.J2() + 1, c.K2() + 1});
+                names.push_back(c.NAME());
             }
-            if (c.PARENT_NAME() != "GLOBAL") {
-                throw std::runtime_error("LGRON/LGROFF with nested CARFIN ('"
-                                         + c.NAME() + "') is not supported");
+            OpmLog::info("\nLGRON/LGROFF: refining " + std::to_string(names.size())
+                         + " of " + std::to_string(lgrs.size()) + " deck LGR(s)");
+            if (!names.empty()) {
+                this->grid_->addLgrsUpdateLeafView(cellsPerDim, startIJK, endIJK, names);
+
+                // Same post-refinement bookkeeping as the base deck path.
+                this->updateGridView_();
+                this->updateCartesianToCompressedMapping_();
+                this->updateCellDepths_();
+                this->updateCellThickness_();
             }
-            cellsPerDim.push_back({c.NX()/(c.I2() + 1 - c.I1()),
-                                   c.NY()/(c.J2() + 1 - c.J1()),
-                                   c.NZ()/(c.K2() + 1 - c.K1())});
-            startIJK.push_back({c.I1(), c.J1(), c.K1()});
-            endIJK.push_back({c.I2() + 1, c.J2() + 1, c.K2() + 1});
-            names.push_back(c.NAME());
-        }
-        OpmLog::info("\nLGRON/LGROFF: refining " + std::to_string(names.size())
-                     + " of " + std::to_string(lgrs.size()) + " deck LGR(s)");
-        if (names.empty()) {
-            return;   // everything switched off: stay coarse
         }
 
-        this->grid_->addLgrsUpdateLeafView(cellsPerDim, startIJK, endIJK, names);
+        // Wells and toggled LGRs: give COMPDAT wells an equivalent trajectory
+        // (a one-time synthesis; wells that already have one are skipped) and
+        // re-derive every trajectory well against the current leaf -- refined
+        // or coarse. This puts a well opened together with an LGRON onto the
+        // refined child cells, and reverts a well inside a switched-off LGR
+        // to its global-grid connections.
+        if (lgrs.size() > 0) {
+            const auto& inputGrid = this->eclState().getInputGrid();
+            this->schedule().synthesizeWellTrajectories(
+                [&inputGrid](std::size_t globalIdx)
+                { return inputGrid.getCellCenter(globalIdx); },
+                [&inputGrid](std::size_t globalIdx)
+                { return inputGrid.getCellDims(globalIdx); });
 
-        // Same post-refinement bookkeeping as the base deck path.
-        this->updateGridView_();
-        this->updateCartesianToCompressedMapping_();
-        this->updateCellDepths_();
-        this->updateCellThickness_();
-        this->recomputeWellTrajectoriesInLgr_();
+            this->recomputeWellTrajectoriesInLgr_(/*replayOnCoarse=*/true);
+        }
     }
 };
 
