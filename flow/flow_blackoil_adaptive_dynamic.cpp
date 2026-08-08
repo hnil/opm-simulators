@@ -27,7 +27,11 @@
 #include <opm/simulators/flow/AdaptiveStateTransfer.hpp>
 #include <opm/simulators/flow/python/PyMain.hpp>
 
+#include <opm/input/eclipse/EclipseState/EclipseState.hpp>
+#include <opm/input/eclipse/EclipseState/Grid/Carfin.hpp>
+#include <opm/input/eclipse/EclipseState/Grid/LgrCollection.hpp>
 #include <opm/input/eclipse/Schedule/Action/State.hpp>
+#include <opm/input/eclipse/Schedule/Schedule.hpp>
 #include <opm/input/eclipse/Schedule/UDQ/UDQState.hpp>
 #include <opm/input/eclipse/Schedule/Well/WellTestState.hpp>
 
@@ -35,8 +39,14 @@
 #include <opm/models/blackoil/blackoillocalresidualtpfa.hh>
 #include <opm/models/discretization/common/tpfalinearizer.hh>
 
+#include <algorithm>
+#include <array>
 #include <cstdlib>
+#include <map>
 #include <memory>
+#include <stdexcept>
+#include <string>
+#include <vector>
 
 namespace Opm::Parameters {
 
@@ -116,6 +126,71 @@ public:
         }
         return rebuildSpecOverride.empty()
             ? Base::adaptiveLgrSpec() : rebuildSpecOverride;
+    }
+
+    //! Deck-LGR activation for the world being built (LGRON/LGROFF). Names
+    //! absent from the map are active, matching ScheduleState::lgr_active().
+    static inline std::map<std::string, bool> lgrActivation{};
+
+    static bool lgrIsActive(const std::string& name)
+    {
+        const auto it = lgrActivation.find(name);
+        return (it == lgrActivation.end()) || it->second;
+    }
+
+    //! \brief Add deck LGRs honouring LGRON/LGROFF, then any adaptive spec.
+    //!
+    //! With every deck LGR active (the deck default) this is exactly the base
+    //! path. When an LGROFF is in effect only the active subset of the deck
+    //! CARFINs is refined, so a rebuild at the LGROFF step coarsens the
+    //! switched-off region and a later LGRON rebuild refines it again.
+    void addLgrs()
+    {
+        const auto& lgrs = this->eclState().getLgrs();
+        bool anyOff = false;
+        for (std::size_t l = 0; l < lgrs.size(); ++l) {
+            if (!lgrIsActive(lgrs.getLgr(l).NAME())) {
+                anyOff = true;
+                break;
+            }
+        }
+        if (!anyOff) {
+            Base::addLgrs();
+            return;
+        }
+
+        std::vector<std::array<int,3>> cellsPerDim, startIJK, endIJK;
+        std::vector<std::string> names;
+        for (std::size_t l = 0; l < lgrs.size(); ++l) {
+            const auto& c = lgrs.getLgr(l);
+            if (!lgrIsActive(c.NAME())) {
+                continue;
+            }
+            if (c.PARENT_NAME() != "GLOBAL") {
+                throw std::runtime_error("LGRON/LGROFF with nested CARFIN ('"
+                                         + c.NAME() + "') is not supported");
+            }
+            cellsPerDim.push_back({c.NX()/(c.I2() + 1 - c.I1()),
+                                   c.NY()/(c.J2() + 1 - c.J1()),
+                                   c.NZ()/(c.K2() + 1 - c.K1())});
+            startIJK.push_back({c.I1(), c.J1(), c.K1()});
+            endIJK.push_back({c.I2() + 1, c.J2() + 1, c.K2() + 1});
+            names.push_back(c.NAME());
+        }
+        OpmLog::info("\nLGRON/LGROFF: refining " + std::to_string(names.size())
+                     + " of " + std::to_string(lgrs.size()) + " deck LGR(s)");
+        if (names.empty()) {
+            return;   // everything switched off: stay coarse
+        }
+
+        this->grid_->addLgrsUpdateLeafView(cellsPerDim, startIJK, endIJK, names);
+
+        // Same post-refinement bookkeeping as the base deck path.
+        this->updateGridView_();
+        this->updateCartesianToCompressedMapping_();
+        this->updateCellDepths_();
+        this->updateCellThickness_();
+        this->recomputeWellTrajectoriesInLgr_();
     }
 };
 
@@ -211,6 +286,29 @@ int flowBlackoilTpfaAdaptiveDynamicMainStandalone(int argc, char** argv)
     snapshot.eclSchedule_ = FlowGenericVanguard::modelParams_.eclSchedule_;
     snapshot.eclSummaryConfig_ = FlowGenericVanguard::modelParams_.eclSummaryConfig_;
 
+    // LGRON/LGROFF support: the deck's LGR activation at a report step is the
+    // schedule's answer to "which CARFINs exist right now". Track it per step;
+    // a change is an adaptation event, handled by the same rebuild seam as
+    // --adaptive-rebuild-step.
+    std::vector<std::string> deckLgrNames;
+    {
+        const auto& lgrs = snapshot.eclState_->getLgrs();
+        for (std::size_t l = 0; l < lgrs.size(); ++l) {
+            deckLgrNames.push_back(lgrs.getLgr(l).NAME());
+        }
+    }
+    const auto lgrActivationAt = [&](int step) {
+        std::map<std::string, bool> act;
+        const auto& sched = *snapshot.eclSchedule_;
+        const auto s = std::min<std::size_t>(step, sched.size() - 1);
+        for (const auto& name : deckLgrNames) {
+            act.emplace(name, sched[s].lgr_active(name));
+        }
+        return act;
+    };
+    auto builtActivation = lgrActivationAt(0);
+    AdaptiveDynamicVanguard<TypeTag>::lgrActivation = builtActivation;
+
     int status = flowMain->executeInitStep();
     if (status == EXIT_SUCCESS) {
         const int rebuildStep = Parameters::Get<Parameters::AdaptiveRebuildStep>();
@@ -220,7 +318,8 @@ int flowBlackoilTpfaAdaptiveDynamicMainStandalone(int argc, char** argv)
         bool continueLooping = true;
         while (continueLooping && !flowMain->getSimTimer()->done()) {
             const int step = flowMain->getSimTimer()->currentStepNum();
-            if (step == rebuildStep) {
+            const auto stepActivation = lgrActivationAt(step);
+            if (step == rebuildStep || stepActivation != builtActivation) {
                 // ---- the adaptation event (S2-S5, identity mark set) ----
                 auto* sim = flowMain->getSimulatorPtr();
 
@@ -231,10 +330,19 @@ int flowBlackoilTpfaAdaptiveDynamicMainStandalone(int argc, char** argv)
                 const UDQState udqState = sim->vanguard().udqState();
 
                 // S0b (minimal): a new mark set for world #2, if given.
-                const std::string newSpec =
-                    Parameters::Get<Parameters::AdaptiveRebuildLgr>();
-                if (!newSpec.empty()) {
-                    AdaptiveDynamicVanguard<TypeTag>::rebuildSpecOverride = newSpec;
+                if (step == rebuildStep) {
+                    const std::string newSpec =
+                        Parameters::Get<Parameters::AdaptiveRebuildLgr>();
+                    if (!newSpec.empty()) {
+                        AdaptiveDynamicVanguard<TypeTag>::rebuildSpecOverride = newSpec;
+                    }
+                }
+                // LGRON/LGROFF: world #2 refines the deck LGRs active now.
+                if (stepActivation != builtActivation) {
+                    OpmLog::info("LGRON/LGROFF change at report step "
+                                 + std::to_string(step) + "; rebuilding the grid");
+                    AdaptiveDynamicVanguard<TypeTag>::lgrActivation = stepActivation;
+                    builtActivation = stepActivation;
                 }
 
                 // S2: tear down world #1, build world #2 from the parsed
