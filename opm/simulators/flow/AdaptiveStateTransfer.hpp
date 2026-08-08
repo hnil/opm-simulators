@@ -86,15 +86,6 @@ inline constexpr std::int64_t adaptiveRefinedTag = std::int64_t(1) << 62;
 template <class Grid, class GridView>
 std::vector<std::int64_t> stableCellIds(const Grid& grid, const GridView& gridView)
 {
-    // With more than one refinement level, getIdxInParentCell() is the index
-    // in the *immediate* parent, so (level-zero ancestor, idxInParent) is no
-    // longer injective.  Nested refinement needs a full ancestry path.
-    if (grid.maxLevel() > 1) {
-        OPM_THROW(std::logic_error,
-                  "Adaptive state transfer supports at most one refinement "
-                  "level; nested refinement needs a full ancestry key.");
-    }
-
     const auto& globalCell = grid.globalCell();
     std::vector<std::int64_t> ids(globalCell.size());
 
@@ -104,6 +95,16 @@ std::vector<std::int64_t> stableCellIds(const Grid& grid, const GridView& gridVi
         if (!elem.hasFather()) {
             ids[idx] = cart;
             continue;
+        }
+        // getIdxInParentCell() indexes the *immediate* parent, so the
+        // (level-zero ancestor, idxInParent) key is injective only while
+        // that parent is itself unrefined.  Note maxLevel() cannot detect
+        // this: sibling LGRs each get their own level, so maxLevel() counts
+        // LGRs, not nesting depth.
+        if (elem.father().hasFather()) {
+            OPM_THROW(std::logic_error,
+                      "Adaptive state transfer supports at most one refinement "
+                      "level; nested refinement needs a full ancestry key.");
         }
         const std::int64_t child = elem.getIdxInParentCell();
         assert(child >= 0 && child < (std::int64_t(1) << adaptiveChildBits));
