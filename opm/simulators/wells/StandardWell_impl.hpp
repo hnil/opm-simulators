@@ -39,7 +39,11 @@
 #include <opm/simulators/wells/WellConvergence.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
+#include <limits>
+#include <map>
+#include <utility>
 #include <functional>
 #include <numbers>
 
@@ -762,14 +766,15 @@ namespace Opm
     updateWellState(const Simulator& simulator,
                     const BVectorWell& dwells,
                     const GroupStateHelperType& groupStateHelper,
-                    WellStateType& well_state)
+                    WellStateType& well_state,
+                    const Scalar relaxation_factor)
     {
         if (!this->isOperableAndSolvable() && !this->wellIsStopped()) return;
 
         auto& deferred_logger = groupStateHelper.deferredLogger();
 
         const bool stop_or_zero_rate_target = this->stoppedOrZeroRateTarget(groupStateHelper);
-        updatePrimaryVariablesNewton(dwells, stop_or_zero_rate_target, deferred_logger);
+        updatePrimaryVariablesNewton(dwells, stop_or_zero_rate_target, deferred_logger, relaxation_factor);
 
         const auto& summary_state = simulator.vanguard().summaryState();
         updateWellStateFromPrimaryVariables(well_state, summary_state, deferred_logger);
@@ -790,11 +795,13 @@ namespace Opm
     StandardWell<TypeTag>::
     updatePrimaryVariablesNewton(const BVectorWell& dwells,
                                  const bool stop_or_zero_rate_target,
-                                 DeferredLogger& deferred_logger)
+                                 DeferredLogger& deferred_logger,
+                                 const Scalar relaxation_factor)
     {
         const Scalar dFLimit = this->param_.dwell_fraction_max_;
         const Scalar dBHPLimit = this->param_.dbhp_max_rel_;
-        this->primary_variables_.updateNewton(dwells, stop_or_zero_rate_target, dFLimit, dBHPLimit, deferred_logger);
+        this->primary_variables_.updateNewton(dwells, stop_or_zero_rate_target, dFLimit, dBHPLimit,
+                                              deferred_logger, relaxation_factor);
 
         // for the water velocity and skin pressure
         if constexpr (Base::has_polymermw) {
@@ -1438,6 +1445,89 @@ namespace Opm
     }
 
 
+    template<typename TypeTag>
+    typename StandardWell<TypeTag>::Scalar
+    StandardWell<TypeTag>::
+    innerResidualMeasure(const GroupStateHelperType& groupStateHelper) const
+    {
+        auto& deferred_logger = groupStateHelper.deferredLogger();
+
+        Scalar tol_wells = this->param_.tolerance_wells_;
+        if (this->stoppedOrZeroRateTarget(groupStateHelper)) {
+            tol_wells *= this->param_.tolerance_wells_stopped_factor_;
+        } else if (this->getDynamicThpLimit()) {
+            tol_wells *= this->param_.tolerance_wells_dynamic_thp_factor_;
+        }
+
+        Scalar sum_sq = 0.0;
+        for (int comp = 0; comp < this->num_conservation_quantities_; ++comp) {
+            const Scalar scaled = Base::B_avg_[comp] *
+                std::abs(this->linSys_.residual()[0][comp]) / tol_wells;
+            sum_sq += scaled * scaled;
+        }
+
+        using IndexTraitsType = typename FluidSystem::IndexTraitsType;
+        ConvergenceReport::WellFailure::Type ctrltype;
+        const Scalar tol_ctrl =
+            WellConvergence<Scalar, IndexTraitsType>(*this).
+            controlEqTolerance(groupStateHelper.wellState(),
+                               {this->param_.tolerance_well_bhp_eq_,
+                                this->param_.tolerance_well_thp_eq_,
+                                tol_wells,
+                                this->param_.tolerance_well_grup_eq_,
+                                this->param_.max_residual_allowed_},
+                               this->wellIsStopped(),
+                               ctrltype,
+                               deferred_logger);
+        const Scalar scaled_ctrl = std::abs(this->linSys_.residual()[0][Bhp]) / tol_ctrl;
+        sum_sq += scaled_ctrl * scaled_ctrl;
+
+        return std::sqrt(sum_sq);
+    }
+
+
+    template<typename TypeTag>
+    bool
+    StandardWell<TypeTag>::
+    innerRelaxationFactor(const std::vector<Scalar>& merit_history,
+                          Scalar& relaxation_factor) const
+    {
+        if (merit_history.size() < 3) {
+            return false;
+        }
+        const std::size_t last = merit_history.size() - 1;
+        const Scalar F0 = merit_history[last];
+        const Scalar F1 = merit_history[last - 1];
+        const Scalar F2 = merit_history[last - 2];
+        if (F0 <= 0.0) {
+            return false;
+        }
+        // Two iterations ago looks like now, but the one between does not: the
+        // iteration is bouncing rather than converging.
+        constexpr Scalar oscillation_rel_tol = 0.2;
+        const Scalar d1 = std::abs((F0 - F2) / F0);
+        const Scalar d2 = std::abs((F0 - F1) / F0);
+        if (!((d1 < oscillation_rel_tol) && (oscillation_rel_tol < d2))) {
+            return false;
+        }
+
+        const Scalar min_relaxation = this->param_.well_inner_min_relaxation_;
+        if (relaxation_factor <= min_relaxation) {
+            return true;
+        }
+        relaxation_factor = std::max(relaxation_factor * Scalar{0.9}, min_relaxation);
+        return false;
+    }
+
+
+    template<typename TypeTag>
+    bool
+    StandardWell<TypeTag>::
+    innerTraceEnabled() const
+    {
+        const auto& want = this->param_.well_inner_trace_;
+        return !want.empty() && (want == "*" || want == this->name());
+    }
 
 
 
@@ -2501,9 +2591,42 @@ namespace Opm
 
         bool changed = false;
         bool final_check = false;
+
+        // Globalization of the inner Newton loop. Off unless asked for, in which case the
+        // undamped step is only taken when it reduces the scaled residual norm.
+        const int ls_trials = this->param_.well_inner_line_search_;
+        const bool damping = this->param_.well_inner_damping_;
+        const int cycle_exit = this->param_.well_inner_cycle_exit_;
+        const bool return_best = this->param_.well_inner_return_best_;
+        const bool trace = this->innerTraceEnabled();
+        const bool globalized = (ls_trials > 0) || damping || trace ||
+                                (cycle_exit > 0) || return_best;
+        std::vector<Scalar> merit_history;
+        Scalar relaxation_factor = 1.0;
+        int stall_count = 0;
+
+        // Lowest-residual iterate visited, and the control it was found under: the
+        // switching logic can walk away from a solved well and not come back inside
+        // the iteration budget.
+        Scalar best_merit = std::numeric_limits<Scalar>::max();
+        std::vector<Scalar> best_values;
+        auto best_pmode = well_state.well(this->index_of_well_).production_cmode;
+        auto best_imode = well_state.well(this->index_of_well_).injection_cmode;
+        auto best_status = this->wellStatus_;
+        // (control mode, scaled residual) states already visited, for cycle detection.
+        std::map<std::pair<int, Scalar>, int> visited;
+        bool cycling = false;
+        // The line search assembles at its trial point, so that assembly is the one the
+        // next iteration needs -- an accepted full step costs no extra work.
+        bool assembly_is_current = false;
+
         // well needs to be set operable or else solving/updating of re-opened wells is skipped
         this->operability_status_.resetOperability();
         this->operability_status_.solvable = true;
+        if (trace) {
+            deferred_logger.info(fmt::format("INNERTRACE begin well={} maxit={}",
+                                             this->name(), max_iter));
+        }
         do {
             its_since_last_switch++;
             if (allow_switching && its_since_last_switch >= min_its_after_switch && status_switch_count < max_status_switch){
@@ -2516,6 +2639,12 @@ namespace Opm
                 if (changed){
                     its_since_last_switch = 0;
                     switch_count++;
+                    // A switch replaces the control equation, so the merit history and
+                    // the assembly from before it describe a different problem.
+                    merit_history.clear();
+                    relaxation_factor = 1.0;
+                    stall_count = 0;
+                    assembly_is_current = false;
                     if (well_status_cur != this->wellStatus_) {
                         well_status_cur = this->wellStatus_;
                         status_switch_count++;
@@ -2531,7 +2660,10 @@ namespace Opm
                 }
             }
 
-            assembleWellEqWithoutIteration(simulator, groupStateHelper, dt, inj_controls, prod_controls, well_state, solving_with_zero_rate);
+            if (!assembly_is_current) {
+                assembleWellEqWithoutIteration(simulator, groupStateHelper, dt, inj_controls, prod_controls, well_state, solving_with_zero_rate);
+            }
+            assembly_is_current = false;
 
             if (it > this->param_.strict_inner_iter_wells_) {
                 relax_convergence = true;
@@ -2553,9 +2685,129 @@ namespace Opm
             }
 
             ++it;
-            solveEqAndUpdateWellState(simulator, groupStateHelper, well_state);
+
+            if (!globalized ||
+                (!this->isOperableAndSolvable() && !this->wellIsStopped())) {
+                solveEqAndUpdateWellState(simulator, groupStateHelper, well_state);
+                continue;
+            }
+
+            const Scalar merit = this->innerResidualMeasure(groupStateHelper);
+            merit_history.push_back(merit);
+            if (damping && this->innerRelaxationFactor(merit_history, relaxation_factor)) {
+                this->regularize_ = true;
+            }
+
+            const auto& ws_cur = well_state.well(this->index_of_well_);
+            const int mode_code = this->wellIsStopped()
+                ? -1
+                : (this->isInjector() ? static_cast<int>(ws_cur.injection_cmode)
+                                      : static_cast<int>(ws_cur.production_cmode));
+            if ((return_best || cycle_exit > 0) && merit < best_merit) {
+                best_merit = merit;
+                best_values = this->primary_variables_.values();
+                best_pmode = ws_cur.production_cmode;
+                best_imode = ws_cur.injection_cmode;
+                best_status = this->wellStatus_;
+            }
+            if (cycle_exit > 0 &&
+                ++visited[std::make_pair(mode_code, merit)] >= cycle_exit) {
+                // Back in a state this solve has already been in, under the same
+                // control: the switching logic is going round in a circle and further
+                // iterations only repeat it.
+                cycling = true;
+                if (trace) {
+                    deferred_logger.info(
+                        fmt::format("INNERTRACE well={} cycling at it={} merit={:.6e} "
+                                    "best={:.6e}", this->name(), it, merit, best_merit));
+                }
+                break;
+            }
+
+            BVectorWell dx_well(1);
+            dx_well[0].resize(this->primary_variables_.numWellEq());
+            this->linSys_.solve(dx_well);
+
+            const bool search = ls_trials > 0 && it > this->param_.well_inner_line_search_start_;
+            Scalar step = relaxation_factor;
+            int backtracks = 0;
+            bool descent = !search;
+            if (!search) {
+                updateWellState(simulator, dx_well, groupStateHelper, well_state, step);
+            } else {
+                const std::vector<Scalar> saved = this->primary_variables_.values();
+                const Scalar armijo = this->param_.well_inner_line_search_armijo_;
+                const Scalar min_step = this->param_.well_inner_line_search_min_step_;
+                for (;;) {
+                    updateWellState(simulator, dx_well, groupStateHelper, well_state, step);
+                    assembleWellEqWithoutIteration(simulator, groupStateHelper, dt, inj_controls,
+                                                   prod_controls, well_state, solving_with_zero_rate);
+                    const Scalar trial = this->innerResidualMeasure(groupStateHelper);
+                    if (trial <= (Scalar{1.0} - armijo * step) * merit) {
+                        descent = true;
+                        assembly_is_current = true;
+                        break;
+                    }
+                    if (backtracks >= ls_trials || step * Scalar{0.5} < min_step) {
+                        // No descent along this direction: keep the shortest step tried,
+                        // which is also the assembly we just made.
+                        assembly_is_current = true;
+                        break;
+                    }
+                    this->primary_variables_.setValues(saved);
+                    step *= Scalar{0.5};
+                    ++backtracks;
+                }
+            }
+
+            stall_count = descent ? 0 : stall_count + 1;
+
+            if (trace) {
+                deferred_logger.info(
+                    fmt::format("INNERTRACE well={} it={} merit={:.6e} bhp={:.4f} wqt={:.6e} "
+                                "step={:.4f} bt={} switches={} descent={}",
+                                this->name(), it, merit,
+                                this->primary_variables_.value(Bhp) / unit::barsa,
+                                this->primary_variables_.value(WQTotal),
+                                step, backtracks, switch_count, descent ? 1 : 0));
+            }
+
+            if (this->param_.well_inner_stall_exit_ > 0 &&
+                stall_count >= this->param_.well_inner_stall_exit_) {
+                // The step direction stopped being a descent direction repeatedly: the
+                // merit has a local minimum above tolerance here, and spending the rest
+                // of the budget on it will not change that.
+                if (trace) {
+                    deferred_logger.info(fmt::format("INNERTRACE well={} stalled at it={}",
+                                                     this->name(), it));
+                }
+                break;
+            }
 
         } while (it < max_iter);
+
+        if (!converged && return_best && !best_values.empty()) {
+            // Hand back the best iterate rather than whichever point the budget or the
+            // cycle happened to stop on; re-check it under the control it was found with.
+            auto& ws_best = well_state.well(this->index_of_well_);
+            ws_best.production_cmode = best_pmode;
+            ws_best.injection_cmode = best_imode;
+            this->wellStatus_ = best_status;
+            this->primary_variables_.setValues(best_values);
+            updateWellStateFromPrimaryVariables(well_state, summary_state, deferred_logger);
+            const bool is_thermal = simulator.vanguard().eclState().getSimulationConfig().isThermal();
+            const bool co2_store = simulator.vanguard().eclState().runspec().co2Storage();
+            Base::calculateReservoirRates(is_thermal || co2_store,
+                                          well_state.well(this->index_of_well_));
+            assembleWellEqWithoutIteration(simulator, groupStateHelper, dt, inj_controls,
+                                           prod_controls, well_state, solving_with_zero_rate);
+            converged = getWellConvergence(groupStateHelper, Base::B_avg_, relax_convergence).converged();
+            if (trace) {
+                deferred_logger.info(
+                    fmt::format("INNERTRACE well={} returned best iterate merit={:.6e} "
+                                "converged={}", this->name(), best_merit, converged ? 1 : 0));
+            }
+        }
 
         this->last_inner_switch_count_ = switch_count;
 
@@ -2582,7 +2834,8 @@ namespace Opm
             this->wellStatus_ = well_status_orig;
             this->operability_status_ = operability_orig;
             const std::string message = fmt::format("   Well {} did not converge in {} inner iterations ("
-                                                    "{} switches, {} status changes).", this->name(), it, switch_count, status_switch_count);
+                                                    "{} switches, {} status changes{}).", this->name(), it, switch_count,
+                                                    status_switch_count, cycling ? ", control cycling" : "");
             deferred_logger.debug(message);
             // add operability here as well ?
         }

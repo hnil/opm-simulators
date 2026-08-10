@@ -92,6 +92,16 @@ BlackoilModelParameters<Scalar>::BlackoilModelParameters()
     max_number_of_well_switches_ = Parameters::Get<Parameters::MaximumNumberOfWellSwitches>();
     well_control_flip_flop_hold_ = Parameters::Get<Parameters::WellControlFlipFlopHold>();
     well_inner_control_pin_ = Parameters::Get<Parameters::WellInnerControlPin>();
+    well_inner_line_search_ = Parameters::Get<Parameters::WellInnerLineSearch>();
+    well_inner_line_search_start_ = Parameters::Get<Parameters::WellInnerLineSearchStart>();
+    well_inner_line_search_armijo_ = Parameters::Get<Parameters::WellInnerLineSearchArmijo<Scalar>>();
+    well_inner_line_search_min_step_ = Parameters::Get<Parameters::WellInnerLineSearchMinStep<Scalar>>();
+    well_inner_damping_ = Parameters::Get<Parameters::WellInnerDamping>();
+    well_inner_min_relaxation_ = Parameters::Get<Parameters::WellInnerMinRelaxation<Scalar>>();
+    well_inner_stall_exit_ = Parameters::Get<Parameters::WellInnerStallExit>();
+    well_inner_cycle_exit_ = Parameters::Get<Parameters::WellInnerCycleExit>();
+    well_inner_return_best_ = Parameters::Get<Parameters::WellInnerReturnBest>();
+    well_inner_trace_ = Parameters::Get<Parameters::WellInnerTrace>();
     newton_confirm_iterations_ = Parameters::Get<Parameters::NewtonConfirmIterations>();
     gate_ensemble_subiterate_ = Parameters::Get<Parameters::GateEnsembleSubIterate>();
     max_number_of_group_switches_ = Parameters::Get<Parameters::MaximumNumberOfGroupSwitches>();
@@ -296,6 +306,41 @@ void BlackoilModelParameters<Scalar>::registerParameters()
          "control away and back (a net-zero flip pair). The well solution then "
          "stops changing control between outer iterations; the outer control "
          "update keeps its authority. 0 (default) disables the pin");
+    Parameters::Register<Parameters::WellInnerLineSearch>
+        ("Backtracking line search on the standard-well inner Newton step: maximum "
+         "number of step halvings per inner iteration, accepting the first step that "
+         "reduces the scaled well residual norm. The trial assembly is reused as the "
+         "next iteration's assembly, so an accepted full step costs nothing extra. "
+         "0 (default) disables the line search");
+    Parameters::Register<Parameters::WellInnerLineSearchStart>
+        ("Inner iteration from which the line search is engaged. Wells that converge "
+         "before it never pay a trial assembly. 0 (default) engages it immediately");
+    Parameters::Register<Parameters::WellInnerLineSearchArmijo<Scalar>>
+        ("Sufficient-decrease constant of the inner line search: a trial step is "
+         "accepted when the merit drops below (1 - c*step) times its current value");
+    Parameters::Register<Parameters::WellInnerLineSearchMinStep<Scalar>>
+        ("Shortest step fraction the inner line search will try before accepting the "
+         "undamped step and moving on");
+    Parameters::Register<Parameters::WellInnerDamping>
+        ("Damp the standard-well inner Newton step when its residual measure "
+         "oscillates, the way multisegment wells already do. Off by default");
+    Parameters::Register<Parameters::WellInnerMinRelaxation<Scalar>>
+        ("Floor for the oscillation damping factor of the standard-well inner solve");
+    Parameters::Register<Parameters::WellInnerStallExit>
+        ("Abandon the standard-well inner solve after this many consecutive iterations "
+         "in which the line search found no descent direction, instead of spending the "
+         "remaining iteration budget. Requires the line search. 0 (default) disables");
+    Parameters::Register<Parameters::WellInnerCycleExit>
+        ("Leave the standard-well inner solve once it returns for the Nth time to a "
+         "(control mode, scaled residual) state it has already been in. The switching "
+         "logic is then cycling and no amount of further iteration will converge it. "
+         "0 (default) disables the check");
+    Parameters::Register<Parameters::WellInnerReturnBest>
+        ("When the standard-well inner solve ends without converging, return the "
+         "lowest-residual iterate it visited rather than wherever it stopped. Off by default");
+    Parameters::Register<Parameters::WellInnerTrace>
+        ("Log one line per standard-well inner iteration for the named well "
+         "(\"*\" for all wells): merit, bhp, rate, control mode, damping. Diagnostic only");
     Parameters::Register<Parameters::GateEnsembleSubIterate>
         ("When an iteration is physically converged but blocked only by the well-group or "
          "network gate, run up to this many sweeps of {solve all wells, refresh group "

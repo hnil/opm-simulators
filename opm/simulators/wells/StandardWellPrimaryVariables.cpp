@@ -259,12 +259,22 @@ updatePolyMW(const WellState<Scalar, IndexTraits>& well_state)
 
 template<class FluidSystem, class Indices>
 void StandardWellPrimaryVariables<FluidSystem,Indices>::
-updateNewton(const BVectorWell& dwells,
+updateNewton(const BVectorWell& dwells_in,
              const bool stop_or_zero_rate_target,
              const Scalar dFLimit,
              const Scalar dBHPLimit,
-             DeferredLogger& deferred_logger)
+             DeferredLogger& deferred_logger,
+             const Scalar relaxation_factor)
 {
+    // A damped step must be scaled before the per-variable limits and the fraction
+    // relaxation see it, or those would silently undo the damping.
+    BVectorWell scaled;
+    if (relaxation_factor != Scalar{1.0}) {
+        scaled = dwells_in;
+        scaled *= relaxation_factor;
+    }
+    const BVectorWell& dwells = (relaxation_factor != Scalar{1.0}) ? scaled : dwells_in;
+
     // for injectors, very typical one of the fractions will be one, and it is easy to get zero value
     // fractions. not sure what is the best way to handle it yet, so we just use 1.0 here
     // The relaxationFactorFractionProducer code does not take into account solvent

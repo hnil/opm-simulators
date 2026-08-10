@@ -35,17 +35,16 @@
 namespace Opm {
 
 template<typename Scalar, typename IndexTraits>
-void WellConvergence<Scalar, IndexTraits>::
-checkConvergenceControlEq(const WellState<Scalar, IndexTraits>& well_state,
-                          const Tolerances& tolerances,
-                          const Scalar well_control_residual,
-                          const bool well_is_stopped,
-                          ConvergenceReport& report,
-                          DeferredLogger& deferred_logger) const
+Scalar WellConvergence<Scalar, IndexTraits>::
+controlEqTolerance(const WellState<Scalar, IndexTraits>& well_state,
+                   const Tolerances& tolerances,
+                   const bool well_is_stopped,
+                   ConvergenceReport::WellFailure::Type& ctrltype,
+                   DeferredLogger& deferred_logger) const
 {
     Scalar control_tolerance = 0.;
     using CR = ConvergenceReport;
-    CR::WellFailure::Type ctrltype = CR::WellFailure::Type::Invalid;
+    ctrltype = CR::WellFailure::Type::Invalid;
 
     const int well_index = well_.indexOfWell();
     const auto& ws = well_state.well(well_index);
@@ -111,6 +110,24 @@ checkConvergenceControlEq(const WellState<Scalar, IndexTraits>& well_state,
                              deferred_logger);
         }
     }
+
+    return control_tolerance;
+}
+
+template<typename Scalar, typename IndexTraits>
+void WellConvergence<Scalar, IndexTraits>::
+checkConvergenceControlEq(const WellState<Scalar, IndexTraits>& well_state,
+                          const Tolerances& tolerances,
+                          const Scalar well_control_residual,
+                          const bool well_is_stopped,
+                          ConvergenceReport& report,
+                          DeferredLogger& deferred_logger) const
+{
+    using CR = ConvergenceReport;
+    CR::WellFailure::Type ctrltype = CR::WellFailure::Type::Invalid;
+    const Scalar control_tolerance = this->controlEqTolerance(well_state, tolerances,
+                                                              well_is_stopped, ctrltype,
+                                                              deferred_logger);
 
     const int dummy_component = -1;
     if (std::isnan(well_control_residual)) {

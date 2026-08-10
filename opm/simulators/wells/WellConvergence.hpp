@@ -23,12 +23,13 @@
 #ifndef OPM_WELL_CONVERGENCE_HEADER_INCLUDED
 #define OPM_WELL_CONVERGENCE_HEADER_INCLUDED
 
+#include <opm/simulators/timestepping/ConvergenceReport.hpp>
+
 #include <vector>
 
 namespace Opm
 {
 
-class ConvergenceReport;
 class DeferredLogger;
 template<typename Scalar, typename IndexTraits> class WellInterfaceGeneric;
 template<typename Scalar, typename IndexTraits> class WellState;
@@ -48,6 +49,14 @@ public:
         Scalar grup; //!< Tolerance for a grup controlled well
         Scalar max_residual_allowed; //!< Max residual allowd
     };
+
+    /// Tolerance the control equation is held to under the well's current control,
+    /// and the failure type that a violation of it is reported as.
+    Scalar controlEqTolerance(const WellState<Scalar, IndexTraits>& well_state,
+                              const Tolerances& tolerances,
+                              const bool well_is_stopped,
+                              ConvergenceReport::WellFailure::Type& ctrltype,
+                              DeferredLogger& deferred_logger) const;
 
     // checking the convergence of the well control equations
     void checkConvergenceControlEq(const WellState<Scalar, IndexTraits>& well_state,

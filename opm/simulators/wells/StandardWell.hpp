@@ -271,7 +271,8 @@ namespace Opm
         void updateWellState(const Simulator& simulator,
                              const BVectorWell& dwells,
                              const GroupStateHelperType& groupStateHelper,
-                             WellStateType& well_state);
+                             WellStateType& well_state,
+                             const Scalar relaxation_factor = 1.0);
 
         using WellConnectionProps = typename StdWellEval::StdWellConnections::Properties;
 
@@ -355,7 +356,22 @@ namespace Opm
 
         void updatePrimaryVariablesNewton(const BVectorWell& dwells,
                                           const bool stop_or_zero_rate_target,
-                                          DeferredLogger& deferred_logger);
+                                          DeferredLogger& deferred_logger,
+                                          const Scalar relaxation_factor = 1.0);
+
+        //! \brief Scaled norm of the well residual left by the last assembly.
+        //! \details Every component is divided by the tolerance it is checked against, so
+        //! the value is 1 at the convergence boundary and comparable across control modes.
+        //! Serves as the merit function of the inner solve's line search.
+        Scalar innerResidualMeasure(const GroupStateHelperType& groupStateHelper) const;
+
+        //! \brief Damping factor for an inner Newton step whose merit oscillates.
+        //! \details Mirrors MultisegmentWellGeneric::update_relaxation_factor.
+        bool innerRelaxationFactor(const std::vector<Scalar>& merit_history,
+                                   Scalar& relaxation_factor) const;
+
+        //! \brief Whether the inner solve of this well should be traced.
+        bool innerTraceEnabled() const;
 
         void updateWellStateFromPrimaryVariables(WellStateType& well_state,
                                                  const SummaryState& summary_state,

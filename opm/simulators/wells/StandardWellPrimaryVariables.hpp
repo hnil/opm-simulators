@@ -109,11 +109,24 @@ public:
     void updatePolyMW(const WellState<Scalar, IndexTraits>& well_state);
 
     //! \brief Update values from newton update vector.
+    //! \param relaxation_factor Scales the update before the per-variable limits apply.
     void updateNewton(const BVectorWell& dwells,
                       const bool stop_or_zero_rate_target,
                       const Scalar dFLimit,
                       const Scalar dBHPLimit,
-                      DeferredLogger& deferred_logger);
+                      DeferredLogger& deferred_logger,
+                      const Scalar relaxation_factor = 1.0);
+
+    //! \brief Snapshot of the raw values, so a rejected step can be undone.
+    const std::vector<Scalar>& values() const
+    { return value_; }
+
+    //! \brief Restore a snapshot taken with values().
+    void setValues(const std::vector<Scalar>& values)
+    {
+        value_ = values;
+        setEvaluationsFromValues();
+    }
 
     //! \brief Update polymer molecular weight values from newton update vector.
     void updateNewtonPolyMW(const BVectorWell& dwells);

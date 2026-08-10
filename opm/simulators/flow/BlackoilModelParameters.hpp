@@ -156,6 +156,20 @@ struct RelaxedPressureTolMsw { static constexpr Scalar value = 1e4; };
 struct MaximumNumberOfWellSwitches { static constexpr int value = 3; };
 struct WellControlFlipFlopHold { static constexpr int value = 0; };
 struct WellInnerControlPin { static constexpr int value = 0; };
+/// Globalization of the standard-well inner Newton loop (all default-off).
+struct WellInnerLineSearch { static constexpr int value = 0; };
+struct WellInnerLineSearchStart { static constexpr int value = 0; };
+template<class Scalar>
+struct WellInnerLineSearchArmijo { static constexpr Scalar value = 1e-4; };
+template<class Scalar>
+struct WellInnerLineSearchMinStep { static constexpr Scalar value = 0.05; };
+struct WellInnerDamping { static constexpr bool value = false; };
+template<class Scalar>
+struct WellInnerMinRelaxation { static constexpr Scalar value = 0.25; };
+struct WellInnerStallExit { static constexpr int value = 0; };
+struct WellInnerCycleExit { static constexpr int value = 0; };
+struct WellInnerReturnBest { static constexpr bool value = false; };
+struct WellInnerTrace { static constexpr auto value = ""; };
 struct NewtonConfirmIterations { static constexpr int value = 0; };
 struct GateEnsembleSubIterate { static constexpr int value = 0; };
 struct MaximumNumberOfGroupSwitches { static constexpr int value = 3; };
@@ -363,6 +377,33 @@ public:
     /// outer iterations whose inner solve switched control away and back
     /// (net-zero flip pair). 0 disables the pin.
     int well_inner_control_pin_;
+
+    /// Backtracking line search in the standard-well inner Newton loop: maximum
+    /// number of step halvings per iteration. 0 disables it.
+    int well_inner_line_search_;
+    /// Inner iteration from which the line search is engaged (earlier iterations
+    /// take the undamped step, so healthy wells pay nothing).
+    int well_inner_line_search_start_;
+    /// Sufficient-decrease constant for the line search.
+    Scalar well_inner_line_search_armijo_;
+    /// Shortest step the line search will accept before giving up on descent.
+    Scalar well_inner_line_search_min_step_;
+    /// MSW-style oscillation damping of the inner Newton step for standard wells.
+    bool well_inner_damping_;
+    /// Floor for the damping factor above.
+    Scalar well_inner_min_relaxation_;
+    /// Abandon the inner solve after this many consecutive iterations without a
+    /// merit decrease (the globalized loop's early-out). 0 disables.
+    int well_inner_stall_exit_;
+    /// Leave the inner solve once a (control mode, residual) state has recurred this
+    /// many times, i.e. the switching logic is cycling. 0 disables.
+    int well_inner_cycle_exit_;
+    /// When the inner solve ends unconverged, return the lowest-residual iterate it
+    /// visited instead of wherever it happened to stop.
+    bool well_inner_return_best_;
+    /// Name of a well to trace the inner solve for ("*" traces every well).
+    std::string well_inner_trace_;
+
     /// Take this many additional full Newton iterations after the convergence
     /// criterion is first met, shrinking the tolerance halo the accepted state
     /// carries. 0 disables.
