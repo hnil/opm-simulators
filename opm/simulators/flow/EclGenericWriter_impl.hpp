@@ -74,6 +74,63 @@
 namespace {
 
 /*!
+ * \brief Restart values for a declared LGR that the current grid does not refine.
+ *
+ * The EGRID and INIT describe every LGR the *deck* declares, whether or not the
+ * simulation grid refines it. A restart step that omits the corresponding
+ * solution section therefore covers fewer cells than the grid has, and
+ * post-processors that size results from the grid reject the result outright --
+ * ResInsight requires each keyword's total value count to be a whole multiple of
+ * the active cell count (RifEclipseOutputFileTools::validKeywordsForPorosityModel).
+ *
+ * So emit a section for the unrefined LGR too, giving every refined cell the
+ * value of its father coarse cell: the same father mapping, and the same
+ * father-replication, that the INIT writer already applies to the static
+ * properties in this situation (WriteInit.cpp, the !fullProperties branch).
+ */
+Opm::data::Solution
+fatherReplicatedSolution(const Opm::EclipseGrid&     inputGrid,
+                         const std::string&          lgrName,
+                         const Opm::data::Solution&  coarse)
+{
+    const auto& lgrGrid = inputGrid.getLGRCell(lgrName);
+    const auto fathers = lgrGrid.getLGRCell_global_father(inputGrid);
+    const auto nActive = inputGrid.getNumActive();
+
+    // Copy first: keeps the keys, units, targets and the SI flag of the
+    // coarse solution, so only the per-cell arrays need replacing.
+    auto refined = coarse;
+
+    for (const auto& [key, cellData] : coarse) {
+        cellData.visit([&refined, &key = key, &cellData, &fathers, nActive](const auto& src)
+        {
+            using Vector = std::decay_t<decltype(src)>;
+            if constexpr (! std::is_same_v<Vector, std::monostate>) {
+                if (src.size() != nActive) {
+                    return;     // not per-cell data; leave it alone
+                }
+                Vector dst(fathers.size());
+                for (auto i = 0*fathers.size(); i < fathers.size(); ++i) {
+                    dst[i] = src[fathers[i]];
+                }
+                if constexpr (std::is_same_v<Vector, std::vector<double>>) {
+                    refined[key] = Opm::data::CellData {
+                        cellData.dim, std::move(dst), cellData.target
+                    };
+                }
+                else {
+                    refined[key] = Opm::data::CellData {
+                        std::move(dst), cellData.target
+                    };
+                }
+            }
+        });
+    }
+
+    return refined;
+}
+
+/*!
  * \brief Detect whether two cells are direct vertical neighbours.
  *
  * I.e. have the same i and j index and all cartesian cells between them
@@ -1037,8 +1094,32 @@ doWriteOutput(const int                          reportStepNum,
         Opm::Lgr::extractRestartValueLevelGrids<EquilGrid>(*this->collectGrid_, restartValue, restartValues);
     }
     else {
-        restartValues.reserve(1); // minimum size
+        const auto& deckLgrs = this->eclState_.getLgrs();
+        restartValues.reserve(1 + deckLgrs.size());
         restartValues.push_back(std::move(restartValue)); // no LGRs-> only one restart value
+
+        // The deck declares LGRs but this grid refines none of them (LGROFF on
+        // every one). They are still in the EGRID/INIT, so write a solution
+        // section for each, father-replicated from the coarse solution, and
+        // keep every report step covering the same cells.
+        //
+        // Restricted to a genuinely unrefined grid: the other way into this
+        // branch is the reordering path, where refined data does exist and has
+        // simply not been split onto the levels -- replicating there would
+        // overwrite real values with coarse ones.
+        const bool noRefinementAtAll = (this->grid_.maxLevel() == 0)
+            && ((this->collectGrid_ == nullptr) || (this->collectGrid_->maxLevel() == 0));
+
+        for (std::size_t lgr = 0; noRefinementAtAll && lgr < deckLgrs.size(); ++lgr) {
+            const auto& name = deckLgrs.getLgr(lgr).NAME();
+            restartValues.emplace_back(fatherReplicatedSolution(this->eclState_.getInputGrid(),
+                                                                name,
+                                                                restartValues.front().solution),
+                                       restartValues.front().wells,
+                                       restartValues.front().grp_nwrk,
+                                       restartValues.front().aquifer,
+                                       static_cast<int>(lgr) + 1);
+        }
     }
 
     // make sure that the previous I/O request has been completed
