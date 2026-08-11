@@ -178,6 +178,23 @@ public:
             }
             OpmLog::info("\nLGRON/LGROFF: refining " + std::to_string(names.size())
                          + " of " + std::to_string(lgrs.size()) + " deck LGR(s)");
+
+            // The ECL writers address the simulator's per-LGR data positionally
+            // by *deck* LGR index (WriteInit.cpp / RestartIO.cpp), while the
+            // simulator sizes it by *grid level*. Refining a strict subset of
+            // the declared LGRs makes those disagree and the writers read past
+            // the end. All-active and none-active both stay in range.
+            if (!names.empty() && names.size() < lgrs.size()
+                && Parameters::Get<Parameters::EnableEclOutput>())
+            {
+                throw std::runtime_error(
+                    "LGRON/LGROFF: refining " + std::to_string(names.size())
+                    + " of " + std::to_string(lgrs.size()) + " declared LGRs is not "
+                    "supported with ECL output: the INIT/restart writers index "
+                    "per-LGR data by deck position, which a partially active set "
+                    "breaks. Re-run with --enable-ecl-output=false (VTK still "
+                    "works), or switch all declared LGRs together.");
+            }
             if (!names.empty()) {
                 this->grid_->addLgrsUpdateLeafView(cellsPerDim, startIJK, endIJK, names);
 
