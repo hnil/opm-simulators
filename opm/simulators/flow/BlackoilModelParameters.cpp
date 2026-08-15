@@ -66,6 +66,8 @@ BlackoilModelParameters<Scalar>::BlackoilModelParameters()
     tolerance_well_bhp_eq_ = Parameters::Get<Parameters::ToleranceWellBhpEq<Scalar>>();
     tolerance_well_thp_eq_ = Parameters::Get<Parameters::ToleranceWellThpEq<Scalar>>();
     tolerance_well_grup_eq_ = Parameters::Get<Parameters::ToleranceWellGrupEq<Scalar>>();
+    well_thp_switch_band_ = Parameters::Get<Parameters::WellThpSwitchBand<Scalar>>();
+    well_vfp_explicit_reset_ = Parameters::Get<Parameters::WellVfpExplicitReset>();
     relaxed_tolerance_flow_well_ = Parameters::Get<Parameters::RelaxedWellFlowTol<Scalar>>();
     relaxed_tolerance_pressure_ms_well_ = Parameters::Get<Parameters::RelaxedPressureTolMsw<Scalar>>();
     max_pressure_change_ms_wells_ = Parameters::Get<Parameters::MaxPressureChangeMsWells<Scalar>>();
@@ -245,6 +247,17 @@ void BlackoilModelParameters<Scalar>::registerParameters()
         ("Tolerance for the THP control equation residual of standard wells [Pa]");
     Parameters::Register<Parameters::ToleranceWellGrupEq<Scalar>>
         ("Tolerance for the group-control equation residual of standard wells [m3/s]");
+    Parameters::Register<Parameters::WellThpSwitchBand<Scalar>>
+        ("Dead band [Pa] on the switch-to-THP decision of individual wells: a well on "
+         "rate/BHP control only switches to THP once its THP limit exceeds the current "
+         "THP by this much. Both sides of that comparison are approximations (the "
+         "current THP is itself a VFP evaluation), and the bare '>' lets a well that "
+         "just left THP control re-enter it on tolerance-level noise. 0 (default) keeps "
+         "the bare comparison");
+    Parameters::Register<Parameters::WellVfpExplicitReset>
+        ("Reset the well's explicit-VFP-lookup fallback whenever its operability status "
+         "is reset (start of every timestep attempt), instead of letting it latch for "
+         "the rest of the timestep once any solve engaged it. Off by default");
     Parameters::Register<Parameters::RelaxedWellFlowTol<Scalar>>
         ("Relaxed tolerance for the well flow residual");
     Parameters::Register<Parameters::RelaxedPressureTolMsw<Scalar>>

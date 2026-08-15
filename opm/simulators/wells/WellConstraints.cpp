@@ -155,7 +155,7 @@ activeInjectionConstraint(const SingleWellState<Scalar, IndexTraits>& ws,
     {
         const auto& thp = well_.getTHPConstraint(summaryState);
         Scalar current_thp = ws.thp;
-        if (thp < current_thp) {
+        if (thp < current_thp - well_.thpSwitchBand()) {
             bool rate_less_than_potential = true;
             for (int p = 0; p < well_.numPhases(); ++p) {
                 // Currently we use the well potentials here computed before the iterations.
@@ -294,7 +294,9 @@ activeProductionConstraint(const SingleWellState<Scalar, IndexTraits>& ws,
         Scalar current_thp = ws.thp;
         // For trivial group targets (for instance caused by NETV) we dont want to flip to THP control.
         const bool dont_check = (currentControl == Well::ProducerCMode::GRUP && ws.trivial_group_target);
-        if (thp > current_thp && !dont_check) {
+        // Both thp values are VFP approximations; the band keeps a well that just left
+        // THP control from re-entering it on tolerance-level noise (default band 0).
+        if (thp > current_thp + well_.thpSwitchBand() && !dont_check) {
             // If WVFPEXP item 4 is set to YES1 or YES2
             // switching to THP is prevented if the well will
             // produce at a higher rate with THP control

@@ -127,6 +127,11 @@ template<class Scalar>
 struct ToleranceWellThpEq { static constexpr Scalar value = 1.0e4; };
 template<class Scalar>
 struct ToleranceWellGrupEq { static constexpr Scalar value = 1.0e-6; };
+/// Dead band (Pa) on the switch-to-THP test `thp > current_thp`; 0 = bare comparison.
+template<class Scalar>
+struct WellThpSwitchBand { static constexpr Scalar value = 0.0; };
+/// Reset the per-timestep explicit-VFP-lookup latch together with the operability status.
+struct WellVfpExplicitReset { static constexpr bool value = false; };
 
 template<class Scalar>
 struct MaxPressureChangeMsWells { static constexpr Scalar value = 10*1e5; };
@@ -302,6 +307,12 @@ public:
     Scalar tolerance_well_bhp_eq_;
     Scalar tolerance_well_thp_eq_;
     Scalar tolerance_well_grup_eq_;
+    /// Dead band (Pa) a well must exceed the THP limit by before switching to THP
+    /// control; 0 keeps the bare comparison.
+    Scalar well_thp_switch_band_;
+    /// Clear operability_status_.use_vfpexplicit on resetOperability() instead of
+    /// letting it latch for the rest of the timestep.
+    bool well_vfp_explicit_reset_;
     /// Relaxed tolerance for for the well flow residual
     Scalar relaxed_tolerance_flow_well_;
 
