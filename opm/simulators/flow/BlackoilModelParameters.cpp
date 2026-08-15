@@ -102,6 +102,9 @@ BlackoilModelParameters<Scalar>::BlackoilModelParameters()
     well_inner_stall_exit_ = Parameters::Get<Parameters::WellInnerStallExit>();
     well_inner_cycle_exit_ = Parameters::Get<Parameters::WellInnerCycleExit>();
     well_inner_return_best_ = Parameters::Get<Parameters::WellInnerReturnBest>();
+    well_inner_frozen_exit_ = Parameters::Get<Parameters::WellInnerFrozenExit>();
+    well_status_hysteresis_ = Parameters::Get<Parameters::WellStatusHysteresis<Scalar>>();
+    well_status_keep_on_cap_ = Parameters::Get<Parameters::WellStatusKeepOnCap>();
     well_inner_trace_ = Parameters::Get<Parameters::WellInnerTrace>();
     newton_confirm_iterations_ = Parameters::Get<Parameters::NewtonConfirmIterations>();
     gate_ensemble_subiterate_ = Parameters::Get<Parameters::GateEnsembleSubIterate>();
@@ -346,6 +349,16 @@ void BlackoilModelParameters<Scalar>::registerParameters()
          "(control mode, scaled residual) state it has already been in. The switching "
          "logic is then cycling and no amount of further iteration will converge it. "
          "0 (default) disables the check");
+    Parameters::Register<Parameters::WellInnerFrozenExit>
+        ("Leave the standard-well inner solve after this many consecutive iterations "
+         "in which the iterate did not change at all. 0 disables.");
+    Parameters::Register<Parameters::WellStatusHysteresis<Scalar>>
+        ("Relative dead band between the well stop and reopen decisions. The reopen "
+         "test must clear the operable bhp limit by this fraction, and the well is "
+         "reopened inside the operable region rather than on its boundary. 0 disables.");
+    Parameters::Register<Parameters::WellStatusKeepOnCap>
+        ("When the inner status-switch cap binds, keep the current well status instead "
+         "of reverting to the status the inner solve started with.");
     Parameters::Register<Parameters::WellInnerReturnBest>
         ("When the standard-well inner solve ends without converging, return the "
          "lowest-residual iterate it visited rather than wherever it stopped. Off by default");

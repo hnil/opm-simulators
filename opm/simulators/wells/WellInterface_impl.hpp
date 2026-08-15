@@ -357,8 +357,16 @@ namespace Opm
         }
 
         const Scalar sgn = this->isInjector() ? 1.0 : -1.0;
+        const Scalar hyst = this->param_.well_status_hysteresis_;
         if (!this->wellIsStopped()){
-            if (wqTotal*sgn <= 0.0 && !fixed_status){
+            // With a hysteresis band the stop and reopen decisions read the same
+            // predicate, so a well cannot be stopped at a state the reopen test would
+            // immediately undo.
+            const bool stop_now = (hyst > 0.0)
+                ? (wqTotal*sgn <= 0.0 && !this->canFlow(well_state, inj_controls, prod_controls,
+                                                        summary_state, deferred_logger, -hyst))
+                : (wqTotal*sgn <= 0.0);
+            if (stop_now && !fixed_status){
                 this->stopWell();
                 return true;
             } else {
@@ -403,35 +411,15 @@ namespace Opm
             }
         } else if (!fixed_status){
             // well is stopped, check if current bhp allows reopening
-            const Scalar bhp = well_state.well(this->index_of_well_).bhp;
-            Scalar prod_limit = prod_controls.bhp_limit;
-            Scalar inj_limit = inj_controls.bhp_limit;
+            Scalar limit = 0.0;
             const bool has_thp = this->wellHasTHPConstraints(summary_state);
-            if (has_thp){
-                std::vector<Scalar> rates(this->num_conservation_quantities_);
-                if (this->isInjector()){
-                    const Scalar bhp_thp = WellBhpThpCalculator(*this).
-                                                calculateBhpFromThp(well_state, rates,
-                                                                    this->well_ecl_,
-                                                                    summary_state,
-                                                                    this->getRefDensity(),
-                                                                    deferred_logger);
-                    inj_limit = std::min(bhp_thp, static_cast<Scalar>(inj_controls.bhp_limit));
-                } else {
-                    // if the well can operate, it must at least be able to produce
-                    // at the lowest bhp of the bhp-curve (explicit fractions)
-                    const Scalar bhp_min = WellBhpThpCalculator(*this).
-                                                calculateMinimumBhpFromThp(well_state,
-                                                                           this->well_ecl_,
-                                                                           summary_state,
-                                                                           this->getRefDensity());
-                    prod_limit = std::max(bhp_min, static_cast<Scalar>(prod_controls.bhp_limit));
-                }
-            }
-            const Scalar bhp_diff = (this->isInjector())? inj_limit - bhp: bhp - prod_limit;
-            if (bhp_diff > 0){
+            if (this->canFlow(well_state, inj_controls, prod_controls, summary_state,
+                              deferred_logger, hyst, &limit)){
                 this->openWell();
-                well_state.well(this->index_of_well_).bhp = (this->isInjector())? inj_limit : prod_limit;
+                // Reopening exactly at the limit leaves the well with zero rate, which
+                // the stop test above then reads as "not flowing" -- the open/stop cycle.
+                // Place it inside the operable region instead.
+                well_state.well(this->index_of_well_).bhp = limit * (1.0 - sgn * hyst);
                 if (has_thp) {
                     well_state.well(this->index_of_well_).thp = this->getTHPConstraint(summary_state);
                 }
@@ -442,6 +430,47 @@ namespace Opm
         } else {
             return false;
         }
+    }
+
+    template<typename TypeTag>
+    bool
+    WellInterface<TypeTag>::
+    canFlow(const WellStateType& well_state,
+            const Well::InjectionControls& inj_controls,
+            const Well::ProductionControls& prod_controls,
+            const SummaryState& summary_state,
+            DeferredLogger& deferred_logger,
+            const Scalar margin,
+            Scalar* limit_out) const
+    {
+        const Scalar bhp = well_state.well(this->index_of_well_).bhp;
+        Scalar limit = this->isInjector() ? inj_controls.bhp_limit : prod_controls.bhp_limit;
+        if (this->wellHasTHPConstraints(summary_state)){
+            if (this->isInjector()){
+                std::vector<Scalar> rates(this->num_conservation_quantities_);
+                const Scalar bhp_thp = WellBhpThpCalculator(*this).
+                                            calculateBhpFromThp(well_state, rates,
+                                                                this->well_ecl_,
+                                                                summary_state,
+                                                                this->getRefDensity(),
+                                                                deferred_logger);
+                limit = std::min(bhp_thp, static_cast<Scalar>(inj_controls.bhp_limit));
+            } else {
+                // if the well can operate, it must at least be able to produce
+                // at the lowest bhp of the bhp-curve (explicit fractions)
+                const Scalar bhp_min = WellBhpThpCalculator(*this).
+                                            calculateMinimumBhpFromThp(well_state,
+                                                                       this->well_ecl_,
+                                                                       summary_state,
+                                                                       this->getRefDensity());
+                limit = std::max(bhp_min, static_cast<Scalar>(prod_controls.bhp_limit));
+            }
+        }
+        if (limit_out) {
+            *limit_out = limit;
+        }
+        const Scalar sgn = this->isInjector() ? 1.0 : -1.0;
+        return sgn * (limit - bhp) > margin * std::abs(limit);
     }
 
     template<typename TypeTag>

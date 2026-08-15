@@ -171,6 +171,11 @@ template<class Scalar>
 struct WellInnerMinRelaxation { static constexpr Scalar value = 0.25; };
 struct WellInnerStallExit { static constexpr int value = 0; };
 struct WellInnerCycleExit { static constexpr int value = 0; };
+struct WellInnerFrozenExit { static constexpr int value = 0; };
+/// Consistency of the well stop/reopen decision (default-off).
+template<class Scalar>
+struct WellStatusHysteresis { static constexpr Scalar value = 0.0; };
+struct WellStatusKeepOnCap { static constexpr bool value = false; };
 struct WellInnerReturnBest { static constexpr bool value = false; };
 struct WellInnerTrace { static constexpr auto value = ""; };
 struct NewtonConfirmIterations { static constexpr int value = 0; };
@@ -257,6 +262,10 @@ public:
     /// normalisation; 0 disables. Vanishing-PV cells otherwise make CNV
     /// divergently strict.
     Scalar cnv_pv_floor_fraction_;
+
+    /// Weight w of the throughput term in the CNV normalisation volume
+    /// max(PV, w*B*dt*q); 0 disables (storage-only, today's criterion).
+    Scalar cnv_throughput_weight_;
     /// Relative mass balance tolerance (total mass balance error).
     Scalar tolerance_mb_;
     /// Relaxed mass balance tolerance (can be used when iter >= min_strict_mb_iter_).
@@ -401,6 +410,16 @@ public:
     /// Leave the inner solve once a (control mode, residual) state has recurred this
     /// many times, i.e. the switching logic is cycling. 0 disables.
     int well_inner_cycle_exit_;
+
+    /// Consecutive unchanged iterates after which the inner solve gives up.
+    int well_inner_frozen_exit_;
+
+    /// Relative dead band between the well stop and reopen decisions.
+    Scalar well_status_hysteresis_;
+
+    /// Keep the current status when the inner status-switch cap binds, instead of
+    /// reverting to the status the solve started with.
+    bool well_status_keep_on_cap_;
     /// When the inner solve ends unconverged, return the lowest-residual iterate it
     /// visited instead of wherever it happened to stop.
     bool well_inner_return_best_;

@@ -2604,6 +2604,11 @@ namespace Opm
         std::vector<Scalar> merit_history;
         Scalar relaxation_factor = 1.0;
         int stall_count = 0;
+        // Iterates that stop moving entirely: a stopped well whose control equation is
+        // unsatisfiable produces a zero update and then burns the rest of the budget.
+        const int frozen_exit = this->param_.well_inner_frozen_exit_;
+        int frozen_count = 0;
+        std::vector<Scalar> prev_values;
 
         // Lowest-residual iterate visited, and the control it was found under: the
         // switching logic can walk away from a solved well and not come back inside
@@ -2655,7 +2660,8 @@ namespace Opm
                 } else {
                     final_check = false;
                 }
-                if (status_switch_count == max_status_switch) {
+                if (status_switch_count == max_status_switch &&
+                    !this->param_.well_status_keep_on_cap_) {
                     this->wellStatus_ = well_status_orig;
                 }
             }
@@ -2685,6 +2691,44 @@ namespace Opm
             }
 
             ++it;
+
+            if (frozen_exit > 0) {
+                const auto cur = this->primary_variables_.values();
+                // Not bit-equality: a dead iterate still drifts in the last couple of
+                // bits, so require the change to be at round-off level instead.
+                bool unchanged = !prev_values.empty();
+                for (std::size_t i = 0; unchanged && i < cur.size(); ++i) {
+                    const Scalar scale = std::max(std::abs(cur[i]), std::abs(prev_values[i]));
+                    unchanged = std::abs(cur[i] - prev_values[i])
+                                <= Scalar{1e-12} * std::max(scale, Scalar{1});
+                }
+                // Only count an iteration as frozen if the switching logic also ran and
+                // declined to change anything -- otherwise the exit can cut exactly
+                // where a switch would have fired.
+                const bool switch_check_ran = allow_switching && !changed &&
+                    its_since_last_switch >= min_its_after_switch &&
+                    status_switch_count < max_status_switch;
+                if (unchanged && switch_check_ran) {
+                    if (++frozen_count >= frozen_exit) {
+                        if (!relax_convergence) {
+                            // The iterate cannot move again, so the relaxed acceptance
+                            // test the remaining iterations would have applied to it is
+                            // decided here instead. Same verdict, same returned state.
+                            converged = getWellConvergence(groupStateHelper, Base::B_avg_,
+                                                           true).converged();
+                        }
+                        if (trace) {
+                            deferred_logger.info(
+                                fmt::format("INNERTRACE well={} frozen at it={} converged={}",
+                                            this->name(), it, converged ? 1 : 0));
+                        }
+                        break;
+                    }
+                } else {
+                    frozen_count = 0;
+                }
+                prev_values = cur;
+            }
 
             if (!globalized ||
                 (!this->isOperableAndSolvable() && !this->wellIsStopped())) {

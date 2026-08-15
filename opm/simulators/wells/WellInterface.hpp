@@ -267,6 +267,17 @@ public:
                                                   const bool fixed_status,
                                                   const bool solving_with_zero_rate);
 
+    /// Operable-bhp test shared by the stop and reopen decisions. `margin` is a relative
+    /// dead band: positive narrows the operable region, negative widens it, so the two
+    /// directions no longer meet at a bare `>`. Optionally hands back the limit it used.
+    bool canFlow(const WellStateType& well_state,
+                 const Well::InjectionControls& inj_controls,
+                 const Well::ProductionControls& prod_controls,
+                 const SummaryState& summary_state,
+                 DeferredLogger& deferred_logger,
+                 const Scalar margin,
+                 Scalar* limit_out = nullptr) const;
+
     virtual void updatePrimaryVariables(const GroupStateHelperType& groupStateHelper) = 0;
 
     virtual void calculateExplicitQuantities(const Simulator& simulator,
