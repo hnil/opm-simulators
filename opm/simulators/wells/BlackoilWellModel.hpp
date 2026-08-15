@@ -261,9 +261,12 @@ template<class Scalar> class WellContributions;
 
             void addWellContributions(SparseMatrixAdapter& jacobian) const;
 
-            // add source from wells to the reservoir matrix
+            // add source from wells to the reservoir matrix; when non-null, the
+            // perforation rate magnitudes are also added to cellThroughput (the CNV
+            // throughput normalisation)
             void addReservoirSourceTerms(GlobalEqVector& residual,
-                                         const std::vector<typename SparseMatrixAdapter::MatrixBlock*>& diagMatAddress) const;
+                                         const std::vector<typename SparseMatrixAdapter::MatrixBlock*>& diagMatAddress,
+                                         std::vector<VectorBlockType>* cellThroughput = nullptr) const;
 
             // called at the beginning of a report step
             void beginReportStep(const int time_step);

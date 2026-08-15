@@ -44,6 +44,7 @@ BlackoilModelParameters<Scalar>::BlackoilModelParameters()
     max_residual_allowed_ = Parameters::Get<Parameters::MaxResidualAllowed<Scalar>>();
     relaxed_max_pv_fraction_ = Parameters::Get<Parameters::RelaxedMaxPvFraction<Scalar>>();
     cnv_pv_floor_fraction_ = Parameters::Get<Parameters::CnvPoreVolumeFloorFraction<Scalar>>();
+    cnv_throughput_weight_ = Parameters::Get<Parameters::CnvThroughputWeight<Scalar>>();
     tolerance_mb_ = Parameters::Get<Parameters::ToleranceMb<Scalar>>();
     tolerance_mb_relaxed_ = std::max(tolerance_mb_, Parameters::Get<Parameters::ToleranceMbRelaxed<Scalar>>());
     tolerance_energy_balance_ = Parameters::Get<Parameters::ToleranceEnergyBalance<Scalar>>();
@@ -164,6 +165,16 @@ void BlackoilModelParameters<Scalar>::registerParameters()
         ("Minimum injection multiplier dampening factor (maximum dampening level)");
     Parameters::Register<Parameters::MaxResidualAllowed<Scalar>>
         ("Absolute maximum tolerated for residuals without cutting the time step size");
+    Parameters::Register<Parameters::CnvThroughputWeight<Scalar>>
+        ("Normalise the CNV residual of a cell by max(PV, w*B*dt*q) instead of the pore "
+         "volume alone, with w the value given here and q the sum of the component's flux "
+         "magnitudes through the cell (faces, boundary faces, sources and wells). A cell "
+         "whose storage is negligible against what flows through it is then judged on "
+         "relative flux imbalance, |R| <= tol*w*q, which stays finite as PV -> 0 and is "
+         "also the correct measure in the incompressible/quasi-steady limit. Since the "
+         "sum of face-flux magnitudes counts both what enters and what leaves, w = 0.5 "
+         "corresponds to one pass through the cell. 0 (default) disables, giving the "
+         "storage-only criterion.");
     Parameters::Register<Parameters::CnvPoreVolumeFloorFraction<Scalar>>
         ("Floor the per-cell pore volume used in the CNV normalisation at this fraction "
          "of the average cell pore volume. The CNV criterion divides the residual by the "

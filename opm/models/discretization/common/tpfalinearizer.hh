@@ -55,6 +55,7 @@
 #include <opm/material/fluidsystems/BlackOilFluidSystemNonStatic.hpp>
 
 #include <cassert>
+#include <cmath>
 #include <cstddef>
 #include <exception>   // current_exception, rethrow_exception
 #include <iostream>
@@ -413,6 +414,32 @@ public:
 
     const auto& getNeighborInfo() const {
         return neighborInfo_;
+    }
+
+    /*!
+     * \brief Per-cell, per-equation sum of flux magnitudes through the cell
+     *        (faces, boundary faces and sources), in the units of the residual.
+     *
+     * Empty unless enableCellThroughput() was called. Used by the CNV criterion to
+     * bound the residual of cells whose storage is negligible against what flows
+     * through them.
+     */
+    const std::vector<VectorBlockCPU>& cellThroughput() const
+    { return cellThroughput_; }
+
+    /*!
+     * \brief Request accumulation of per-cell throughput during linearization.
+     */
+    void enableCellThroughput(bool enable)
+    {
+        if (enable && runAssemblyOnGpu) {
+            OPM_THROW(std::logic_error,
+                      "Per-cell throughput accumulation is not implemented for GPU assembly");
+        }
+        accumulateThroughput_ = enable;
+        if (!enable) {
+            cellThroughput_.clear();
+        }
     }
 
 
@@ -888,6 +915,10 @@ private:
         const bool dispersionActive = simulator_().vanguard().eclState().getSimulationConfig().rock_config().dispersion();
         const unsigned int numCells = domain.cells.size();
 
+        if (accumulateThroughput_ && cellThroughput_.size() != model_().numTotalDof()) {
+            cellThroughput_.resize(model_().numTotalDof());
+        }
+
         if constexpr (!run_assembly_on_gpu) {
             linearize_parallelization_wrapper<run_assembly_on_gpu, LocalResidual>(
                 numCells /*numCells*/,
@@ -1022,6 +1053,7 @@ private:
                                                      residual,
                                                      model,
                                                      velocityInfo_,
+                                                     cellThroughput_,
                                                      dt,
                                                      problem);
             }
@@ -1056,13 +1088,20 @@ private:
             adres *= -volume;
             setResAndJacobi(res, bMat, adres);
             residual_[globI] += res;
+            if (accumulateThroughput_) {
+                for (unsigned eqIdx = 0; eqIdx < numEq; ++eqIdx) {
+                    cellThroughput_[globI][eqIdx] += std::abs(res[eqIdx]);
+                }
+            }
             // SparseAdapter syntax: jacobian_->addToBlock(globI, globI, bMat);
             *diagMatAddress_[globI] += bMat;
         } // end of loop for cell globI.
 
         // Add sparse source terms. For now only wells.
         if (separateSparseSourceTerms_) {
-            problem_().wellModel().addReservoirSourceTerms(residual_, diagMatAddress_);
+            problem_().wellModel().addReservoirSourceTerms(residual_, diagMatAddress_,
+                                                           accumulateThroughput_ ? &cellThroughput_
+                                                                                 : nullptr);
         }
     }
 
@@ -1071,6 +1110,7 @@ public:
               class LocalResidualT,
               class ProblemType,
               class VelocityInfoType,
+              class ThroughputType,
               class ModelClass,
               class DiagPtrType,
               class DomainType,
@@ -1083,6 +1123,7 @@ public:
                                                ResidualType& residual,
                                                const ModelClass& model,
                                                VelocityInfoType& velocityInfo,
+                                               ThroughputType& throughput,
                                                const Scalar dt,
                                                const ProblemType& problem)
     {
@@ -1096,6 +1137,16 @@ public:
         ADVectorBlock adres(0.0);
         ADVectorBlock darcyFlux(0.0);
         const auto& intQuantsIn = model.intensiveQuantities(globI, /*timeIdx*/ 0);
+
+        // Throughput is accumulated, not reset elsewhere, so clear this cell first;
+        // the boundary and source passes add to it after this function has run.
+        bool accumulateThroughput = false;
+        if constexpr (!useGPU) {
+            accumulateThroughput = !throughput.empty();
+            if (accumulateThroughput) {
+                throughput[globI] = 0.0;
+            }
+        }
 
         // Flux term.
         {
@@ -1125,6 +1176,11 @@ public:
 
                 // currently not supported on GPU
                 if constexpr (!useGPU) {
+                    if (accumulateThroughput) {
+                        for (unsigned eqIdx = 0; eqIdx < numEq; ++eqIdx) {
+                            throughput[globI][eqIdx] += std::abs(adres[eqIdx].value());
+                        }
+                    }
                     // Use std::cmp_less because sparseTable.size() returns signed integer, and globI is unsigned
                     if (std::cmp_less(globI, velocityInfo.size())) {
                         if (velocityInfo.rowSize(globI) > 0) {
@@ -1279,6 +1335,11 @@ private:
             adres *= bdyInfo.bcdata.faceArea;
             setResAndJacobi(res, bMat, adres);
             residual[globI] += res;
+            if (accumulateThroughput_) {
+                for (unsigned eqIdx = 0; eqIdx < numEq; ++eqIdx) {
+                    cellThroughput_[globI][eqIdx] += std::abs(res[eqIdx]);
+                }
+            }
             ////SparseAdapter syntax: jacobian_->addToBlock(globI, globI, bMat);
             *diagMatAdress[globI] += bMat;
         }
@@ -1317,6 +1378,10 @@ private:
 
     // the right-hand side
     GlobalEqVector residual_;
+
+    // Per-cell sum of flux magnitudes, filled during linearization when requested.
+    bool accumulateThroughput_{false};
+    std::vector<VectorBlockCPU> cellThroughput_;
 
     LinearizationType linearizationType_{};
 

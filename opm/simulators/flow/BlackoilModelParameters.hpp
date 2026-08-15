@@ -53,6 +53,9 @@ template<class Scalar>
 struct CnvPoreVolumeFloorFraction { static constexpr Scalar value = 0.0; };
 
 template<class Scalar>
+struct CnvThroughputWeight { static constexpr Scalar value = 0.0; };
+
+template<class Scalar>
 struct ToleranceMb { static constexpr Scalar value = 1e-7; };
 
 template<class Scalar>

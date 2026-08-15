@@ -45,6 +45,7 @@
 
 #include <opm/simulators/wells/BlackoilWellModel.hpp>
 
+#include <algorithm>
 #include <memory>
 #include <tuple>
 #include <vector>
@@ -119,6 +120,20 @@ public:
     struct CnvPvSplitData {
         std::pair<std::vector<double>, std::vector<int>> cnvPvSplit;
         std::vector<unsigned> ixCells;
+    };
+
+    /// Volume a cell's CNV residual is normalised by, per equation.
+    ///
+    /// A cell can absorb mass-balance error in proportion to what it stores or to
+    /// what passes through it, whichever is larger; dividing by the pore volume
+    /// alone makes the criterion divergently strict as PV -> 0.
+    struct CnvNormVolume {
+        Scalar pv{};
+        const Scalar* q = nullptr;  //!< per-equation throughput, units of the residual
+        Scalar wdt = 0.0;           //!< weight times time step
+
+        Scalar operator()(const unsigned eqIdx, const Scalar B) const
+        { return q == nullptr ? pv : std::max(pv, B * wdt * q[eqIdx]); }
     };
 
     struct MaxSolutionUpdateData {
@@ -209,7 +224,8 @@ public:
     /// \return A pair of the local pore volume of interior cells and the pore volumes
     ///         of the cells associated with a numerical aquifer.
     std::pair<Scalar,Scalar>
-    localConvergenceData(std::vector<Scalar>& R_sum,
+    localConvergenceData(const double dt,
+                         std::vector<Scalar>& R_sum,
                          std::vector<Scalar>& maxCoeff,
                          std::vector<Scalar>& B_avg,
                          std::vector<int>& maxCoeffCell);
@@ -277,11 +293,29 @@ public:
                      const IntensiveQuantities& intQuants,
                      const FluidState& fs,
                      const Residual& modelResid,
-                     const Scalar pvValue,
+                     const CnvNormVolume& pvNorm,
                      std::vector<NeumaierSum<Scalar>>& B_avg,
                      std::vector<NeumaierSum<Scalar>>& R_sum,
                      std::vector<Scalar>& maxCoeff,
                      std::vector<int>& maxCoeffCell);
+
+    /// \brief The linearizer's per-cell throughput, or null when the throughput term
+    /// in the CNV normalisation is disabled or the linearizer cannot provide it.
+    const std::vector<VectorBlockType>* cellThroughput() const
+    {
+        const auto& linearizer = this->simulator_.model().linearizer();
+        if constexpr (requires { linearizer.cellThroughput(); }) {
+            if (this->param_.cnv_throughput_weight_ > 0.0 &&
+                !linearizer.cellThroughput().empty())
+            {
+                return &linearizer.cellThroughput();
+            }
+        }
+        return nullptr;
+    }
+
+    /// \brief Absolute floor for the pore volume in the CNV normalisation (0 = off).
+    Scalar cnvPoreVolumeFloor() const;
 
     //! \brief Returns true if an NLDD solver exists
     bool hasNlddSolver() const

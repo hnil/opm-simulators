@@ -46,9 +46,10 @@ __global__ __launch_bounds__(256) void kernel_linearize(const unsigned int numCe
     const unsigned int ii = blockIdx.x * blockDim.x + threadIdx.x;
 
     if (ii < numCells) {
-        // velocityInfo is unused on GPU (guarded by if constexpr (!useGPU)),
-        // but the parameter is T& so we need an lvalue to bind to.
+        // velocityInfo and throughput are unused on GPU (guarded by if constexpr
+        // (!useGPU)), but the parameters are T& so we need lvalues to bind to.
         std::nullptr_t dummyVelocityInfo = nullptr;
+        std::nullptr_t dummyThroughput = nullptr;
         TpfaLinearizerType::template linearize_cell<true, LocalResidualT>(ii,
                                                                           domain,
                                                                           neighborInfo,
@@ -56,6 +57,7 @@ __global__ __launch_bounds__(256) void kernel_linearize(const unsigned int numCe
                                                                           residual,
                                                                           model,
                                                                           dummyVelocityInfo,
+                                                                          dummyThroughput,
                                                                           dt,
                                                                           problem);
     }

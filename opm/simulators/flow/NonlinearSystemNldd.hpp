@@ -751,7 +751,9 @@ private:
                 numAquiferPvSumLocal += pvValue;
             }
 
-            model_.getMaxCoeff(cell_idx, intQuants, fs, modelResid, pvValue,
+            // Storage-only normalisation: the CNV throughput term is not wired into
+            // the local solves.
+            model_.getMaxCoeff(cell_idx, intQuants, fs, modelResid, {pvValue},
                                B_avg_acc, R_sum_acc, maxCoeff, maxCoeffCell);
         }
 
