@@ -690,6 +690,11 @@ template<typename Scalar, typename IndexTraits>
 void WellInterfaceGeneric<Scalar, IndexTraits>::resetWellOperability()
 {
     this->operability_status_.resetOperability();
+    // use_vfpexplicit is deliberately not part of resetOperability(): once any
+    // solve falls back to explicit lookup the well stays there for the timestep.
+    if (param_.well_vfp_explicit_reset_) {
+        this->operability_status_.use_vfpexplicit = false;
+    }
 }
 
 template<typename Scalar, typename IndexTraits>
