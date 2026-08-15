@@ -60,6 +60,7 @@ BlackoilModelParameters<Scalar>::BlackoilModelParameters()
     max_welleq_iter_ = Parameters::Get<Parameters::MaxWelleqIter>();
     use_multisegment_well_ = Parameters::Get<Parameters::UseMultisegmentWell>();
     tolerance_pressure_ms_wells_ = Parameters::Get<Parameters::TolerancePressureMsWells<Scalar>>();
+    well_thp_switch_band_ = Parameters::Get<Parameters::WellThpSwitchBand<Scalar>>();
     relaxed_tolerance_flow_well_ = Parameters::Get<Parameters::RelaxedWellFlowTol<Scalar>>();
     relaxed_tolerance_pressure_ms_well_ = Parameters::Get<Parameters::RelaxedPressureTolMsw<Scalar>>();
     max_pressure_change_ms_wells_ = Parameters::Get<Parameters::MaxPressureChangeMsWells<Scalar>>();
@@ -198,6 +199,13 @@ void BlackoilModelParameters<Scalar>::registerParameters()
          "or 'per-connection' (one linear tubing, a segment per connection)");
     Parameters::Register<Parameters::TolerancePressureMsWells<Scalar>>
         ("Tolerance for the pressure equations for multi-segment wells");
+    Parameters::Register<Parameters::WellThpSwitchBand<Scalar>>
+        ("Tolerance [Pa] on the THP limit of individual wells: a well on rate or BHP "
+         "control switches to THP control only once its THP limit exceeds the current "
+         "THP by this much, i.e. it may run up to this far past the limit. Damps the "
+         "rate<->THP control flip-flop of wells whose two operating points straddle "
+         "the limit, at the price of that much THP-limit violation. 0 (default) keeps "
+         "the exact comparison");
     Parameters::Register<Parameters::RelaxedWellFlowTol<Scalar>>
         ("Relaxed tolerance for the well flow residual");
     Parameters::Register<Parameters::RelaxedPressureTolMsw<Scalar>>

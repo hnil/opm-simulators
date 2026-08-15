@@ -116,6 +116,9 @@ struct ConvertToMultisegmentWell { static constexpr auto value = "none"; };
 
 template<class Scalar>
 struct TolerancePressureMsWells { static constexpr Scalar value = 0.01*1e5; };
+/// Dead band (Pa) on the switch-to-THP test `thp > current_thp`; 0 = bare comparison.
+template<class Scalar>
+struct WellThpSwitchBand { static constexpr Scalar value = 0.0; };
 
 template<class Scalar>
 struct MaxPressureChangeMsWells { static constexpr Scalar value = 10*1e5; };
@@ -252,6 +255,9 @@ public:
     Scalar tolerance_well_control_;
     /// Tolerance for the pressure equations for multisegment wells
     Scalar tolerance_pressure_ms_wells_;
+    /// Dead band (Pa) a well must exceed the THP limit by before switching to THP
+    /// control; 0 keeps the bare comparison.
+    Scalar well_thp_switch_band_;
     /// Relaxed tolerance for for the well flow residual
     Scalar relaxed_tolerance_flow_well_;
 

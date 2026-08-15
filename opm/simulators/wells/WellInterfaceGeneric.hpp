@@ -102,6 +102,8 @@ public:
     bool isOperableAndSolvable() const;
     bool useVfpExplicit () const;
     bool thpLimitViolatedButNotSwitched() const;
+    /// Dead band [Pa] on the switch-to-THP decision (--well-thp-switch-band).
+    Scalar thpSwitchBand() const { return param_.well_thp_switch_band_; }
 
     void initCompletions();
     void closeCompletions(const WellTestState& wellTestState);
