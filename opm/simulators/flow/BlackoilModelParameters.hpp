@@ -177,6 +177,13 @@ struct WellInnerMinRelaxation { static constexpr Scalar value = 0.25; };
 struct WellInnerStallExit { static constexpr int value = 0; };
 struct WellInnerCycleExit { static constexpr int value = 0; };
 struct WellInnerFrozenExit { static constexpr int value = 0; };
+/// Let the frozen-iterate exit fire even when the switch check did not run.
+struct WellInnerFrozenExitAlways { static constexpr bool value = false; };
+/// Inner-solve control/status decisions only on converged iterates (default-off).
+struct WellInnerSwitchOnConverged { static constexpr bool value = false; };
+struct WellInnerSwitchFallbackIter { static constexpr int value = 12; };
+/// No bhp exists at the THP limit -> stop the well instead of the fallback state.
+struct WellThpInfeasibleStop { static constexpr bool value = false; };
 /// Consistency of the well stop/reopen decision (default-off).
 template<class Scalar>
 struct WellStatusHysteresis { static constexpr Scalar value = 0.0; };
@@ -424,6 +431,15 @@ public:
 
     /// Consecutive unchanged iterates after which the inner solve gives up.
     int well_inner_frozen_exit_;
+    /// Count frozen iterates even when the switch check did not run (status cap hit).
+    bool well_inner_frozen_exit_always_;
+    /// Run the inner control/status check only on a converged iterate, or after
+    /// well_inner_switch_fallback_iter_ iterations without convergence.
+    bool well_inner_switch_on_converged_;
+    int well_inner_switch_fallback_iter_;
+    /// When no bhp exists at the THP limit, stop the well (cannot operate at THP)
+    /// instead of continuing on a fallback state.
+    bool well_thp_infeasible_stop_;
 
     /// Relative dead band between the well stop and reopen decisions.
     Scalar well_status_hysteresis_;

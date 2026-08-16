@@ -2591,6 +2591,12 @@ namespace Opm
 
         bool changed = false;
         bool final_check = false;
+        // Decide switches on converged iterates only (--well-inner-switch-on-converged):
+        // the previous iteration's convergence verdict gates the check, with a fallback
+        // so an unsolvable control cannot block the decision forever.
+        const bool switch_on_converged = this->param_.well_inner_switch_on_converged_;
+        const int switch_fallback_its = this->param_.well_inner_switch_fallback_iter_;
+        bool prev_converged = false;
 
         // Globalization of the inner Newton loop. Off unless asked for, in which case the
         // undamped step is only taken when it reduces the scaled residual norm.
@@ -2634,7 +2640,10 @@ namespace Opm
         }
         do {
             its_since_last_switch++;
-            if (allow_switching && its_since_last_switch >= min_its_after_switch && status_switch_count < max_status_switch){
+            const bool decide_now = !switch_on_converged || prev_converged || final_check ||
+                                    its_since_last_switch >= switch_fallback_its;
+            if (allow_switching && its_since_last_switch >= min_its_after_switch &&
+                status_switch_count < max_status_switch && decide_now){
                 const Scalar wqTotal = this->primary_variables_.eval(WQTotal).value();
                 changed = this->updateWellControlAndStatusLocalIteration(
                     simulator, groupStateHelper, inj_controls, prod_controls, wqTotal,
@@ -2679,12 +2688,19 @@ namespace Opm
             auto report = getWellConvergence(groupStateHelper, Base::B_avg_, relax_convergence);
 
             converged = report.converged();
+            prev_converged = converged;
             if (converged) {
                 // if equations are sufficiently linear they might converge in less than min_its_after_switch
                 // in this case, make sure all constraints are satisfied before returning
                 if (switch_count > 0 && its_since_last_switch < min_its_after_switch) {
                     final_check = true;
                     its_since_last_switch = min_its_after_switch;
+                } else if (switch_on_converged && allow_switching && !final_check &&
+                           status_switch_count < max_status_switch) {
+                    // Converged under the current control: this is the state the
+                    // switching check should judge. One pass; no change -> done.
+                    final_check = true;
+                    its_since_last_switch = std::max(its_since_last_switch, min_its_after_switch);
                 } else {
                     break;
                 }
@@ -2708,7 +2724,11 @@ namespace Opm
                 const bool switch_check_ran = allow_switching && !changed &&
                     its_since_last_switch >= min_its_after_switch &&
                     status_switch_count < max_status_switch;
-                if (unchanged && switch_check_ran) {
+                // ... unless asked to exit regardless: a zero-rate well pinned at a
+                // limit after the status cap is exactly the frozen state we want out of.
+                const bool count_it = switch_check_ran ||
+                    (this->param_.well_inner_frozen_exit_always_ && !changed);
+                if (unchanged && count_it) {
                     if (++frozen_count >= frozen_exit) {
                         if (!relax_convergence) {
                             // The iterate cannot move again, so the relaxed acceptance

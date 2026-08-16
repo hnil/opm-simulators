@@ -402,6 +402,9 @@ protected:
     bool changed_to_stopped_this_step_ = false;
     bool thp_update_iterations = false;
     int number_of_well_reopenings_{0};
+    // Set by the (const) target update when no bhp exists at the THP limit; the
+    // caller stops the well (--well-thp-infeasible-stop).
+    mutable bool thp_infeasible_pending_ = false;
 
     Scalar wpolymer() const;
     Scalar wfoam() const;

@@ -318,7 +318,18 @@ namespace Opm
                     this->well_control_log_.push_back(from);
                 }
             }
+            thp_infeasible_pending_ = this->param_.well_thp_infeasible_stop_;  // arm
             updateWellStateWithTarget(simulator, groupStateHelper, well_state);
+            // Still armed after a producer's THP update = the update found no bhp.
+            const bool thp_infeasible = thp_infeasible_pending_ && this->isProducer() &&
+                well_state.well(this->index_of_well_).production_cmode == Well::ProducerCMode::THP;
+            thp_infeasible_pending_ = false;
+            if (thp_infeasible) {
+                this->stopWell();
+                this->operability_status_.can_obtain_bhp_with_thp_limit = false;
+                this->operability_status_.obey_thp_limit_under_bhp_limit = false;
+                changed_to_stopped_this_step_ = true;
+            }
             updatePrimaryVariables(groupStateHelper);
         }
 
@@ -1764,7 +1775,22 @@ namespace Opm
             {
                 const bool update_success = updateWellStateWithTHPTargetProd(simulator, well_state, groupStateHelper);
 
-                if (!update_success) {
+                // Only the outer control-switch caller arms this; initialisation and
+                // well-event callers keep the fallback state below.
+                const bool stop_armed = thp_infeasible_pending_;
+                thp_infeasible_pending_ = false;
+                if (!update_success && stop_armed && this->param_.well_thp_infeasible_stop_) {
+                    // No inflow/VFP intersection at the THP limit: the well cannot
+                    // operate on THP control now. Leave a zero-rate state and let the
+                    // caller stop the well rather than iterating a fallback state.
+                    ws.thp = this->getTHPConstraint(summaryState);
+                    for (int p = 0; p < this->number_of_phases_; ++p) {
+                        ws.surface_rates[p] = 0.0;
+                    }
+                    thp_infeasible_pending_ = true;
+                    deferred_logger.debug("    " + this->name() +
+                                          ": no bhp at the THP limit, stopping the well (cannot operate at THP)");
+                } else if (!update_success) {
                     // the following is the original way of initializing well state with THP constraint
                     // keeping it for robust reason in case that it fails to get a bhp value with THP constraint
                     // more sophisticated design might be needed in the future

@@ -105,6 +105,10 @@ BlackoilModelParameters<Scalar>::BlackoilModelParameters()
     well_inner_cycle_exit_ = Parameters::Get<Parameters::WellInnerCycleExit>();
     well_inner_return_best_ = Parameters::Get<Parameters::WellInnerReturnBest>();
     well_inner_frozen_exit_ = Parameters::Get<Parameters::WellInnerFrozenExit>();
+    well_inner_frozen_exit_always_ = Parameters::Get<Parameters::WellInnerFrozenExitAlways>();
+    well_inner_switch_on_converged_ = Parameters::Get<Parameters::WellInnerSwitchOnConverged>();
+    well_inner_switch_fallback_iter_ = Parameters::Get<Parameters::WellInnerSwitchFallbackIter>();
+    well_thp_infeasible_stop_ = Parameters::Get<Parameters::WellThpInfeasibleStop>();
     well_status_hysteresis_ = Parameters::Get<Parameters::WellStatusHysteresis<Scalar>>();
     well_status_keep_on_cap_ = Parameters::Get<Parameters::WellStatusKeepOnCap>();
     well_inner_trace_ = Parameters::Get<Parameters::WellInnerTrace>();
@@ -365,6 +369,25 @@ void BlackoilModelParameters<Scalar>::registerParameters()
     Parameters::Register<Parameters::WellInnerFrozenExit>
         ("Leave the standard-well inner solve after this many consecutive iterations "
          "in which the iterate did not change at all. 0 disables.");
+    Parameters::Register<Parameters::WellInnerFrozenExitAlways>
+        ("Count frozen iterates towards --well-inner-frozen-exit even when the "
+         "switching check did not run in that iteration (e.g. the status-switch cap "
+         "is reached), so a zero-rate well pinned at a limit exits instead of "
+         "spending the whole iteration budget. Off by default.");
+    Parameters::Register<Parameters::WellInnerSwitchOnConverged>
+        ("Run the standard-well inner control/status switching check only on an "
+         "iterate that satisfied the well convergence test under the current control, "
+         "or after --well-inner-switch-fallback-iter iterations without convergence "
+         "since the last switch. Decisions are then taken on consistent states rather "
+         "than on partially converged ones. Off by default.");
+    Parameters::Register<Parameters::WellInnerSwitchFallbackIter>
+        ("With --well-inner-switch-on-converged: number of inner iterations without "
+         "convergence after which the switching check runs anyway.");
+    Parameters::Register<Parameters::WellThpInfeasibleStop>
+        ("When a producer/injector switches to THP control and no bhp exists at its THP "
+         "limit (the VFP/inflow intersection is gone), stop the well for this iteration "
+         "and mark it unable to operate at the THP limit, instead of continuing on the "
+         "fallback state (bhp from the VFP at the current rates). Off by default.");
     Parameters::Register<Parameters::WellStatusHysteresis<Scalar>>
         ("Relative dead band between the well stop and reopen decisions. The reopen "
          "test must clear the operable bhp limit by this fraction, and the well is "
