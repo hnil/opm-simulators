@@ -184,6 +184,8 @@ struct WellInnerSwitchOnConverged { static constexpr bool value = false; };
 struct WellInnerSwitchFallbackIter { static constexpr int value = 12; };
 /// No bhp exists at the THP limit -> stop the well instead of the fallback state.
 struct WellThpInfeasibleStop { static constexpr bool value = false; };
+/// At the reopen cap, keep a locally-stopped well stopped instead of force-stopping the well.
+struct WellReopenCapSoft { static constexpr bool value = false; };
 /// Consistency of the well stop/reopen decision (default-off).
 template<class Scalar>
 struct WellStatusHysteresis { static constexpr Scalar value = 0.0; };
@@ -440,6 +442,10 @@ public:
     /// When no bhp exists at the THP limit, stop the well (cannot operate at THP)
     /// instead of continuing on a fallback state.
     bool well_thp_infeasible_stop_;
+    /// Soft reopen cap: when max_well_status_switch_ reopenings are used up, a well the
+    /// local solve stopped is left stopped (operability re-tests it) rather than
+    /// force-stopped on every later iteration.
+    bool well_reopen_cap_soft_;
 
     /// Relative dead band between the well stop and reopen decisions.
     Scalar well_status_hysteresis_;

@@ -109,6 +109,7 @@ BlackoilModelParameters<Scalar>::BlackoilModelParameters()
     well_inner_switch_on_converged_ = Parameters::Get<Parameters::WellInnerSwitchOnConverged>();
     well_inner_switch_fallback_iter_ = Parameters::Get<Parameters::WellInnerSwitchFallbackIter>();
     well_thp_infeasible_stop_ = Parameters::Get<Parameters::WellThpInfeasibleStop>();
+    well_reopen_cap_soft_ = Parameters::Get<Parameters::WellReopenCapSoft>();
     well_status_hysteresis_ = Parameters::Get<Parameters::WellStatusHysteresis<Scalar>>();
     well_status_keep_on_cap_ = Parameters::Get<Parameters::WellStatusKeepOnCap>();
     well_inner_trace_ = Parameters::Get<Parameters::WellInnerTrace>();
@@ -383,6 +384,12 @@ void BlackoilModelParameters<Scalar>::registerParameters()
     Parameters::Register<Parameters::WellInnerSwitchFallbackIter>
         ("With --well-inner-switch-on-converged: number of inner iterations without "
          "convergence after which the switching check runs anyway.");
+    Parameters::Register<Parameters::WellReopenCapSoft>
+        ("Change what --max-well-status-switch-for-wells does once a well has used its "
+         "reopenings in a timestep: instead of force-stopping the well on every later "
+         "Newton iteration (which also stops wells the local solve left open and lets a "
+         "zero-rate well never come back), only skip the automatic reopen of a well the "
+         "local solve stopped; the operability check decides. Off by default.");
     Parameters::Register<Parameters::WellThpInfeasibleStop>
         ("When a producer/injector switches to THP control and no bhp exists at its THP "
          "limit (the VFP/inflow intersection is gone), stop the well for this iteration "

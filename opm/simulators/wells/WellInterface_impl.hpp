@@ -1149,7 +1149,8 @@ namespace Opm
                             [](Scalar rate) { return rate != Scalar(0.0); });
 
             this->operability_status_.solvable = true;
-            if (number_of_well_reopenings_ >= this->param_.max_well_status_switch_) {
+            const bool soft_cap = this->param_.well_reopen_cap_soft_;
+            if (!soft_cap && number_of_well_reopenings_ >= this->param_.max_well_status_switch_) {
                 // only output the first time
                 if (number_of_well_reopenings_ == this->param_.max_well_status_switch_) {
                     const std::string msg = fmt::format("well {} is oscillating between open and stop. \n"
@@ -1182,6 +1183,10 @@ namespace Opm
             if (converged) {
                 const bool zero_target = this->wellUnderZeroRateTarget(groupStateHelper);
                 if (this->wellIsStopped() && !zero_target && nonzero_rate_original) {
+                    if (soft_cap && number_of_well_reopenings_ >= this->param_.max_well_status_switch_) {
+                        // Reopenings used up: leave the decision to the operability check.
+                        deferred_logger.debug("    " + this->name() + " stopped during local solve, kept stopped (reopen cap)");
+                    } else {
                     // Well had non-zero rate, but was stopped during local well-solve. We re-open the well
                     // for the next global iteration, but if the zero rate persists, it will be stopped.
                     // This logic is introduced to prevent/ameliorate stopped/revived oscillations
@@ -1189,6 +1194,7 @@ namespace Opm
                     this->openWell();
                     deferred_logger.debug("    " + this->name() + " is re-opened after being stopped during local solve");
                     number_of_well_reopenings_++;
+                    }
                 }
             } else {
                 // unsolvable wells are treated as not operable and will not be solved for in this iteration.
