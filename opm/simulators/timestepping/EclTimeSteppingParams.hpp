@@ -47,6 +47,10 @@ struct SolverRestartFactor { static constexpr Scalar value = 0.33; };
 template<class Scalar>
 struct TimeStepAfterEventInDays { static constexpr Scalar value = -1.0; };
 
+/// D1: relativeChange() returns the SQUARE of the relative solution change; the PID and
+/// 3rd-order controllers assume a linear one. When true, hand them sqrt(delta/denom).
+struct TimeStepControlSqrtError { static constexpr bool value = false; };
+
 } // namespace Opm::Parameters
 
 namespace Opm {

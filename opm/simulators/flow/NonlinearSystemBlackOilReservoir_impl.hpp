@@ -31,6 +31,9 @@
 
 #include <dune/common/timer.hh>
 
+#include <opm/models/utils/parametersystem.hpp>
+#include <opm/simulators/timestepping/EclTimeSteppingParams.hpp>
+
 #include <opm/common/ErrorMacros.hpp>
 #include <opm/common/OpmLog/OpmLog.hpp>
 
@@ -483,7 +486,13 @@ relativeChange() const
     const Scalar delta = gridView.comm().sum(resultDelta.value());
     const Scalar denom = gridView.comm().sum(resultDenom.value());
 
-    return denom > 0.0 ? delta / denom : 0.0;
+    if (denom <= 0.0) {
+        return 0.0;
+    }
+    // delta/denom is a squared relative change (D1); the controllers were tuned for the
+    // change itself. Opt-in until the default tolerance is re-derived.
+    static const bool sqrt_error = Parameters::Get<Parameters::TimeStepControlSqrtError>();
+    return sqrt_error ? std::sqrt(delta / denom) : delta / denom;
 }
 
 template <class TypeTag>

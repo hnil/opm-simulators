@@ -143,6 +143,12 @@ void registerAdaptiveParameters()
          "step ends, so the controller does not walk straight back into a step length "
          "that just failed. The mirror image of the success floor. "
          "0 (default) disables the ceiling");
+    Parameters::Register<Parameters::TimeStepControlSqrtError>
+        ("Feed the PID / 3rd-order time step controllers the relative solution change "
+         "itself instead of its square (the accumulated (dp/p)^2 ratio). With this on the "
+         "controller tolerance is a relative change (1e-2 = 1%) and the controllers' gains "
+         "act on dt^p as designed; today's default (off) squares the exponent and makes "
+         "tolerance 0.1 mean ~32% change. Off by default to keep results unchanged.");
     Parameters::Register<Parameters::TimeStepControlIterationDeadband>
         ("Half-width of a dead band around the target iteration count in which the "
          "iteration-count part of the time step control leaves the step size unchanged. "
