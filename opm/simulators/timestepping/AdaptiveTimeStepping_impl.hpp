@@ -991,7 +991,11 @@ run()
             if (substep_report.time_step_rejected) {
                 const double tol = Parameters::Get<Parameters::TimeStepControlTolerance>();
                 const double safetyFactor = Parameters::Get<Parameters::TimeStepControlSafetyFactor>();
-                const double temp_time_step = std::sqrt(safetyFactor * tol / solver_().model().relativeChange()) * dt;
+                // With the squared error measure dt ~ sqrt(tol/err); with the linear one
+                // (--time-step-control-sqrt-error) dt ~ tol/err.
+                const double ratio = safetyFactor * tol / solver_().model().relativeChange();
+                const double temp_time_step =
+                    (Parameters::Get<Parameters::TimeStepControlSqrtError>() ? ratio : std::sqrt(ratio)) * dt;
                 if (temp_time_step < dt) { // added in case suggested time step is not a reduction
                     new_time_step = temp_time_step;
                 }

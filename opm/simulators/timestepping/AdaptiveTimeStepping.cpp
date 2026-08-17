@@ -126,6 +126,18 @@ void registerAdaptiveParameters()
     Parameters::Register<Parameters::TimeStepControlTargetNewtonIterations>
         ("The number of Newton iterations which the time step control scheme "
          "should aim for (if applicable)");
+    Parameters::Register<Parameters::TimeStepControlSqrtError>
+        ("Feed the PID / 3rd-order time step controllers the relative solution change "
+         "itself instead of its square (the accumulated (dp/p)^2 ratio). With this on the "
+         "controller tolerance is a relative change (1e-2 = 1%) and the controllers' gains "
+         "act on dt^p as designed; today's default (off) squares the exponent and makes "
+         "tolerance 0.1 mean ~32% change. Off by default to keep results unchanged.");
+    Parameters::Register<Parameters::TimeStepControlIterationDeadband>
+        ("Half-width of a dead band around the target iteration count in which the "
+         "iteration-count part of the time step control leaves the step size unchanged. "
+         "The iteration count is integer valued, so reacting to a difference of one "
+         "iteration feeds round-off-level differences in the residual into the time step "
+         "sequence. 0 (default) reproduces the classic behaviour");
     Parameters::Register<Parameters::TimeStepControlDecayRate>
         ("The decay rate of the time step size of the number of "
          "target iterations is exceeded");
