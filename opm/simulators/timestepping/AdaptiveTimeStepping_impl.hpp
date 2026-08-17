@@ -1024,17 +1024,29 @@ run()
             if (substep_report.time_step_rejected) {
                 const double tol = Parameters::Get<Parameters::TimeStepControlTolerance>();
                 const double safetyFactor = Parameters::Get<Parameters::TimeStepControlSafetyFactor>();
-                const double temp_time_step = std::sqrt(safetyFactor * tol / solver_().model().relativeChange()) * dt;
+                // With the squared error measure dt ~ sqrt(tol/err); with the linear one
+                // (--time-step-control-sqrt-error) dt ~ tol/err.
+                const double ratio = safetyFactor * tol / solver_().model().relativeChange();
+                const double temp_time_step =
+                    (Parameters::Get<Parameters::TimeStepControlSqrtError>() ? ratio : std::sqrt(ratio)) * dt;
                 if (temp_time_step < dt) { // added in case suggested time step is not a reduction
                     new_time_step = temp_time_step;
                 }
             }
-            checkTimeStepMinLimit_(new_time_step);
             bool wells_shut = false;
             if (new_time_step > minTimeStepBeforeClosingWells_()) {
+                checkTimeStepMinLimit_(new_time_step);
                 chopTimeStep_(new_time_step);
             } else {
-                wells_shut = chopTimeStepOrCloseFailingWells_(new_time_step);
+                // Below the well-closing threshold: try to shut the consistently failing
+                // wells BEFORE testing the minimum step, otherwise a TUNING TSMINZ above
+                // that threshold aborts the run where shutting a well would have carried
+                // it on (measured on GRPFLD-04/NET-04 with --enable-tuning).
+                wells_shut = closeFailingWells_(new_time_step);
+                if (!wells_shut) {
+                    checkTimeStepMinLimit_(new_time_step);
+                    chopTimeStep_(new_time_step);
+                }
             }
             if (wells_shut) {
                 setTimeStep_(dt);  // retry the old timestep
@@ -1167,7 +1179,7 @@ template<class TypeTag>
 template<class Solver>
 bool
 AdaptiveTimeStepping<TypeTag>::SubStepIteration<Solver>::
-chopTimeStepOrCloseFailingWells_(const double new_time_step)
+closeFailingWells_(const double new_time_step)
 {
     bool wells_shut = false;
     // We are below the threshold, and will check if there are any
@@ -1181,10 +1193,7 @@ chopTimeStepOrCloseFailingWells_(const double new_time_step)
     const std::set<std::string> failing_wells =
         detail::consistentlyFailingWells(solver_().model().stepReports(), requireRepeatedFailures);
 
-    if (failing_wells.empty()) {
-        // Found no wells to close, chop the timestep
-        chopTimeStep_(new_time_step);
-    } else {
+    if (!failing_wells.empty()) {
         // Close all consistently failing wells that are not under group control
         std::vector<std::string> shut_wells;
         for (const auto& well : failing_wells) {
@@ -1208,10 +1217,8 @@ chopTimeStepOrCloseFailingWells_(const double new_time_step)
                 }
             }
         }
-        // If still no wells are closed we must fall back to chopping again
-        if (shut_wells.empty()) {
-            chopTimeStep_(new_time_step);
-        } else {
+        // If still no wells are closed the caller falls back to chopping
+        if (!shut_wells.empty()) {
             wells_shut = true;
             if (solverVerbose_()) {
                 const std::string msg =

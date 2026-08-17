@@ -56,6 +56,7 @@ struct TimeStepControlSuccessFloor { static constexpr double value = 0.0; };
 
 struct TimeStepControlFailureCeiling { static constexpr double value = 0.0; };
 
+
 } // namespace Opm::Parameters
 
 namespace Opm {
@@ -264,7 +265,8 @@ private:
         void checkTimeStepMaxRestartLimit_(const int restarts) const;
         void checkTimeStepMinLimit_(const double new_time_step) const;
         void chopTimeStep_(const double new_time_step);
-        bool chopTimeStepOrCloseFailingWells_(const double new_time_step);
+        //! Shut consistently failing wells; true if any was shut (caller retries the step).
+        bool closeFailingWells_(const double new_time_step);
         boost::posix_time::ptime currentDateTime_() const;
         int getNumIterations_(const SimulatorReportSingle& substep_report) const;
         double growthFactor_() const;
