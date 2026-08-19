@@ -94,7 +94,8 @@ fatherReplicatedSolution(const Opm::EclipseGrid&     inputGrid,
                          const Opm::data::Solution&  coarse)
 {
     const auto& lgrGrid = inputGrid.getLGRCell(lgrName);
-    const auto fathers = lgrGrid.getLGRCell_global_father(inputGrid);
+    // The coarse solution is active-sized, so the father mapping must be too.
+    const auto fathers = lgrGrid.getLGRCell_active_father(inputGrid);
     const auto nActive = inputGrid.getNumActive();
 
     // Copy first: keeps the keys, units, targets and the SI flag of the
