@@ -702,6 +702,8 @@ void GenericCpGridVanguard<ElementMapper,GridView,Scalar>::addLgrsUpdateLeafView
     // empty so it keeps the uniform path.
     std::vector<Opm::Refinement::AxisSubdivision> subdivisions;
     subdivisions.reserve(3*lgrsSize);
+    std::vector<std::vector<int>> minpvRemoved;
+    minpvRemoved.reserve(lgrsSize);
     bool anyGraded = false;
 
     for (int lgr = 0; lgr < lgrsSize; ++lgr)
@@ -715,6 +717,7 @@ void GenericCpGridVanguard<ElementMapper,GridView,Scalar>::addLgrsUpdateLeafView
         lgrParentName_vec.emplace_back(lgrCarfin.PARENT_NAME());
 
         anyGraded = anyGraded || lgrCarfin.isGraded();
+        minpvRemoved.push_back(lgrCarfin.minpvRemoved());
         for (std::size_t dim = 0; dim < 3; ++dim) {
             auto columns = lgrCarfin.refinedColumns(dim);
             subdivisions.push_back(Opm::Refinement::AxisSubdivision{
@@ -747,6 +750,7 @@ void GenericCpGridVanguard<ElementMapper,GridView,Scalar>::addLgrsUpdateLeafView
                     request.subdivision[dim] = subdivisions[3*lgr + dim];
                 }
             }
+            request.minpvRemoved = minpvRemoved[lgr];
             requests.push_back(std::move(request));
         }
         return requests;
