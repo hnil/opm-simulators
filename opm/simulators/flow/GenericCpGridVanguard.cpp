@@ -643,14 +643,34 @@ doCreateGrids_(const bool edge_conformal, EclipseState& eclState)
 #endif
                 if (canRefine) {
                     auto outGrid = std::make_unique<Dune::CpGrid>(Dune::MPIHelper::getLocalCommunicator());
+#if OPM_HAVE_REFINEMENT_BUILDER
+                    // Build it from the corner-point description grid_ was
+                    // built from, not from the input grid again: MINPV works by
+                    // collapsing ZCORN, and re-processing without an
+                    // EclipseState skips MINPV and PINCH altogether (their whole
+                    // block is gated on it). The reference grid then keeps cells
+                    // the simulation grid does not have, and gathering onto the
+                    // I/O rank leaves them claimed by no rank -- 399 of them on
+                    // Norne, being the 496 MINPV removed less the 97 inside the
+                    // refinement box, which the box refines away.
+                    const grdecl raw {
+                        { retained->dims[0], retained->dims[1], retained->dims[2] },
+                        retained->coord.data(),
+                        retained->zcorn.data(),
+                        retained->actnum.empty() ? nullptr : retained->actnum.data()
+                    };
+                    outGrid->processEclipseFormat(raw,
+                                                  /* remove_ij_boundary = */ false,
+                                                  /* turn_normals = */ false,
+                                                  retained->edgeConformal);
+                    Opm::Refinement::GridStateWriter::setRetainedCornerPointInput(
+                        *outGrid->currentData().front(), retained);
+#else
                     outGrid->processEclipseFormat(input_grid, nullptr,
                                                   /* isPeriodic = */ false,
                                                   /* flipNormals = */ false,
                                                   /* clipZ = */ false,
                                                   edge_conformal);
-#if OPM_HAVE_REFINEMENT_BUILDER
-                    Opm::Refinement::GridStateWriter::setRetainedCornerPointInput(
-                        *outGrid->currentData().front(), retained);
 #endif
                     this->addLgrsUpdateLeafView(lgrs, lgrs.size(), *outGrid);
                     this->outputGrid_ = std::move(outGrid);
