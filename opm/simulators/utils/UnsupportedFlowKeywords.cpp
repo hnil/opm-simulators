@@ -157,7 +157,6 @@ const KeywordValidation::UnsupportedKeywords& unsupportedKeywords()
         {"ECLMC", {true, std::nullopt}},
         {"EHYSTRR", {true, std::nullopt}},
         {"ENDDYN", {true, std::nullopt}},
-        {"ENDFIN", {true, std::nullopt}},
         {"ENDNUM", {true, std::nullopt}},
         {"ENKRVD", {true, std::nullopt}},
         {"ENKSRVD", {true, std::nullopt}},
