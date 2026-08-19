@@ -696,6 +696,14 @@ void GenericCpGridVanguard<ElementMapper,GridView,Scalar>::addLgrsUpdateLeafView
     endIJK_vec.reserve(lgrsSize);
     lgrName_vec.reserve(lgrsSize);
     lgrParentName_vec.reserve(lgrsSize);
+    // A graded box (N*FIN/H*FIN) has no single subdivision factor, so it goes
+    // through the request-taking overload with its column tables. Boxes are
+    // graded per direction, and a direction the deck did not grade is left
+    // empty so it keeps the uniform path.
+    std::vector<Opm::Refinement::AxisSubdivision> subdivisions;
+    subdivisions.reserve(3*lgrsSize);
+    bool anyGraded = false;
+
     for (int lgr = 0; lgr < lgrsSize; ++lgr)
     {
         const auto lgrCarfin = lgrCollection.getLgr(lgr);
@@ -705,6 +713,15 @@ void GenericCpGridVanguard<ElementMapper,GridView,Scalar>::addLgrsUpdateLeafView
         endIJK_vec.push_back({lgrCarfin.I2()+1, lgrCarfin.J2()+1, lgrCarfin.K2()+1});
         lgrName_vec.emplace_back(lgrCarfin.NAME());
         lgrParentName_vec.emplace_back(lgrCarfin.PARENT_NAME());
+
+        anyGraded = anyGraded || lgrCarfin.isGraded();
+        for (std::size_t dim = 0; dim < 3; ++dim) {
+            auto columns = lgrCarfin.refinedColumns(dim);
+            subdivisions.push_back(Opm::Refinement::AxisSubdivision{
+                std::move(columns.parentOffset),
+                std::move(columns.fracLo),
+                std::move(columns.fracHi) });
+        }
     }
 
     // Common case: no nesting (every CARFIN refines GLOBAL). Take the exact
@@ -713,8 +730,32 @@ void GenericCpGridVanguard<ElementMapper,GridView,Scalar>::addLgrsUpdateLeafView
     // machinery below.
     const bool anyNested = std::any_of(lgrParentName_vec.begin(), lgrParentName_vec.end(),
                                        [](const std::string& p) { return p != "GLOBAL"; });
+    // Build the requests from the pieces above; only a graded deck carries the
+    // column tables, so a uniform deck reaches the builder exactly as before.
+    const auto makeRequests = [&](const std::vector<int>& order) {
+        std::vector<Opm::Refinement::BlockRefinement> requests;
+        requests.reserve(order.size());
+        for (const int lgr : order) {
+            Opm::Refinement::BlockRefinement request;
+            request.name = lgrName_vec[lgr];
+            request.parentGridName = lgrParentName_vec[lgr];
+            request.cellsPerDim = cells_per_dim_vec[lgr];
+            request.startIJK = startIJK_vec[lgr];
+            request.endIJK = endIJK_vec[lgr];
+            if (anyGraded) {
+                for (std::size_t dim = 0; dim < 3; ++dim) {
+                    request.subdivision[dim] = subdivisions[3*lgr + dim];
+                }
+            }
+            requests.push_back(std::move(request));
+        }
+        return requests;
+    };
+
     if (!anyNested) {
-        grid.addLgrsUpdateLeafView(cells_per_dim_vec, startIJK_vec, endIJK_vec, lgrName_vec);
+        std::vector<int> deckOrder(lgrsSize);
+        std::iota(deckOrder.begin(), deckOrder.end(), 0);
+        grid.addLgrsUpdateLeafView(makeRequests(deckOrder));
         return;
     }
 
@@ -764,23 +805,7 @@ void GenericCpGridVanguard<ElementMapper,GridView,Scalar>::addLgrsUpdateLeafView
         }
     }
 
-    const auto permute = [&order](auto& v) {
-        using V = std::decay_t<decltype(v)>;
-        V reordered;
-        reordered.reserve(v.size());
-        for (const int idx : order) {
-            reordered.push_back(v[idx]);
-        }
-        v = std::move(reordered);
-    };
-    permute(cells_per_dim_vec);
-    permute(startIJK_vec);
-    permute(endIJK_vec);
-    permute(lgrName_vec);
-    permute(lgrParentName_vec);
-
-    grid.addLgrsUpdateLeafView(cells_per_dim_vec, startIJK_vec, endIJK_vec,
-                               lgrName_vec, lgrParentName_vec);
+    grid.addLgrsUpdateLeafView(makeRequests(order));
 };
 
 template<class ElementMapper, class GridView, class Scalar>
