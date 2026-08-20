@@ -191,6 +191,16 @@ GenericOutputBlackoilModule<FluidSystem>::
 
 template<class FluidSystem>
 void GenericOutputBlackoilModule<FluidSystem>::
+setupInterRegionFlows_(const std::size_t numCells,
+                       const std::vector<InterRegFlowMap::SingleRegion>& regions)
+{
+    this->interRegionFlows_ = InterRegFlowMap {
+        numCells, regions, declaredMaxRegionID(this->eclState_.runspec())
+    };
+}
+
+template<class FluidSystem>
+void GenericOutputBlackoilModule<FluidSystem>::
 registerParameters()
 {
     Parameters::Register<Parameters::ForceDisableFluidInPlaceOutput>

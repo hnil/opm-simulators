@@ -393,6 +393,13 @@ protected:
     virtual bool isOwnedByCurrentRank(const std::string& wname) const = 0;
     virtual bool isOnCurrentRank(const std::string& wname) const = 0;
 
+    /// Rebuild the inter-region flow map for a different cell index space.
+    ///
+    /// The constructor builds it from the input-grid region arrays; a refined
+    /// grid indexes it by leaf element and needs the leaf-mapped ones.
+    void setupInterRegionFlows_(std::size_t numCells,
+                                const std::vector<InterRegFlowMap::SingleRegion>& regions);
+
     const EclipseState& eclState_;
     const Schedule& schedule_;
     const SummaryState& summaryState_;

@@ -179,6 +179,8 @@ public:
             this->createLocalRegion_(region_pair.first, region_pair.second);
         }
 
+        this->createLeafInterRegionFlows_();
+
         auto isCartIdxOnThisRank = [&collectOnIORank](const int idx) {
             return collectOnIORank.isCartIdxOnThisRank(idx);
         };
@@ -800,6 +802,34 @@ private:
         if (this->computeFip_) {
             this->updatePhaseInplaceVolumes_(globalDofIdx, intQuants, totVolume);
         }
+    }
+
+    // Inter-region flow rates are accumulated per leaf element, so their region
+    // arrays need the same leaf mapping createLocalRegion_ does -- the base class
+    // built the map from the input-grid arrays, which a refined grid overruns.
+    void createLeafInterRegionFlows_()
+    {
+        const auto& names = this->summaryConfig_.fip_regions_interreg_flow();
+        if (names.empty()) {
+            return;
+        }
+
+        const LookUpData<Grid, GridView> lookUpData(this->simulator_.gridView());
+
+        // Reserved so the reference_wrappers below stay valid.
+        auto leafRegions = std::vector<std::vector<int>>{};
+        leafRegions.reserve(names.size());
+
+        auto regions = std::vector<InterRegFlowMap::SingleRegion>{};
+        regions.reserve(names.size());
+
+        for (const auto& name : names) {
+            leafRegions.push_back(lookUpData.template assignFieldPropsIntOnLeaf<int>
+                                  (this->eclState_.fieldProps(), name, /*needsTranslation=*/false));
+            regions.push_back({ name, std::cref(leafRegions.back()) });
+        }
+
+        this->setupInterRegionFlows_(this->simulator_.gridView().size(0), regions);
     }
 
     void createLocalRegion_(const std::string& name, std::vector<int>& region)
