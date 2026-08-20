@@ -1342,6 +1342,10 @@ applyNncToGridTrans_(const std::unordered_map<std::size_t,int>& cartesianToCompr
     // First scale NNCs with EDITNNC.
     const auto& nnc_input = eclState_.getInputNNC().input();
 
+    constexpr std::size_t maxReported = 5;
+    std::vector<std::pair<std::size_t,std::size_t>> unconnectedNnc{};
+    std::size_t numUnconnectedNnc = 0;
+
     for (const auto& nncEntry : nnc_input) {
         auto c1 = nncEntry.cell1;
         auto c2 = nncEntry.cell2;
@@ -1374,6 +1378,19 @@ applyNncToGridTrans_(const std::unordered_map<std::size_t,int>& cartesianToCompr
             // set or computed.
             candidate->second += nncEntry.trans;
         }
+        else {
+            // Both cells are active, yet the grid holds no connection between
+            // them, so this entry's transmissibility goes nowhere.  Under
+            // refinement that is the normal outcome for a connection naming a
+            // cell inside a CARFIN box: the coarse cell is gone from the leaf
+            // and its NNC face with it.  Silence here reads as a working
+            // connection, which for a numerical aquifer means it quietly stops
+            // feeding the reservoir.
+            if (unconnectedNnc.size() < maxReported) {
+                unconnectedNnc.push_back(std::make_pair(c1, c2));
+            }
+            ++numUnconnectedNnc;
+        }
         // if (enableEnergy_) {
         //     auto candidate = thermalHalfTrans_.find(details::directionalIsId(low, high));
         //     if (candidate != trans_.end()) {
@@ -1400,6 +1417,42 @@ applyNncToGridTrans_(const std::unordered_map<std::size_t,int>& cartesianToCompr
         //     }
         // }
     }
+
+    if (numUnconnectedNnc > 0) {
+        auto cells = std::string{};
+        for (const auto& [c1, c2] : unconnectedNnc) {
+            const auto ijk1 = ijkFromCartesian_(c1);
+            const auto ijk2 = ijkFromCartesian_(c2);
+            cells += fmt::format("\n  ({},{},{}) -- ({},{},{})",
+                                 ijk1[0] + 1, ijk1[1] + 1, ijk1[2] + 1,
+                                 ijk2[0] + 1, ijk2[1] + 1, ijk2[2] + 1);
+        }
+        if (numUnconnectedNnc > unconnectedNnc.size()) {
+            cells += fmt::format("\n  ... and {} more", numUnconnectedNnc - unconnectedNnc.size());
+        }
+
+        OpmLog::warning(fmt::format
+                        ("{} explicit connection(s) -- NNC, EDITNNC or a numerical aquifer -- "
+                         "name a cell pair the grid does not join, so their transmissibility is "
+                         "not applied and no flow passes through them. With local grid refinement "
+                         "this is what happens when a connection names a cell inside a CARFIN box: "
+                         "the coarse cell is not on the leaf grid and neither is its connection. "
+                         "A numerical aquifer in that position stops feeding the reservoir "
+                         "entirely.{}", numUnconnectedNnc, cells));
+    }
+}
+
+template<class Grid, class GridView, class ElementMapper, class CartesianIndexMapper, class Scalar>
+std::array<int,3>
+Transmissibility<Grid,GridView,ElementMapper,CartesianIndexMapper,Scalar>::
+ijkFromCartesian_(const std::size_t cartIdx) const
+{
+    const auto& dims = eclState_.getInputGrid().getNXYZ();
+    const auto i = cartIdx % dims[0];
+    const auto j = (cartIdx / dims[0]) % dims[1];
+    const auto k = cartIdx / (static_cast<std::size_t>(dims[0]) * dims[1]);
+
+    return { static_cast<int>(i), static_cast<int>(j), static_cast<int>(k) };
 }
 
 template<class Grid, class GridView, class ElementMapper, class CartesianIndexMapper, class Scalar>

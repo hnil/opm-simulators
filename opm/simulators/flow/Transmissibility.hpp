@@ -233,6 +233,9 @@ protected:
      */
     void applyNncToGridTrans_(const std::unordered_map<std::size_t,int>& cartesianToCompressed);
 
+    /// Zero-based IJK of a level-zero Cartesian index, for diagnostics.
+    std::array<int,3> ijkFromCartesian_(std::size_t cartIdx) const;
+
     /// \brief Applies the previous calculate transmissibilities to the NNCs created via PINCH
     ///
     /// \param cartesianToCompressed Vector containing the compressed index (or -1 for inactive
