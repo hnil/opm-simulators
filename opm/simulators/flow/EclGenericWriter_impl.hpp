@@ -29,6 +29,8 @@
 #include <opm/grid/GridHelpers.hpp>
 #include <opm/grid/utility/cartesianToCompressed.hpp>
 
+#include <opm/common/OpmLog/OpmLog.hpp>
+
 #include <opm/input/eclipse/EclipseState/EclipseState.hpp>
 #include <opm/input/eclipse/EclipseState/Grid/RegionSetMatcher.hpp>
 #include <opm/input/eclipse/EclipseState/Grid/NNC.hpp>
@@ -58,6 +60,8 @@
 #if HAVE_MPI
 #include <mpi.h>
 #endif
+
+#include <fmt/format.h>
 
 #include <algorithm>
 #include <array>
@@ -927,6 +931,23 @@ exportNncStructure_(const std::vector<std::unordered_map<int,int>>& levelCartToL
     std::vector<NNCdata> inputedNnc{};
     const auto generatedNnc = outputNnc_[0];
 
+    // Deck NNCs and numerical-aquifer connections name level-zero cells, but
+    // globalTrans() is indexed on the leaf.  Refinement separates the two, so
+    // translate; a refined coarse cell has no single leaf cell and drops out.
+    std::unordered_map<int,int> level0CartToLeaf{};
+    if (maxLevel > 0) {
+        for (const auto& elem : elements(globalGridView)) {
+            if (elem.level() == 0) {
+                const auto leafIdx = globalElemMapper.index(elem);
+                level0CartToLeaf.emplace(equilCartMapper.cartesianIndex(leafIdx), leafIdx);
+            }
+        }
+    }
+    const auto& cartToLeaf = (maxLevel > 0)
+        ? level0CartToLeaf
+        : levelCartToLevelCompressed[/* level */ 0];
+    int nncInRefinedBlock = 0;
+
     // The NNC keyword in the deck is defined only for faces in the level-0 grid.
     // The same limitation applies to aquifer data.
     for (const auto& entry : nncData) {
@@ -957,12 +978,20 @@ exportNncStructure_(const std::vector<std::unordered_map<int,int>>& levelCartToL
                 // Pick up transmissibility value from 'globalTrans()' since
                 // multiplier keywords like MULTREGT might have impacted the
                 // values entered in primary sources like NNC/EDITNNC/EDITNNCR.
-                const auto c1 = activeCell_(levelCartToLevelCompressed[/* level */0], entry.cell1);
-                const auto c2 = activeCell_(levelCartToLevelCompressed[/* level */0], entry.cell2);
+                const auto c1 = activeCell_(cartToLeaf, entry.cell1);
+                const auto c2 = activeCell_(cartToLeaf, entry.cell2);
 
                 if ((c1 < 0) || (c2 < 0)) {
                     // Connection between inactive cells?  Unexpected at this
                     // level.  Might consider 'throw'ing if this happens...
+                    // Under refinement it also means a refined cell, which the
+                    // deck cannot name -- counted and reported below.
+                    if ((maxLevel > 0) &&
+                        (activeCell_(levelCartToLevelCompressed[/* level */ 0], entry.cell1) >= 0) &&
+                        (activeCell_(levelCartToLevelCompressed[/* level */ 0], entry.cell2) >= 0))
+                    {
+                        ++nncInRefinedBlock;
+                    }
                     continue;
                 }
 
@@ -988,6 +1017,12 @@ exportNncStructure_(const std::vector<std::unordered_map<int,int>>& levelCartToL
             }
         }
     }
+    if (nncInRefinedBlock > 0) {
+        OpmLog::warning(fmt::format("{} explicit NNC/aquifer connection(s) reach a cell inside "
+                                    "a refined block and are omitted from the NNC output arrays.",
+                                    nncInRefinedBlock));
+    }
+
     // Write first the inputed NNCs and after the internally computed NNCs
     this->outputNnc_[0].insert(this->outputNnc_[0].begin(), inputedNnc.begin(), inputedNnc.end());
     return this->outputNnc_;
