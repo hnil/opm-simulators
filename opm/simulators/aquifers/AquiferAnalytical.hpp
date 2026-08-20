@@ -25,8 +25,11 @@
 #include <dune/grid/common/partitionset.hh>
 
 #include <opm/common/ErrorMacros.hpp>
+#include <opm/common/OpmLog/OpmLog.hpp>
 
 #include <opm/input/eclipse/EclipseState/Aquifer/Aquancon.hpp>
+
+#include <fmt/format.h>
 
 #include <opm/material/common/MathToolbox.hpp>
 #include <opm/material/densead/Evaluation.hpp>
@@ -300,12 +303,14 @@ protected:
         this->total_face_area_ = Scalar{0};
         this->cellToConnectionIdx_.resize(this->simulator_.gridView().size(/*codim=*/0), -1);
         const auto& gridView = this->simulator_.vanguard().gridView();
+        int numResolved = 0;
         for (std::size_t idx = 0; idx < this->size(); ++idx) {
             const auto global_index = this->connections_[idx].global_index;
             const int cell_index = this->simulator_.vanguard().compressedIndex(global_index);
             if (cell_index < 0) {
                 continue;
             }
+            ++numResolved;
 
             auto elemIt = gridView.template begin</*codim=*/ 0>();
             std::advance(elemIt, cell_index);
@@ -316,6 +321,27 @@ protected:
             }
 
             this->cellToConnectionIdx_[cell_index] = idx;
+        }
+
+        // A connection whose cell is not on the leaf grid drops out here without
+        // a trace, and the aquifer then feeds the reservoir through whatever is
+        // left -- nothing at all, if every connection went.  Local grid
+        // refinement is how that happens: a CARFIN box covering the connection
+        // cells replaces them with refined cells the AQUANCON record cannot name.
+        {
+            const auto& comm = this->simulator_.vanguard().grid().comm();
+            const auto found = comm.sum(numResolved);
+            if ((found < static_cast<int>(this->size())) && (comm.rank() == 0)) {
+                OpmLog::warning(fmt::format
+                                ("Analytical aquifer {}: {} of {} AQUANCON connection(s) name a "
+                                 "cell that is not in the simulation grid and are dropped. "
+                                 "A cell inside a refined (CARFIN) box is the usual cause. "
+                                 "{}",
+                                 this->aquiferID(), this->size() - found, this->size(),
+                                 (found == 0)
+                                 ? "No connection is left, so this aquifer contributes nothing."
+                                 : "The aquifer acts through the connections that remain."));
+            }
         }
 
         // Translate the C face tag into the enum used by opm-parser's TransMult class

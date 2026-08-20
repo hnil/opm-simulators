@@ -67,7 +67,10 @@
 #include <functional>
 #include <limits>
 #include <map>
+#include <fmt/format.h>
+
 #include <set>
+#include <unordered_set>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -186,6 +189,7 @@ public:
         };
 
         this->setupBlockData(isCartIdxOnThisRank);
+        this->warnBlockDataInsideLgr_();
 
         // Allocate slots for LB* summary nodes that name a cell inside an LGR.
         // Runs per-rank (serial and parallel): each rank allocates only the LGR
@@ -801,6 +805,51 @@ private:
 
         if (this->computeFip_) {
             this->updatePhaseInplaceVolumes_(globalDofIdx, intQuants, totVolume);
+        }
+    }
+
+    // A B* vector naming a cell inside a CARFIN box reads zero for the whole run:
+    // the coarse cell is not on the leaf grid, so nothing ever writes its slot,
+    // and the refined cells that took its place are reachable only through the
+    // LB* vectors.  A flat zero curve is easy to mistake for a physical result.
+    void warnBlockDataInsideLgr_()
+    {
+        if constexpr (std::is_same_v<Grid, Dune::CpGrid>) {
+            if (this->simulator_.vanguard().grid().maxLevel() == 0) {
+                return;
+            }
+
+            const auto& vanguard = this->simulator_.vanguard();
+            auto onLeaf = std::unordered_set<int>{};
+            const auto& gv = this->simulator_.gridView();
+            const auto mapper = Dune::MultipleCodimMultipleGeomTypeMapper<GridView>
+                { gv, Dune::mcmgElementLayout() };
+            for (const auto& elem : elements(gv)) {
+                if (elem.level() == 0) {
+                    onLeaf.insert(vanguard.cartesianIndex(mapper.index(elem)));
+                }
+            }
+
+            auto refined = std::set<std::pair<std::string,int>>{};
+            for (const auto& [key, value] : this->blockData_) {
+                if (onLeaf.find(key.second - 1) == onLeaf.end()) {
+                    refined.insert(key);
+                }
+            }
+            if (refined.empty()) {
+                return;
+            }
+
+            auto names = std::string{};
+            for (const auto& [kw, num] : refined) {
+                const auto ijk = vanguard.eclState().getInputGrid().getIJK(num - 1);
+                names += fmt::format("\n  {}:{},{},{}", kw, ijk[0] + 1, ijk[1] + 1, ijk[2] + 1);
+            }
+            OpmLog::warning(fmt::format
+                            ("{} block summary vector(s) name a cell inside a refined (CARFIN) "
+                             "box. That cell is not part of the simulation grid, so these "
+                             "vectors stay zero for the whole run; use the LB* vectors with the "
+                             "LGR name and its local IJK instead.{}", refined.size(), names));
         }
     }
 
