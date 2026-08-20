@@ -1317,9 +1317,18 @@ protected:
 
     void readEclRestartSolution_()
     {
-        // Throw an exception if the grid has LGRs. Refined grid are not supported for restart.
-        if(this->simulator().vanguard().grid().maxLevel() > 0) {
-            throw std::invalid_argument("Refined grids are not yet supported for restart ");
+        // Restarting a refined run reads the solution section each level was
+        // written to and puts the leaf back together. In parallel the reference
+        // grid holding that leaf ordering exists only on the I/O rank, and
+        // handing the assembled solution to the others is not solved yet, so
+        // say so rather than fail somewhere further in.
+        if ((this->simulator().vanguard().grid().maxLevel() > 0) &&
+            (this->simulator().vanguard().grid().comm().size() > 1))
+        {
+            throw std::invalid_argument {
+                "Restarting a run with LGRs is supported on a single MPI process "
+                "only. Run the restart in serial, or drop the refinement."
+            };
         }
 
         // Set the start time of the simulation
