@@ -193,6 +193,11 @@ protected:
     std::array<std::vector<double>,3>
     createTransmissibilityArrays_(const std::array<bool,3>& is_tran);
 
+    /// Per transmissibility-array entry, the active cell whose TRAN* modifier
+    /// applies to it, or -1. Only meaningful for a refined grid, where the
+    /// arrays are longer than the deck's cell count.
+    std::array<std::vector<int>,3> tranActionIndex_(const std::array<bool,3>& is_tran);
+
     /// \brief overwrites calculated transmissibilities
     ///
     /// \param is_tran Whether TRAN{XYZ} have been modified.

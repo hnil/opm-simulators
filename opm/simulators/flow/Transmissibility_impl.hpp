@@ -40,6 +40,7 @@
 #include <opm/input/eclipse/EclipseState/EclipseState.hpp>
 #include <opm/input/eclipse/EclipseState/Grid/FaceDir.hpp>
 #include <opm/input/eclipse/EclipseState/Grid/FieldPropsManager.hpp>
+#include <opm/input/eclipse/EclipseState/Grid/TranCalculator.hpp>
 #include <opm/input/eclipse/EclipseState/Grid/TransMult.hpp>
 #include <opm/input/eclipse/Units/Units.hpp>
 
@@ -826,16 +827,121 @@ updateFromEclState_(bool global)
     auto key = keywords.begin();
     auto perform = is_tran.begin();
 
+    // The arrays above hold one entry per leaf cell, but a TRAN* modifier is
+    // written per cell of the deck's grid. Without refinement those are the
+    // same thing; with it, a coarse cell's modifier belongs to the refined
+    // faces that close it, so the modifier is applied through a map from leaf
+    // entry to the active cell that speaks for it.
+    const bool refined = grid_.maxLevel() > 0;
+
+    if (refined && (grid_.comm().size() > 1)) {
+        // The map below is built from this rank's field-prop indices, which do
+        // not line up with the global arrays the modifiers are applied from.
+        OPM_THROW(std::invalid_argument,
+                  "TRANX/TRANY/TRANZ on a refined grid is supported on a single MPI "
+                  "process only. Run in serial, or drop the modifier.");
+    }
+
+    const auto actionIndex = refined
+        ? this->tranActionIndex_(is_tran)
+        : std::array<std::vector<int>,3>{};
+
     for (auto it = trans.begin(); it != trans.end(); ++it, ++key, ++perform) {
         if (*perform) {
-            if (grid_.maxLevel() > 0) {
-                OPM_THROW(std::invalid_argument, "Calculations on TRANX/TRANY/TRANZ arrays are not support with LGRS, yet.");
+            if (refined) {
+                // MUL, MIN and MAX carry over to each of the refined faces a
+                // coarse face became. EQUAL and ADD state an absolute
+                // transmissibility, and there is no mechanical way to divide
+                // that over those faces -- applying it to each would multiply
+                // the coarse face's transmissibility by their number.
+                for (const auto op : fp->tran_operations(*key)) {
+                    if ((op == Fieldprops::ScalarOperation::EQUAL) ||
+                        (op == Fieldprops::ScalarOperation::ADD))
+                    {
+                        OPM_THROW(std::invalid_argument,
+                                  "A refined grid supports only MULTIPLY, MINVALUE and MAXVALUE "
+                                  "on " + *key + ". An assigned or added transmissibility does "
+                                  "not divide over the faces a refinement puts in a coarse "
+                                  "face's place; scale it with MULTIPLY instead, or drop the "
+                                  "refinement over that region.");
+                    }
+                }
+
+                fp->apply_tran(*key, actionIndex[std::distance(trans.begin(), it)], *it);
             }
-            fp->apply_tran(*key, *it);
+            else {
+                fp->apply_tran(*key, *it);
+            }
         }
     }
 
     resetTransmissibilityFromArrays_(is_tran, trans);
+}
+
+template<class Grid, class GridView, class ElementMapper, class CartesianIndexMapper, class Scalar>
+std::array<std::vector<int>,3>
+Transmissibility<Grid,GridView,ElementMapper,CartesianIndexMapper,Scalar>::
+tranActionIndex_(const std::array<bool,3>& is_tran)
+{
+    // For each entry of the per-direction transmissibility arrays, the active
+    // cell of the deck's grid whose TRAN* modifier applies to it -- the coarse
+    // cell the face closes -- or -1 where none does.
+    //
+    // Entry c1 of direction d holds the face between leaf cell c1 and its
+    // neighbour in +d, mirroring what TRANX[c1] means in the deck. A face
+    // interior to one coarse cell (both leaf cells share a Cartesian index) has
+    // no coarse face of its own, exactly as for the MULT[XYZ] multipliers.
+    const auto& cartDims = cartMapper_.cartesianDimensions();
+    ElementMapper elemMapper(gridView_, Dune::mcmgElementLayout());
+
+    const auto numElem = gridView_.size(/*codim=*/0);
+    std::array<std::vector<int>,3> actionIndex = {
+        std::vector<int>(is_tran[0] ? numElem : 0, -1),
+        std::vector<int>(is_tran[1] ? numElem : 0, -1),
+        std::vector<int>(is_tran[2] ? numElem : 0, -1)
+    };
+
+    for (const auto& elem : elements(gridView_)) {
+        for (const auto& intersection : intersections(gridView_, elem)) {
+            if (!intersection.neighbor()) {
+                continue;
+            }
+
+            const unsigned c1 = elemMapper.index(intersection.inside());
+            const unsigned c2 = elemMapper.index(intersection.outside());
+            const int gc1 = cartMapper_.cartesianIndex(c1);
+            const int gc2 = cartMapper_.cartesianIndex(c2);
+
+            if (std::tie(gc1, c1) > std::tie(gc2, c2)) {
+                continue;       // each connection once, as createTransmissibilityArrays_ does
+            }
+
+            if (gc1 == gc2) {
+                continue;       // interior to one coarse cell
+            }
+
+            // The field-prop entry this leaf cell reads, which for a refined
+            // cell is its coarse cell's -- the same mapping the porosity and
+            // NTG above go through, and the only one that holds on a rank that
+            // does not have the whole grid.
+            const auto active = static_cast<int>(lookUpData_.template getFieldPropIdx<Grid>(static_cast<int>(c1)));
+            if (active < 0) {
+                continue;
+            }
+
+            if ((gc2 - gc1 == 1) && (cartDims[0] > 1)) {
+                if (is_tran[0]) { actionIndex[0][c1] = active; }
+            }
+            else if ((gc2 - gc1 == cartDims[0]) && (cartDims[1] > 1)) {
+                if (is_tran[1]) { actionIndex[1][c1] = active; }
+            }
+            else if (gc2 - gc1 == cartDims[0]*cartDims[1]) {
+                if (is_tran[2]) { actionIndex[2][c1] = active; }
+            }
+        }
+    }
+
+    return actionIndex;
 }
 
 template<class Grid, class GridView, class ElementMapper, class CartesianIndexMapper, class Scalar>
