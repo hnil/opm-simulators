@@ -483,7 +483,11 @@ update(bool global, const TransUpdateQuantities update_quantities,
                     // In contrast to the name this will also apply
                     applyAllZMultipliers_(trans, inside, outside, transMult, cartDims);
                 }
-                else {
+                else if (inside.cartElemIdx != outside.cartElemIdx) {
+                    // Same reasoning as in applyAllZMultipliers_: equal Cartesian
+                    // indices mean both cells refine one coarse cell, and its
+                    // MULT[XYZ] belong to its own faces, not to the faces the
+                    // refinement introduces inside it.
                     applyMultipliers_(trans, inside.faceIdx, inside.cartElemIdx, transMult);
                     // ... and outside elements
                     applyMultipliers_(trans, outside.faceIdx, outside.cartElemIdx, transMult);
@@ -762,20 +766,23 @@ applyAllZMultipliers_(Scalar& trans,
                       const TransMult& transMult,
                       const std::array<int, dimWorld>& cartDims)
 {
-    if (grid_.maxLevel() > 0) {
-        OPM_THROW(std::invalid_argument, "MULTZ not support with LGRS, yet.");
+    // Both cells refine the same coarse cell, so this face is interior to it.
+    // MULT[XYZ] describe that coarse cell's own faces, which the refinement
+    // inherits on its outer boundary; an interior face has no coarse face to
+    // take a multiplier from, and the pillar walk below -- which steps through
+    // coarse cells -- has nothing to walk. Taking the coarse cell's own
+    // Z+ times Z- here, as this did before refusing LGRs outright, would damp
+    // every interior face by a multiplier meant for the coarse cell's top and
+    // bottom.
+    if (inside.cartElemIdx == outside.cartElemIdx) {
+        return;
     }
+
     if (inside.faceIdx > 3) { // top or or bottom
         assert(inside.faceIdx == 5); // as insideCartElemIdx < outsideCartElemIdx holds for the Z column
         // For CpGrid with LGRs, insideCartElemIdx == outsideCartElemIdx when cells on the leaf have the same parent cell on level zero.
         assert(outside.cartElemIdx >= inside.cartElemIdx);
-        unsigned lastCartElemIdx;
-        if (outside.cartElemIdx == inside.cartElemIdx) {
-            lastCartElemIdx = outside.cartElemIdx;
-        }
-        else {
-            lastCartElemIdx = outside.cartElemIdx - cartDims[0]*cartDims[1];
-        }
+        const unsigned lastCartElemIdx = outside.cartElemIdx - cartDims[0]*cartDims[1];
         // Last multiplier using (Z+)*(Z-)
         Scalar mult = transMult.getMultiplier(lastCartElemIdx , FaceDir::ZPlus) *
             transMult.getMultiplier(outside.cartElemIdx , FaceDir::ZMinus);
