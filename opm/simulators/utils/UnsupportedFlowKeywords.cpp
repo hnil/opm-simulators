@@ -70,7 +70,6 @@ const KeywordValidation::UnsupportedKeywords& unsupportedKeywords()
         {"BTOBALFA", {true, std::nullopt}},
         {"BTOBALFV", {true, std::nullopt}},
         {"CALTRAC", {true, std::nullopt}},
-        {"CARFIN", {true, std::nullopt}},
         {"CART", {true, std::nullopt}},
         {"CBMOPTS", {true, std::nullopt}},
         {"CECON", {true, std::nullopt}},
