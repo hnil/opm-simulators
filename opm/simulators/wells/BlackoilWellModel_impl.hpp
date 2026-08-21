@@ -29,6 +29,7 @@
 #include <opm/simulators/wells/BlackoilWellModel.hpp>
 #endif
 
+#include <opm/grid/LookUpData.hh>
 #include <opm/grid/utility/cartesianToCompressed.hpp>
 
 #include <opm/input/eclipse/Schedule/Network/Balance.hpp>
@@ -305,9 +306,19 @@ namespace Opm {
             // Define per region average pressure calculators for use by
             // pressure maintenance groups (GPMAINT keyword).
             if (this->schedule()[reportStepIdx].has_gpmaint()) {
+                // The calculator indexes its region array by simulation cell,
+                // so map the input-grid array onto the leaf first -- identity
+                // without LGRs, but a refined grid is longer than the array.
+                const auto& fp = this->eclState_.fieldProps();
+                using LeafGridView = GetPropType<TypeTag, Properties::GridView>;
+                const LookUpData<Grid, LeafGridView> lookUpData(simulator_.gridView());
                 this->groupStateHelper().setRegionAveragePressureCalculator(
                     fieldGroup,
-                    this->eclState_.fieldProps(),
+                    [&fp, &lookUpData](const std::string& name)
+                    {
+                        return lookUpData.template assignFieldPropsIntOnLeaf<int>
+                            (fp, name, /*needsTranslation=*/false);
+                    },
                     this->regionalAveragePressureCalculator_
                 );
             }
