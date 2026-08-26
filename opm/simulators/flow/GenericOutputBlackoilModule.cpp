@@ -1255,9 +1255,18 @@ setupExtraBlockData(const std::size_t        reportStepNum,
 {
     const auto& sched = this->schedule_[reportStepNum - 1];
 
+    std::size_t numLgrSkipped = 0;
     for (const auto& wname : sched.well_order()) {
         const auto& well = sched.wells.get(wname);
         for (const auto& connection : well.getConnections()) {
+            // COMPDATL/LGR connections carry an LGR-local global_index();
+            // keying it into the global-grid BPR namespace would read an
+            // unrelated coarse cell.  Skip them here (well report block
+            // pressures for LGR completions are not implemented).
+            if (connection.get_lgr_level() > 0) {
+                ++numLgrSkipped;
+                continue;
+            }
             if (isCartIdxOnThisRank(connection.global_index())) {
                 this->extraBlockData_.emplace(std::piecewise_construct,
                                               std::forward_as_tuple("BPR",
@@ -1265,6 +1274,12 @@ setupExtraBlockData(const std::size_t        reportStepNum,
                                               std::forward_as_tuple(0.0));
             }
         }
+    }
+    if (numLgrSkipped > 0) {
+        OpmLog::warning("Skipping well-report block pressures (BPR) for "
+                        + std::to_string(numLgrSkipped)
+                        + " LGR-completed connection(s): block pressures for "
+                          "cells inside an LGR are not implemented.");
     }
 }
 

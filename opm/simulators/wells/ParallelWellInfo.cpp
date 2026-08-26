@@ -830,6 +830,16 @@ checkAllConnectionsFound()
                                conn->getJ() + 1,
                                conn->getK() + 1);
 
+            // For a connection completed inside an LGR (COMPDATL) the i,j,k
+            // above are LGR-*local* indices; flag this and add the LGR-local
+            // global cell so the message is not mistaken for main-grid indices.
+            if (conn->get_lgr_level() > 0) {
+                msg += fmt::format(" (LGR grid level {}, LGR-local indices; "
+                                   "LGR global cell {})",
+                                   conn->get_lgr_level(),
+                                   conn->global_index());
+            }
+
             missingCells = true;
         }
 
