@@ -254,6 +254,10 @@ protected:
     /// Zero-based IJK of a level-zero Cartesian index, for diagnostics.
     std::array<int,3> ijkFromCartesian_(std::size_t cartIdx) const;
 
+    //! \brief Render a sample of dropped connections as deck (i,j,k) pairs.
+    std::string describeDroppedNnc_(const std::vector<std::pair<std::size_t,std::size_t>>& sample,
+                                    std::size_t total) const;
+
     /// \brief Applies the previous calculate transmissibilities to the NNCs created via PINCH
     ///
     /// \param cartesianToCompressed Vector containing the compressed index (or -1 for inactive

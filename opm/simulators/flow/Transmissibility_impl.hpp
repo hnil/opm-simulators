@@ -1341,6 +1341,10 @@ applyPinchNncToGridTrans_(const std::unordered_map<std::size_t,int>& cartesianTo
     const auto& pinchNnc = eclState_.getPinchNNC();
     const auto& transMult = this->eclState_.getTransMult();
 
+    constexpr std::size_t maxReported = 5;
+    std::vector<std::pair<std::size_t,std::size_t>> dropped{};
+    std::size_t numDropped = 0;
+
     for (const auto& nncEntry : pinchNnc) {
         auto c1 = nncEntry.cell1;
         auto c2 = nncEntry.cell2;
@@ -1377,7 +1381,20 @@ applyPinchNncToGridTrans_(const std::unordered_map<std::size_t,int>& cartesianTo
                     candidate->second *= mult;
                 }
             }
+            else {
+                if (dropped.size() < maxReported) {
+                    dropped.push_back(std::make_pair(c1, c2));
+                }
+                ++numDropped;
+            }
         }
+    }
+
+    if (numDropped > 0) {
+        OpmLog::warning(fmt::format(
+            "{} PINCH connection(s) were computed but the grid holds no face to "
+            "carry them, so the pinched-out layers they bridge are not bridged.{}",
+            numDropped, this->describeDroppedNnc_(dropped, numDropped)));
     }
 }
 
@@ -1466,17 +1483,7 @@ applyNncToGridTrans_(const std::unordered_map<std::size_t,int>& cartesianToCompr
     }
 
     if (numUnconnectedNnc > 0) {
-        auto cells = std::string{};
-        for (const auto& [c1, c2] : unconnectedNnc) {
-            const auto ijk1 = ijkFromCartesian_(c1);
-            const auto ijk2 = ijkFromCartesian_(c2);
-            cells += fmt::format("\n  ({},{},{}) -- ({},{},{})",
-                                 ijk1[0] + 1, ijk1[1] + 1, ijk1[2] + 1,
-                                 ijk2[0] + 1, ijk2[1] + 1, ijk2[2] + 1);
-        }
-        if (numUnconnectedNnc > unconnectedNnc.size()) {
-            cells += fmt::format("\n  ... and {} more", numUnconnectedNnc - unconnectedNnc.size());
-        }
+        const auto cells = this->describeDroppedNnc_(unconnectedNnc, numUnconnectedNnc);
 
         OpmLog::warning(fmt::format
                         ("{} explicit connection(s) -- NNC, EDITNNC or a numerical aquifer -- "
@@ -1500,6 +1507,27 @@ ijkFromCartesian_(const std::size_t cartIdx) const
     const auto k = cartIdx / (static_cast<std::size_t>(dims[0]) * dims[1]);
 
     return { static_cast<int>(i), static_cast<int>(j), static_cast<int>(k) };
+}
+
+template<class Grid, class GridView, class ElementMapper, class CartesianIndexMapper, class Scalar>
+std::string
+Transmissibility<Grid,GridView,ElementMapper,CartesianIndexMapper,Scalar>::
+describeDroppedNnc_(const std::vector<std::pair<std::size_t,std::size_t>>& sample,
+                    const std::size_t total) const
+{
+    auto cells = std::string{};
+    for (const auto& [c1, c2] : sample) {
+        const auto ijk1 = ijkFromCartesian_(c1);
+        const auto ijk2 = ijkFromCartesian_(c2);
+        cells += fmt::format("\n  ({},{},{}) -- ({},{},{})",
+                             ijk1[0] + 1, ijk1[1] + 1, ijk1[2] + 1,
+                             ijk2[0] + 1, ijk2[1] + 1, ijk2[2] + 1);
+    }
+    if (total > sample.size()) {
+        cells += fmt::format("\n  ... and {} more", total - sample.size());
+    }
+
+    return cells;
 }
 
 template<class Grid, class GridView, class ElementMapper, class CartesianIndexMapper, class Scalar>
@@ -1624,6 +1652,10 @@ applyNncMultreg_(const std::unordered_map<std::size_t,int>& cartesianToCompresse
         return (ixPos == cartesianToCompressed.end()) ? -1 : ixPos->second;
     };
 
+    constexpr std::size_t maxReported = 5;
+    std::vector<std::pair<std::size_t,std::size_t>> dropped{};
+    std::size_t numDropped = 0;
+
     // Apply region-based transmissibility multipliers (i.e., the MULTREGT
     // keyword) to those transmissibilities that are directly assigned from
     // the input.
@@ -1655,7 +1687,20 @@ applyNncMultreg_(const std::unordered_map<std::size_t,int>& cartesianToCompresse
             if (candidate != this->trans_.end()) {
                 candidate->second *= transMult.getRegionMultiplierNNC(c1, c2);
             }
+            else if (transMult.getRegionMultiplierNNC(c1, c2) != Scalar{1}) {
+                if (dropped.size() < maxReported) {
+                    dropped.push_back(std::make_pair(c1, c2));
+                }
+                ++numDropped;
+            }
         }
+    }
+
+    if (numDropped > 0) {
+        OpmLog::warning(fmt::format(
+            "{} MULTREGT multiplier(s) name a connection the grid does not hold, so "
+            "the region boundary they seal is left open.{}",
+            numDropped, this->describeDroppedNnc_(dropped, numDropped)));
     }
 }
 
