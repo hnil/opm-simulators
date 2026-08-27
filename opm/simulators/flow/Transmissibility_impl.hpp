@@ -722,11 +722,18 @@ update(bool global, const TransUpdateQuantities update_quantities,
     // Create mapping from global to local index
     std::unordered_map<std::size_t,int> globalToLocal;
 
+    // A refined leaf cell's Cartesian index is its father's, so all children of
+    // one deck cell collide on a single key.  Keep the last-one-wins map for the
+    // paths that need one cell, and a father-to-children map for EDITNNC, whose
+    // multiplier belongs to every face the coarse connection became.
+    CartesianToLeaf globalToChildren;
+
     // Loop over all elements (global grid) and store Cartesian index
     for (const auto& elem : elements(grid_.leafGridView())) {
         int elemIdx = elemMapper.index(elem);
         int cartElemIdx =  cartMapper_.cartesianIndex(elemIdx);
         globalToLocal[cartElemIdx] = elemIdx;
+        globalToChildren[cartElemIdx].push_back(elemIdx);
     }
 
     if (!disableNNC) {
@@ -737,8 +744,8 @@ update(bool global, const TransUpdateQuantities update_quantities,
         // we will only see warnings for the partition of process 0 and also false positives.
         this->applyPinchNncToGridTrans_(globalToLocal, applyNncMultregT);
         this->applyNncToGridTrans_(globalToLocal);
-        this->applyEditNncToGridTrans_(globalToLocal);
-        this->applyEditNncrToGridTrans_(globalToLocal);
+        this->applyEditNncToGridTrans_(globalToChildren);
+        this->applyEditNncrToGridTrans_(globalToChildren);
         if (applyNncMultregT) {
             this->applyNncMultreg_(globalToLocal);
         }
@@ -1532,7 +1539,7 @@ describeDroppedNnc_(const std::vector<std::pair<std::size_t,std::size_t>>& sampl
 
 template<class Grid, class GridView, class ElementMapper, class CartesianIndexMapper, class Scalar>
 void Transmissibility<Grid,GridView,ElementMapper,CartesianIndexMapper,Scalar>::
-applyEditNncToGridTrans_(const std::unordered_map<std::size_t,int>& globalToLocal)
+applyEditNncToGridTrans_(const CartesianToLeaf& globalToLocal)
 {
     const auto& input = eclState_.getInputNNC();
     applyEditNncToGridTransHelper_(globalToLocal, "EDITNNC",
@@ -1545,7 +1552,7 @@ applyEditNncToGridTrans_(const std::unordered_map<std::size_t,int>& globalToLoca
 
 template<class Grid, class GridView, class ElementMapper, class CartesianIndexMapper, class Scalar>
 void Transmissibility<Grid,GridView,ElementMapper,CartesianIndexMapper,Scalar>::
-applyEditNncrToGridTrans_(const std::unordered_map<std::size_t,int>& globalToLocal)
+applyEditNncrToGridTrans_(const CartesianToLeaf& globalToLocal)
 {
     const auto& input = eclState_.getInputNNC();
     applyEditNncToGridTransHelper_(globalToLocal, "EDITNNCR",
@@ -1558,7 +1565,7 @@ applyEditNncrToGridTrans_(const std::unordered_map<std::size_t,int>& globalToLoc
 
 template<class Grid, class GridView, class ElementMapper, class CartesianIndexMapper, class Scalar>
 void Transmissibility<Grid,GridView,ElementMapper,CartesianIndexMapper,Scalar>::
-applyEditNncToGridTransHelper_(const std::unordered_map<std::size_t,int>& globalToLocal,
+applyEditNncToGridTransHelper_(const CartesianToLeaf& globalToLocal,
                                const std::string& keyword,
                                const std::vector<NNCdata>& nncs,
                                const std::function<KeywordLocation(const NNCdata&)>& getLocation,
@@ -1610,22 +1617,40 @@ applyEditNncToGridTransHelper_(const std::unordered_map<std::size_t,int>& global
             continue;
         }
 
-        auto low = lowIt->second, high = highIt->second;
+        // Without refinement each deck cell is one leaf cell and this is the
+        // single face the record names.  With it, a connection between two coarse
+        // cells became a face between each pair of their children that touch, and
+        // the record's multiplier belongs to every one of them: it is
+        // dimensionless, so it carries over unchanged however the coarse face was
+        // divided.  Collect the faces first -- a record may be repeated, and each
+        // repeat must multiply each face exactly once.
+        auto faces = std::vector<decltype(trans_.begin())>{};
+        for (const auto childLow : lowIt->second) {
+            for (const auto childHigh : highIt->second) {
+                auto low = childLow, high = childHigh;
+                if (low > high) {
+                    std::swap(low, high);
+                }
 
-        if (low > high) {
-            std::swap(low, high);
+                auto candidate = trans_.find(details::isId(low, high));
+                if (candidate != trans_.end()) {
+                    faces.push_back(candidate);
+                }
+            }
         }
 
-        auto candidate = trans_.find(details::isId(low, high));
-        if (candidate == trans_.end() && warnEditNNC_) {
-            print_warning(*nnc);
+        if (faces.empty()) {
+            if (warnEditNNC_) {
+                print_warning(*nnc);
+                warning_count++;
+            }
             ++nnc;
-            warning_count++;
         }
         else {
-            // NNC exists
             while (nnc != end && c1 == nnc->cell1 && c2 == nnc->cell2) {
-                apply(candidate->second, nnc->trans);
+                for (auto& face : faces) {
+                    apply(face->second, nnc->trans);
+                }
                 ++nnc;
             }
         }
