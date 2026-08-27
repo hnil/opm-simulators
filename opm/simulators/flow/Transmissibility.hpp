@@ -267,14 +267,17 @@ protected:
                                    bool applyNncMultregT);
 
     /// \brief Multiplies the grid transmissibilities according to EDITNNC.
-    void applyEditNncToGridTrans_(const std::unordered_map<std::size_t,int>& globalToLocal);
+    //! \brief Children of each deck cell, for connections stated in deck indices.
+    using CartesianToLeaf = std::unordered_map<std::size_t,std::vector<int>>;
+
+    void applyEditNncToGridTrans_(const CartesianToLeaf& globalToLocal);
 
     /// \brief Resets the grid transmissibilities according to EDITNNCR.
-    void applyEditNncrToGridTrans_(const std::unordered_map<std::size_t,int>& globalToLocal);
+    void applyEditNncrToGridTrans_(const CartesianToLeaf& globalToLocal);
 
     void applyNncMultreg_(const std::unordered_map<std::size_t,int>& globalToLocal);
 
-    void applyEditNncToGridTransHelper_(const std::unordered_map<std::size_t,int>& globalToLocal,
+    void applyEditNncToGridTransHelper_(const CartesianToLeaf& globalToLocal,
                                         const std::string& keyword, const std::vector<NNCdata>& nncs,
                                         const std::function<KeywordLocation(const NNCdata&)>& getLocation,
                                         const std::function<void(Scalar&, const Scalar&)>& apply);
