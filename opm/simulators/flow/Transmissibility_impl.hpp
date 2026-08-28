@@ -705,12 +705,12 @@ update(bool global, const TransUpdateQuantities update_quantities,
         // when computing the gobal transmissibilities and all warnings will
         // be seen in a parallel. Unfortunately, when we do not use transmissibilities
         // we will only see warnings for the partition of process 0 and also false positives.
-        this->applyPinchNncToGridTrans_(globalToLocal, applyNncMultregT);
-        this->applyNncToGridTrans_(globalToLocal);
+        this->applyPinchNncToGridTrans_(globalToChildren, applyNncMultregT);
+        this->applyNncToGridTrans_(globalToChildren);
         this->applyEditNncToGridTrans_(globalToChildren);
         this->applyEditNncrToGridTrans_(globalToChildren);
         if (applyNncMultregT) {
-            this->applyNncMultreg_(globalToLocal);
+            this->applyNncMultreg_(globalToChildren);
         }
         warnEditNNC_ = false;
     }
@@ -1305,7 +1305,7 @@ computeFaceProperties(const Intersection& intersection,
 template<class Grid, class GridView, class ElementMapper, class CartesianIndexMapper, class Scalar>
 void
 Transmissibility<Grid,GridView,ElementMapper,CartesianIndexMapper,Scalar>::
-applyPinchNncToGridTrans_(const std::unordered_map<std::size_t,int>& cartesianToCompressed,
+applyPinchNncToGridTrans_(const CartesianToLeaf& cartesianToCompressed,
                           const bool applyNncMultregT)
 {
     const auto& pinchNnc = eclState_.getPinchNNC();
@@ -1320,50 +1320,62 @@ applyPinchNncToGridTrans_(const std::unordered_map<std::size_t,int>& cartesianTo
         auto c2 = nncEntry.cell2;
         auto lowIt = cartesianToCompressed.find(c1);
         auto highIt = cartesianToCompressed.find(c2);
-        int low = (lowIt == cartesianToCompressed.end())? -1 : lowIt->second;
-        int high = (highIt == cartesianToCompressed.end())? -1 : highIt->second;
 
-        if (low > high) {
-            std::swap(low, high);
-        }
-
-        if (low == -1 && high == -1) {
-            // Silently discard as it is not between active cells
-            continue;
-        }
-
-        if (low == -1 || high == -1) {
-            // We can end up here if one of the cells is overlap/ghost, because those
-            // are lacking connections to other cells in the ghost/overlap.
-            // Hence discard the NNC if it is between active cell and inactive cell
-            continue;
-        }
-
+        if ((lowIt == cartesianToCompressed.end()) ||
+            (highIt == cartesianToCompressed.end()))
         {
-            auto candidate = trans_.find(details::isId(low, high));
-            if (candidate != trans_.end()) {
-                // the correctly calculated transmissibility is stored in
-                // the NNC. Overwrite previous value with it.
-                // taking the region multiplier into account.
-                candidate->second = nncEntry.trans;
-                if (applyNncMultregT) {
-                    const auto mult = transMult.getRegionMultiplierNNC(c1, c2);
-                    candidate->second *= mult;
+            // Not between two active cells, or one end is an overlap/ghost cell
+            // that carries no connections. Discard, as before.
+            continue;
+        }
+
+        // Under refinement the coarse connection became a connection between each
+        // pair of the two cells' children that the grid actually joined. The
+        // transmissibility is an absolute one, so it has to be divided among them:
+        // n pairs each take r_d/n of it, r_d being the refinement in the connection's
+        // own direction, which is the children-per-cell over the pair count. Without
+        // refinement there is one child each and this is the single face as before.
+        auto faces = std::vector<decltype(trans_.begin())>{};
+        for (const auto childLow : lowIt->second) {
+            for (const auto childHigh : highIt->second) {
+                auto low = childLow, high = childHigh;
+                if (low > high) {
+                    std::swap(low, high);
+                }
+                auto candidate = trans_.find(details::isId(low, high));
+                if (candidate != trans_.end()) {
+                    faces.push_back(candidate);
                 }
             }
-            else {
-                if (dropped.size() < maxReported) {
-                    dropped.push_back(std::make_pair(c1, c2));
-                }
-                ++numDropped;
+        }
+
+        if (faces.empty()) {
+            if (dropped.size() < maxReported) {
+                dropped.push_back(std::make_pair(c1, c2));
             }
+            ++numDropped;
+            continue;
+        }
+
+        const auto n = static_cast<Scalar>(faces.size());
+        const auto children = static_cast<Scalar>(std::max(lowIt->second.size(),
+                                                           highIt->second.size()));
+        auto value = nncEntry.trans * (children / (n * n));
+        if (applyNncMultregT) {
+            value *= transMult.getRegionMultiplierNNC(c1, c2);
+        }
+
+        for (auto& face : faces) {
+            face->second = value;
         }
     }
 
     if (numDropped > 0) {
         OpmLog::warning(fmt::format(
             "{} PINCH connection(s) were computed but the grid holds no face to "
-            "carry them, so the pinched-out layers they bridge are not bridged.{}",
+            "carry them -- with refinement, no face between any pair of the two "
+            "cells' children -- so the pinched-out layers they bridge are not "
+            "bridged.{}",
             numDropped, this->describeDroppedNnc_(dropped, numDropped)));
     }
 }
@@ -1371,7 +1383,7 @@ applyPinchNncToGridTrans_(const std::unordered_map<std::size_t,int>& cartesianTo
 template<class Grid, class GridView, class ElementMapper, class CartesianIndexMapper, class Scalar>
 void
 Transmissibility<Grid,GridView,ElementMapper,CartesianIndexMapper,Scalar>::
-applyNncToGridTrans_(const std::unordered_map<std::size_t,int>& cartesianToCompressed)
+applyNncToGridTrans_(const CartesianToLeaf& cartesianToCompressed)
 {
     // First scale NNCs with EDITNNC.
     const auto& nnc_input = eclState_.getInputNNC().input();
@@ -1380,13 +1392,20 @@ applyNncToGridTrans_(const std::unordered_map<std::size_t,int>& cartesianToCompr
     std::vector<std::pair<std::size_t,std::size_t>> unconnectedNnc{};
     std::size_t numUnconnectedNnc = 0;
 
+    // A deck cell that several leaf cells descend from is inside a refinement box.
+    auto refined = [&cartesianToCompressed](const std::size_t cart)
+    {
+        const auto it = cartesianToCompressed.find(cart);
+        return (it != cartesianToCompressed.end()) && (it->second.size() > 1);
+    };
+
     for (const auto& nncEntry : nnc_input) {
         auto c1 = nncEntry.cell1;
         auto c2 = nncEntry.cell2;
         auto lowIt = cartesianToCompressed.find(c1);
         auto highIt = cartesianToCompressed.find(c2);
-        int low = (lowIt == cartesianToCompressed.end())? -1 : lowIt->second;
-        int high = (highIt == cartesianToCompressed.end())? -1 : highIt->second;
+        int low = (lowIt == cartesianToCompressed.end())? -1 : lowIt->second.front();
+        int high = (highIt == cartesianToCompressed.end())? -1 : highIt->second.front();
 
         if (low > high) {
             std::swap(low, high);
@@ -1404,6 +1423,19 @@ applyNncToGridTrans_(const std::unordered_map<std::size_t,int>& cartesianToCompr
                  << low << " -> " << high << ") with globalcell is (" << c1 << "->" << c2 <<")";
             OpmLog::warning(sstr.str());
             continue;
+        }
+
+        if (refined(c1) || refined(c2)) {
+            OPM_THROW(std::invalid_argument,
+                      fmt::format("An explicit connection -- the NNC keyword or a "
+                                  "numerical aquifer -- names cell {} or {}, which "
+                                  "a refinement box covers. Its transmissibility is "
+                                  "an absolute one and there is no rule yet for "
+                                  "dividing it among the faces the connection became, "
+                                  "so it would be applied to one arbitrary pair of "
+                                  "children or to none. Move the box off the "
+                                  "connection.",
+                                  ijkString_(c1), ijkString_(c2)));
         }
 
         if (auto candidate = trans_.find(details::isId(low, high)); candidate != trans_.end()) {
@@ -1689,6 +1721,15 @@ ijkFromCartesian_(const std::size_t cartIdx) const
 template<class Grid, class GridView, class ElementMapper, class CartesianIndexMapper, class Scalar>
 std::string
 Transmissibility<Grid,GridView,ElementMapper,CartesianIndexMapper,Scalar>::
+ijkString_(const std::size_t cartIdx) const
+{
+    const auto ijk = ijkFromCartesian_(cartIdx);
+    return fmt::format("({},{},{})", ijk[0] + 1, ijk[1] + 1, ijk[2] + 1);
+}
+
+template<class Grid, class GridView, class ElementMapper, class CartesianIndexMapper, class Scalar>
+std::string
+Transmissibility<Grid,GridView,ElementMapper,CartesianIndexMapper,Scalar>::
 describeDroppedNnc_(const std::vector<std::pair<std::size_t,std::size_t>>& sample,
                     const std::size_t total) const
 {
@@ -1836,7 +1877,7 @@ applyEditNncToGridTransHelper_(const CartesianToLeaf& globalToLocal,
 template<class Grid, class GridView, class ElementMapper, class CartesianIndexMapper, class Scalar>
 void
 Transmissibility<Grid,GridView,ElementMapper,CartesianIndexMapper,Scalar>::
-applyNncMultreg_(const std::unordered_map<std::size_t,int>& cartesianToCompressed)
+applyNncMultreg_(const CartesianToLeaf& cartesianToCompressed)
 {
     const auto& inputNNC = this->eclState_.getInputNNC();
     const auto& transMult = this->eclState_.getTransMult();
@@ -1844,7 +1885,14 @@ applyNncMultreg_(const std::unordered_map<std::size_t,int>& cartesianToCompresse
     auto compressedIdx = [&cartesianToCompressed](const std::size_t globIdx)
     {
         auto ixPos = cartesianToCompressed.find(globIdx);
-        return (ixPos == cartesianToCompressed.end()) ? -1 : ixPos->second;
+        return (ixPos == cartesianToCompressed.end()) ? -1 : ixPos->second.front();
+    };
+
+    // A deck cell that several leaf cells descend from is inside a refinement box.
+    auto refined = [&cartesianToCompressed](const std::size_t cart)
+    {
+        const auto it = cartesianToCompressed.find(cart);
+        return (it != cartesianToCompressed.end()) && (it->second.size() > 1);
     };
 
     constexpr std::size_t maxReported = 5;
@@ -1878,11 +1926,24 @@ applyNncMultreg_(const std::unordered_map<std::size_t,int>& cartesianToCompresse
                 std::swap(low, high);
             }
 
+            const auto mult = transMult.getRegionMultiplierNNC(c1, c2);
+            if ((mult != Scalar{1}) && (refined(c1) || refined(c2))) {
+                OPM_THROW(std::invalid_argument,
+                          fmt::format("MULTREGT gives the connection {} -- {} a "
+                                      "multiplier of {}, and a refinement box covers "
+                                      "one of those cells. The connection became "
+                                      "several faces there and the multiplier reaches "
+                                      "at most one of them, so the region boundary "
+                                      "would be left open. Move the box off the "
+                                      "connection, or set the multiplier to 1.",
+                                      ijkString_(c1), ijkString_(c2), mult));
+            }
+
             auto candidate = this->trans_.find(details::isId(low, high));
             if (candidate != this->trans_.end()) {
-                candidate->second *= transMult.getRegionMultiplierNNC(c1, c2);
+                candidate->second *= mult;
             }
-            else if (transMult.getRegionMultiplierNNC(c1, c2) != Scalar{1}) {
+            else if (mult != Scalar{1}) {
                 if (dropped.size() < maxReported) {
                     dropped.push_back(std::make_pair(c1, c2));
                 }
