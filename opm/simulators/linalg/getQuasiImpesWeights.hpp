@@ -305,12 +305,12 @@ namespace Amg
                 const auto numDof = static_cast<int>(model.numTotalDof());
                 const auto dt = elemCtx.simulator().timeStepSize();
 
+                const auto& matrix = model.linearizer().jacobian().istlMatrix();
+
                 OPM_BEGIN_PARALLEL_TRY_CATCH();
 #ifdef _OPENMP
 #pragma omp parallel for private(bweights, block_transpose, storage) if(enable_thread_parallel)
 #endif
-                const auto& matrix = model.linearizer().jacobian().istlMatrix();
-
                 for (int dofIdx = 0; dofIdx < numDof; ++dofIdx) {
                     const auto& intQuants =
                         model.intensiveQuantities(static_cast<unsigned>(dofIdx), /*timeIdx=*/0);
