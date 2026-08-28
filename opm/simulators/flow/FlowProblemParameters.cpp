@@ -50,6 +50,12 @@ void registerFlowProblemParameters()
         ("Tell the output writer to use double precision. Useful for 'perfect' restarts");
     Parameters::Register<Parameters::RestartWritingInterval>
         ("The frequencies of which time steps are serialized to disk");
+    Parameters::Register<Parameters::LgrTransFromHost>
+        ("Across a refinement box's own boundaries, take each refined "
+         "transmissibility from the host cell's, scaled by the refinement "
+         "factor, rather than computing it from the child cell's geometry. "
+         "Faces interior to a host cell are computed as usual either way.");
+
     Parameters::Register<Parameters::EnableDriftCompensation>
         ("Enable partial compensation of systematic mass losses via "
          "the source term of the next time step");
