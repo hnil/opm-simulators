@@ -103,7 +103,8 @@ Transmissibility(const EclipseState& eclState,
                  std::function<std::array<double,dimWorld>(int)> centroids,
                  bool enableEnergy,
                  bool enableDiffusivity,
-                 bool enableDispersivity)
+                 bool enableDispersivity,
+                 bool lgrTransFromHost)
       : eclState_(eclState)
       , gridView_(gridView)
       , cartMapper_(cartMapper)
@@ -112,6 +113,7 @@ Transmissibility(const EclipseState& eclState,
       , enableEnergy_(enableEnergy)
       , enableDiffusivity_(enableDiffusivity)
       , enableDispersivity_(enableDispersivity)
+      , lgrTransFromHost_(lgrTransFromHost)
       , lookUpData_(gridView)
       , lookUpCartesianData_(gridView, cartMapper)
 {
@@ -703,6 +705,10 @@ update(bool global, const TransUpdateQuantities update_quantities,
             this->applyNncMultreg_(globalToLocal);
         }
         warnEditNNC_ = false;
+    }
+
+    if (this->lgrTransFromHost_) {
+        this->applyHostTransToRefinedFaces_();
     }
 
     // If disableNNC == true, remove all non-neighbouring transmissibilities.
@@ -1453,6 +1459,210 @@ applyNncToGridTrans_(const std::unordered_map<std::size_t,int>& cartesianToCompr
                          "the coarse cell is not on the leaf grid and neither is its connection. "
                          "A numerical aquifer in that position stops feeding the reservoir "
                          "entirely.{}", numUnconnectedNnc, cells));
+    }
+}
+
+
+// Across a host cell's own faces, take the refined transmissibility from the host
+// rather than from the child's geometry.
+//
+// ECLIPSE does this: summed over the child faces a coarse face became, its refined
+// TRANX over the host's is the analytic refinement factor -- 3.0000 for a 3x
+// refinement, to within 0.001 for 74 % of Drogon's cells, and the same for TRANY,
+// TRANZ and the fault NNCs.  So each child face carries T_host * r_dir / n, where
+// r_dir is the refinement in the face's own direction and n the number of child
+// faces the coarse face became.
+//
+// Faces *interior* to a host cell are left alone: they were not part of any coarse
+// face, so there is nothing to inherit and the geometric value stands -- which is
+// what flow computes everywhere else.
+//
+// The host transmissibility is computed here from the level-zero grid, because the
+// coarse cells inside a box are not on the leaf and so have no entry in trans_.
+template<class Grid, class GridView, class ElementMapper, class CartesianIndexMapper, class Scalar>
+void Transmissibility<Grid,GridView,ElementMapper,CartesianIndexMapper,Scalar>::
+applyHostTransToRefinedFaces_()
+{
+    if constexpr (! std::is_same_v<Grid, Dune::CpGrid>) {
+        OPM_THROW(std::invalid_argument,
+                  "Taking a refined transmissibility from its host cell is "
+                  "implemented for CpGrid only.");
+    }
+    else {
+        if (grid_.maxLevel() == 0) {
+            return;
+        }
+
+        if (grid_.comm().size() > 1) {
+            OPM_THROW(std::invalid_argument,
+                      "Taking a refined transmissibility from its host cell is "
+                      "supported on a single MPI process only. Run in serial, or "
+                      "drop --lgr-trans-from-host.");
+        }
+
+        // Refinement factors per level, from the deck's boxes. A graded box
+        // (N*FIN/H*FIN) has no single factor per direction, so refuse it rather
+        // than apply the wrong one.
+        const auto& lgrs = eclState_.getLgrs();
+        auto factor = std::unordered_map<std::string, std::array<int,3>>{};
+        for (std::size_t i = 0; i < lgrs.size(); ++i) {
+            const auto& box = lgrs.getLgr(i);
+            const std::array<int,3> parents {
+                box.I2() - box.I1() + 1,
+                box.J2() - box.J1() + 1,
+                box.K2() - box.K1() + 1,
+            };
+            const std::array<int,3> refined { box.NX(), box.NY(), box.NZ() };
+            auto f = std::array<int,3>{};
+            for (int d = 0; d < 3; ++d) {
+                if ((parents[d] <= 0) || (refined[d] % parents[d] != 0)) {
+                    OPM_THROW(std::invalid_argument,
+                              fmt::format("Refinement box '{}' does not subdivide "
+                                          "every parent cell equally, so a refined "
+                                          "transmissibility has no single host factor. "
+                                          "Drop --lgr-trans-from-host for this deck.",
+                                          box.NAME()));
+                }
+                f[d] = refined[d] / parents[d];
+            }
+            factor[box.NAME()] = f;
+        }
+
+        // Host transmissibility, keyed by the level-zero element pair.
+        using LevelView = std::remove_const_t<decltype(grid_.levelGridView(0))>;
+        const LevelView level0 = grid_.levelGridView(0);
+        const auto levelMapper = Dune::MultipleCodimMultipleGeomTypeMapper<LevelView>
+            { level0, Dune::mcmgElementLayout() };
+
+        const auto& fp = eclState_.fieldProps();
+        const auto permx = fp.get_double("PERMX");
+        const auto permy = fp.has_double("PERMY") ? fp.get_double("PERMY") : permx;
+        const auto permz = fp.has_double("PERMZ") ? fp.get_double("PERMZ") : permx;
+        const auto ntgArr = fp.has_double("NTG")
+            ? fp.get_double("NTG") : std::vector<double>(permx.size(), 1.0);
+
+        auto hostTrans = std::unordered_map<std::uint64_t, Scalar>{};
+        for (const auto& elem : elements(level0)) {
+            const auto inIdx = levelMapper.index(elem);
+            for (const auto& is : intersections(level0, elem)) {
+                if (!is.neighbor()) {
+                    continue;
+                }
+                const auto outIdx = levelMapper.index(is.outside());
+                if (inIdx > outIdx) {
+                    continue;
+                }
+
+                const auto& geom = is.geometry();
+                DimVector areaNormal = is.centerUnitOuterNormal();
+                areaNormal *= geom.volume();
+                const auto faceCentre = geom.center();
+
+                auto half = [&](const auto idx, const auto& centre, const int faceIdx)
+                {
+                    DimMatrix K(0.0);
+                    K[0][0] = permx[idx]; K[1][1] = permy[idx]; K[2][2] = permz[idx];
+                    DimVector d = faceCentre;
+                    for (unsigned i = 0; i < dimWorld; ++i) {
+                        d[i] -= centre[i];
+                    }
+                    auto t = computeHalfTrans_(areaNormal, faceIdx, d, K);
+                    if (faceIdx < 4) {          // lateral faces carry NTG
+                        t *= ntgArr[idx];
+                    }
+                    return t;
+                };
+
+                const auto tIn  = half(inIdx,  elem.geometry().center(),
+                                       is.indexInInside());
+                const auto tOut = half(outIdx, is.outside().geometry().center(),
+                                       is.indexInOutside());
+                if ((tIn <= 0.0) || (tOut <= 0.0)) {
+                    continue;
+                }
+
+                hostTrans[details::isId(inIdx, outIdx)] = 1.0 / (1.0/tIn + 1.0/tOut);
+            }
+        }
+
+        // Group the leaf faces by the host pair they subdivide.
+        struct Group { std::vector<std::uint64_t> faces; int dir{-1}; };
+        auto groups = std::unordered_map<std::uint64_t, Group>{};
+
+        const auto elemMapper = ElementMapper { gridView_, Dune::mcmgElementLayout() };
+        for (const auto& elem : elements(gridView_)) {
+            if (elem.level() == 0) {
+                continue;
+            }
+            for (const auto& is : intersections(gridView_, elem)) {
+                if (!is.neighbor() || (is.outside().level() != elem.level())) {
+                    continue;
+                }
+                const auto inIdx = elemMapper.index(elem);
+                const auto outIdx = elemMapper.index(is.outside());
+                if (inIdx > outIdx) {
+                    continue;
+                }
+                if (is.indexInInside() < 0) {   // NNC
+                    continue;
+                }
+
+                const auto fIn = levelMapper.index(elem.father());
+                const auto fOut = levelMapper.index(is.outside().father());
+                if (fIn == fOut) {
+                    continue;               // interior to a host cell: leave it
+                }
+
+                auto& g = groups[details::isId(fIn, fOut)];
+                g.faces.push_back(details::isId(inIdx, outIdx));
+                g.dir = is.indexInInside() / 2;
+            }
+        }
+
+        std::size_t applied = 0, unmatched = 0, untouched = 0;
+        for (const auto& [hostPair, g] : groups) {
+            const auto host = hostTrans.find(hostPair);
+            if ((host == hostTrans.end()) || g.faces.empty() || (g.dir < 0)) {
+                ++unmatched;
+                continue;
+            }
+
+            // Every box in the deck refines by the same factor in this build --
+            // the loop above rejects anything else -- so any entry serves.
+            const auto& f = factor.begin()->second;
+
+            // A direction that is not subdivided has nothing to distribute: the
+            // child face is the host face, and the computed value already is the
+            // host's. Leaving those alone also keeps the host transmissibility
+            // computed here -- plain geometry, with no PINCH or MINPV processing
+            // behind it -- out of the vertical, where on a pinched-out grid that
+            // processing is most of the answer.
+            if (f[g.dir] == 1) {
+                ++untouched;
+                continue;
+            }
+
+            const auto share = static_cast<Scalar>(f[g.dir]) /
+                               static_cast<Scalar>(g.faces.size());
+
+            for (const auto& faceId : g.faces) {
+                auto it = trans_.find(faceId);
+                if (it != trans_.end()) {
+                    it->second = host->second * share;
+                    ++applied;
+                }
+            }
+        }
+
+        OpmLog::info(fmt::format(
+            "Refined transmissibility taken from the host cell on {} faces across "
+            "{} host-cell boundaries{}. Faces interior to a host cell, and faces "
+            "normal to an unrefined direction, keep their computed value ({} "
+            "boundaries).", applied, groups.size() - unmatched - untouched,
+            (unmatched > 0)
+            ? fmt::format("; {} boundaries had no host transmissibility and were "
+                          "left computed", unmatched)
+            : "", untouched));
     }
 }
 

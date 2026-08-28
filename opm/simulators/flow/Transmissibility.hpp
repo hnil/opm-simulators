@@ -66,7 +66,8 @@ public:
                      std::function<std::array<double,dimWorld>(int)> centroids,
                      bool enableEnergy,
                      bool enableDiffusivity,
-                     bool enableDispersivity);
+                     bool enableDispersivity,
+                     bool lgrTransFromHost = false);
 
     /*!
      * \brief Return the permeability for an element.
@@ -236,6 +237,10 @@ protected:
     /// Zero-based IJK of a level-zero Cartesian index, for diagnostics.
     std::array<int,3> ijkFromCartesian_(std::size_t cartIdx) const;
 
+    //! \brief Replace refined transmissibilities across a host cell's own faces
+    //!        with the host's, scaled by the refinement factor.
+    void applyHostTransToRefinedFaces_();
+
     //! \brief Render a sample of dropped connections as deck (i,j,k) pairs.
     std::string describeDroppedNnc_(const std::vector<std::pair<std::size_t,std::size_t>>& sample,
                                     std::size_t total) const;
@@ -321,6 +326,7 @@ protected:
     bool enableEnergy_;
     bool enableDiffusivity_;
     bool enableDispersivity_;
+    bool lgrTransFromHost_{false};
     bool warnEditNNC_ = true;
     std::unordered_map<std::uint64_t, Scalar> thermalHalfTrans_; //NB this is based on direction map size is ca 2*trans_ (diffusivity_)
     std::unordered_map<std::uint64_t, Scalar> diffusivity_;
