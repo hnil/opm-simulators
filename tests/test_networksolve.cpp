@@ -3627,6 +3627,114 @@ BOOST_AUTO_TEST_CASE(how_far_the_network_moves_wells_from_their_ipr)
                        << " bar, max " << pct(bhp_move_bar, 1.0) << " bar");
 }
 
+// The group tree as sparse rows, two levels deep.
+//
+//        FIELD (target)
+//        /          \
+//      P1            P2
+//    W1  W2          W3
+//
+// Everything measured so far had exactly one group constraint, flattened
+// outside the Newton into one target and per-well guide rates. This writes the
+// tree out: phase rates and a multiplier per group, a definition row that
+// touches only immediate children, and one complementarity per group saying it
+// sits at whichever of its parent's share and its own target is smaller.
+//
+// The well rows are four FB deep here (rate, tubing, bhp, share), which is the
+// nesting depth nothing has tested.
+namespace {
+    struct TreeCase
+    {
+        using Sys = NetworkSolve::ProductionSystem<double>;
+        VFPProdProperties<double> props;
+        UnitSystem units{};
+
+        // bhp limit 100 bar, shut-in 250 bar, cap = rate at the bhp limit.
+        static std::array<double, 2> ipr(const double cap_per_day)
+        {
+            const double q = cap_per_day / 86400.0;
+            const double b = -q / (250e5 - 100e5);
+            return {-b * 250e5, b};
+        }
+
+        Sys build(const double field_target, const double p1_target,
+                  const std::array<double, 3>& caps) const
+        {
+            Sys sys(props, units);
+            NetworkSolve::Node root; root.name = "TERM"; root.parent = -1;
+            sys.addNode(root, 0.0);
+            NetworkSolve::Node n; n.name = "N"; n.parent = 0;
+            sys.addNode(n, 0.0);
+            sys.setTerminalPressure(convert::from(120.0, bars));
+
+            typename Sys::Group f; f.name = "FIELD"; f.parent = -1;
+            f.target = field_target / 86400.0;
+            const int gf = sys.addGroup(f);
+            typename Sys::Group p1; p1.name = "P1"; p1.parent = gf; p1.guide = 1.0;
+            if (p1_target > 0.0) { p1.target = p1_target / 86400.0; }
+            const int g1 = sys.addGroup(p1);
+            typename Sys::Group p2; p2.name = "P2"; p2.parent = gf; p2.guide = 1.0;
+            const int g2 = sys.addGroup(p2);
+
+            const int grp[3] = {g1, g1, g2};
+            for (int i = 0; i < 3; ++i) {
+                typename Sys::Well w;
+                w.name = "W" + std::to_string(i + 1);
+                w.node = 1;
+                w.vfp_table = 0;                 // no tubing: rate/bhp/share only
+                const auto ab = ipr(caps[i]);
+                w.ipr_a[1] = ab[0]; w.ipr_b[1] = ab[1];
+                w.bhp_limit = convert::from(100.0, bars);
+                w.oil_rate_limit = 5000.0 / 86400.0;
+                w.guide = 1.0;
+                w.group = grp[i];
+                w.q_start = 0.5 * caps[i] / 86400.0;
+                sys.addWell(std::move(w));
+            }
+            sys.setGroupTree(true);
+            sys.setAnalyticJacobian(false);      // group rows differenced for now
+            sys.setComplementarity(true);
+            sys.finish();
+            sys.finishGroups();
+            return sys;
+        }
+    };
+}
+
+BOOST_AUTO_TEST_CASE(the_group_tree_as_sparse_rows)
+{
+    TreeCase tc;
+    const std::vector<double> guess{convert::from(120.0, bars)};
+
+    struct Want { const char* what; double field; double p1; std::array<double,3> caps;
+                  std::array<double,3> q; };
+    const std::vector<Want> cases{
+        // Field 3000 shared 1:1 by the platforms; P2 can only make 400, so P1
+        // absorbs 2600 and splits it evenly between two 2000-capable wells.
+        {"one well caps, field target met", 3000.0, 0.0, {2000, 2000, 400}, {1300, 1300, 400}},
+        // Now P1 is itself capped at 2000. Field cannot reach 3000: 2000 + 400.
+        {"platform target binds too",       3000.0, 2000.0, {2000, 2000, 400}, {1000, 1000, 400}},
+        // Nothing binds below the field: 1200 split 600/600, then 300/300.
+        {"nothing below the field binds",   1200.0, 0.0, {2000, 2000, 2000}, {300, 300, 600}},
+    };
+
+    for (const auto& c : cases) {
+        auto sys = tc.build(c.field, c.p1, c.caps);
+        const auto r = NetworkSolve::solve(sys, guess, {1e-2, 60}, NetworkSolve::FullStep{});
+        std::string got;
+        for (int w = 0; w < sys.numWells(); ++w) {
+            got += fmt::format(" {}={:.1f}", sys.wells()[w].name, r.well_rate[w] * 86400.0);
+        }
+        BOOST_TEST_MESSAGE(c.what << ": " << (r.converged ? "converged" : "FAILED")
+                           << " in " << r.iterations << " it, residual " << r.residual << got);
+        BOOST_CHECK(r.converged);
+        if (!r.converged) { continue; }
+        for (int w = 0; w < sys.numWells(); ++w) {
+            BOOST_CHECK_CLOSE(r.well_rate[w] * 86400.0, c.q[w], 0.5);
+        }
+    }
+}
+
 BOOST_AUTO_TEST_CASE(production_step_bounds)
 {
     ProductionCase c;

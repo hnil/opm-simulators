@@ -70,6 +70,19 @@ public:
     using ScalarType = Scalar;
     static constexpr int NP = 3;   // water, oil, gas -- the order VFPPROD wants
 
+    /// A node of the GRUPTREE, as the sparse formulation sees it: its own
+    /// phase rates, one multiplier that scales what it hands its children, and
+    /// at most one rate target. Off unless setGroupTree(true) -- with no groups
+    /// added the unknowns and rows below vanish and nothing changes.
+    struct Group
+    {
+        std::string name;
+        int parent = -1;               // index in groups_, -1 for the root
+        Scalar target = 0;             // oil target; 0 means none
+        Scalar guide = 1;              // share of its parent
+        Scalar efficiency = 1;
+    };
+
     /// Tied: on its rate limit and its tubing at once -- see the residual.
     /// Cmpl: all three of a well's own limits as one complementarity row.
     /// Shut: its tubing cannot lift at this node pressure; q = 0.
@@ -111,6 +124,7 @@ public:
         /// hump gives a well two branches, dead and flowing, and which one the
         /// solve lands on depends on where it starts; this says which it is on.
         Scalar q_start = 0.0;
+        int group = -1;          // index in groups_, -1 = not in the tree
         /// Shut by the adapter: no inflow performance, or shut by the network
         /// earlier in this step. No IPR; the rows hold q = 0, bhp = limit.
         bool shut = false;
@@ -261,7 +275,48 @@ public:
     /// Oil rate the group above this network is asked for.
     void setGroupTarget(const Scalar target) { group_target_ = target; }
 
+    /// The full group tree as sparse rows, instead of one flattened target.
+    /// Needs the complementarity rows; see groupRows() in the residual.
+    void setGroupTree(const bool on) { group_tree_ = on; }
+
+    /// Whether wells get the complementarity row. Normally it needs the
+    /// assembled Jacobian -- differencing across the kink was worth 678
+    /// fallbacks -- but the group-tree prototype has no analytic rows yet, so
+    /// it runs differenced while the formulation is being checked.
+    bool useCmplRows() const { return complementarity_ && (analytic_jacobian_ || group_tree_); }
+    bool usesGroupTree() const { return group_tree_ && !groups_.empty(); }
+
+    int addGroup(Group g)
+    {
+        groups_.push_back(std::move(g));
+        group_children_.emplace_back();
+        group_wells_.emplace_back();
+        return static_cast<int>(groups_.size()) - 1;
+    }
+    const std::vector<Group>& groups() const { return groups_; }
+    int numGroups() const { return static_cast<int>(groups_.size()); }
+
+    /// Rate at which a multiplier counts as "not limiting": comfortably above
+    /// any well's capacity, so a group below its target puts no ceiling on its
+    /// children -- but in units of the rate scale, or the slack swamps every
+    /// other row in the residual.
+    Scalar uncapped() const { return Scalar{1e3} * rate_scale_; }
+
     bool grouped() const { return group_target_ > 0.0; }
+
+    /// Index the tree: children under parents, wells under their group.
+    void finishGroups()
+    {
+        for (auto& c : group_children_) { c.clear(); }
+        for (auto& c : group_wells_) { c.clear(); }
+        for (int g = 0; g < numGroups(); ++g) {
+            const int par = groups_[g].parent;
+            if (par >= 0) { group_children_[par].push_back(g); }
+        }
+        for (int w = 0; w < numWells(); ++w) {
+            if (wells_[w].group >= 0) { group_wells_[wells_[w].group].push_back(w); }
+        }
+    }
 
     void finish()
     {
@@ -308,7 +363,12 @@ public:
 
     int numNodes() const { return static_cast<int>(nodes_.size()) - 1; }
     int numWells() const override { return static_cast<int>(wells_.size()); }
-    int size() const override { return 4 * numNodes() + 4 * numWells() + 1; }
+    int size() const override { return groupBase() + (NP + 1) * numGroups(); }
+    int groupBase() const { return 4 * numNodes() + 4 * numWells() + 1; }
+    /// Group g's phase rates and its multiplier. Appended after the existing
+    /// unknowns, so with no groups every index below is exactly what it was.
+    int gqIdx(const int g, const int ph) const { return groupBase() + (NP + 1) * g + ph; }
+    int glIdx(const int g) const { return groupBase() + (NP + 1) * g + NP; }
 
     const std::vector<Node>& nodes() const { return nodes_; }
     const std::vector<Well>& wells() const { return wells_; }
@@ -706,7 +766,7 @@ public:
                 // not b's: b is negative below the liquid-loading hump too,
                 // where the well does flow. q >= 0 is kept by limitStep(), so
                 // the lookup takes max(q, 0).
-                if (cmplDead(w, pressure(well.node))) {
+                if (hasTubing(well) && cmplDead(w, pressure(well.node))) {
                     control = q[1] / rate_scale_;
                     break;
                 }
@@ -714,10 +774,20 @@ public:
                 for (int ph = 0; ph < NP; ++ph) { qp[ph] = std::max(q[ph], Scalar{0}); }
                 const Scalar a = (well.oil_rate_limit > Scalar{0})
                     ? (well.oil_rate_limit - q[1]) / rate_scale_ : Scalar{1e6};
-                const Scalar b = (bhp - (tableBhp(well.vfp_table, pressure(well.node), qp, well.alq)
-                                         - well.vfp_dp)) / pressure_scale_;
+                // No VFPPROD means no tubing curve, so thp is not one of this
+                // well's limits and its slack never binds.
+                const Scalar b = hasTubing(well)
+                    ? (bhp - (tableBhp(well.vfp_table, pressure(well.node), qp, well.alq)
+                              - well.vfp_dp)) / pressure_scale_
+                    : Scalar{1e6};
                 const Scalar c = (bhp - well.bhp_limit) / pressure_scale_;
                 control = fb(fb(a, b), c);
+                if (usesGroupTree() && well.group >= 0) {
+                    // One more slack in the same nest: the share the well's
+                    // group hands it. Four deep now -- see the bench.
+                    const Scalar d = (well.guide * x[glIdx(well.group)] - q[1]) / rate_scale_;
+                    control = fb(control, d);
+                }
                 break;
             }
             case Control::Shut:
@@ -740,6 +810,8 @@ public:
             }
         }
 
+        groupRows(x, r);
+
         // With nobody on group control the multiplier is free, so pin it rather
         // than hand the Newton a singular column.
         const bool any = std::find(controls_.begin(), controls_.end(), Control::Grup)
@@ -747,6 +819,62 @@ public:
         r[lambdaIdx()] = grouped() && any ? (produced - group_target_) / rate_scale_
                                           : (x[lambdaIdx()] - lambda0()) / rate_scale_;
         return r;
+    }
+
+    /// The group tree's own rows. Two per group, and they mirror the tree:
+    ///
+    ///   definition   Q_g,ph = sum over its child groups and its wells
+    ///   allocation   phi( share_g - Q_g,oil , target_g - Q_g,oil ) = 0
+    ///
+    /// where share_g = guide_g * lambda_parent. The allocation row says the
+    /// group sits at whichever of its parent's share and its own target is
+    /// smaller, with the other slack non-negative -- the same complementarity
+    /// the well rows use, one level up. lambda_g is what scales its children,
+    /// and is pinned by its own definition row through them.
+    ///
+    /// The definition row touches only immediate children, so the Jacobian's
+    /// sparsity follows the tree instead of every group row reaching every
+    /// well beneath it.
+    void groupRows(const State& x, State& r) const
+    {
+        if (!usesGroupTree()) { return; }
+        for (int g = 0; g < numGroups(); ++g) {
+            const auto& grp = groups_[g];
+            for (int ph = 0; ph < NP; ++ph) {
+                Scalar bal = x[gqIdx(g, ph)];
+                for (const int c : group_children_[g]) {
+                    bal -= groups_[c].efficiency * x[gqIdx(c, ph)];
+                }
+                for (const int w : group_wells_[g]) {
+                    bal -= wells_[w].efficiency * x[qwIdx(w, ph)];
+                }
+                r[gqIdx(g, ph)] = bal / rate_scale_;
+            }
+            // What holds this group down: its parent's share, or its own
+            // target, whichever is smaller. The root has no parent, so only
+            // its target.
+            const Scalar Q = x[gqIdx(g, 1)];
+            Scalar bound = grp.target > Scalar{0} ? grp.target : uncapped();
+            if (grp.parent >= 0) {
+                bound = std::min(bound, grp.guide * x[glIdx(grp.parent)]);
+            }
+            if (bound >= uncapped()) {
+                // Nothing can hold it: its rate is whatever its children make,
+                // and it puts no ceiling on them.
+                r[glIdx(g)] = (x[glIdx(g)] - uncapped()) / rate_scale_;
+                continue;
+            }
+            // Either the group sits at that bound, or its multiplier is
+            // uncapped and its children are limited by something of their own.
+            //
+            // Writing this as fb(share - Q, target - Q) instead -- "one of the
+            // two bounds binds" -- looks natural and is wrong: with neither
+            // bound real, both slacks stand at the stand-in for infinity and FB
+            // demands one of them be zero, so the stand-in becomes a genuine
+            // constraint. The residual sits at 1000*(2 - sqrt 2).
+            r[glIdx(g)] = fb((uncapped() - x[glIdx(g)]) / rate_scale_,
+                             (bound - Q) / rate_scale_);
+        }
     }
 
     /// Each control names the oil rate it would allow at this node pressure and
@@ -876,7 +1004,7 @@ public:
                 && current_allows <= smallest * (Scalar{1} + Scalar{1e-3})) {
                 wanted = controls_[w];
             }
-            if (complementarity_ && analytic_jacobian_) {
+            if (useCmplRows()) {
                 // Decided once per solve, from the starting point, and kept:
                 // deciding it from the iterate makes the well switch between
                 // the row and the active set as the node pressure moves, which
@@ -895,17 +1023,21 @@ public:
                     // it on bhp or rate control and produce through tubing
                     // that cannot lift (three dead wells at 2500 m3/d each
                     // under a 6000 choke target: dump_prod_1112).
+                    // A well in the group tree gets the row whether or not it
+                    // has a tubing curve: its share slack lives there.
+                    const bool in_tree = usesGroupTree() && well.group >= 0;
                     cmpl_[w] = well.shut ? 2
-                        : hasTubing(well) && !well.pinned && !(grouped() && well.in_group)
+                        : (hasTubing(well) || in_tree) && !well.pinned
+                          && (in_tree || !(grouped() && well.in_group))
                         ? (dead ? 2 : 1) : 0;
                 }
             }
-            if (complementarity_ && analytic_jacobian_ && cmpl_[w] == 2) {
+            if (useCmplRows() && cmpl_[w] == 2) {
                 changed |= (controls_[w] != Control::Shut);
                 controls_[w] = Control::Shut;
                 continue;
             }
-            if (complementarity_ && analytic_jacobian_ && cmpl_[w]) {
+            if (useCmplRows() && cmpl_[w]) {
                 wanted = Control::Cmpl;           // the row decides; nothing to switch
             } else if (controls_[w] == Control::Tied) {
                 wanted = Control::Tied;           // sticky: the row decides
@@ -928,6 +1060,7 @@ public:
     State start(const State& node_pressure) const override
     {
         State x(size(), 0.0);
+        for (int g = 0; g < numGroups(); ++g) { x[glIdx(g)] = uncapped(); }
         for (int n = 1; n <= numNodes(); ++n) {
             x[pIdx(n)] = node_pressure[n];
         }
@@ -1444,6 +1577,10 @@ private:
 
     Scalar terminal_pressure_ = 0.0;
     Scalar group_target_ = 0.0;
+    bool group_tree_ = false;
+    std::vector<Group> groups_;
+    std::vector<std::vector<int>> group_children_;
+    std::vector<std::vector<int>> group_wells_;
     Scalar rate_scale_ = 0.0;
     Scalar pressure_scale_ = unit::barsa;
 };
