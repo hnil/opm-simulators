@@ -3532,6 +3532,101 @@ BOOST_AUTO_TEST_CASE(exact_intersection_against_the_scan)
     BOOST_CHECK_LT(exact_lookups, scan_lookups);
 }
 
+// How stale is the IPR by the time the network has finished with it?
+//
+// The IPR is an exact derivative of the converged well equation at one bhp --
+// the point q_start sits at. Everything the network does with a well is a
+// first-order prediction from there, so the honest question is how far it
+// moves wells away from that point. If the moves are small the linearisation
+// is fine and a richer inflow model would buy nothing; if they are large it is
+// the limit on the whole approach.
+//
+// Reads a directory of dumps (OPM_NETWORK_DUMP_PROD) written with
+// OPM_NETWORK_DUMP_ALL, so these are ordinary solves, not just failures.
+BOOST_AUTO_TEST_CASE(how_far_the_network_moves_wells_from_their_ipr)
+{
+    const char* dir = std::getenv("OPM_NETWORK_DUMP_PROD");
+    const char* inc = std::getenv("OPM_VFP_INCLUDE");
+    if (dir == nullptr || inc == nullptr || !std::filesystem::is_directory(dir)) {
+        BOOST_TEST_MESSAGE("OPM_NETWORK_DUMP_PROD / OPM_VFP_INCLUDE not set; staleness not measured");
+        return;
+    }
+    std::deque<VFPProdTable> tables;
+    VFPProdProperties<double> props;
+    const UnitSystem units{};
+    for (const char* name : {"well_vfp.ecl", "flowl_b_vfp.ecl", "flowl_c_vfp.ecl"}) {
+        const auto path = std::filesystem::path(inc) / name;
+        if (!std::filesystem::exists(path)) { continue; }
+        const auto deck = Parser{}.parseFile(path.string());
+        for (const auto& kw : deck.getKeywordList("VFPPROD")) {
+            tables.emplace_back(*kw, true, units);
+            props.addTable(tables.back());
+        }
+    }
+    std::vector<std::filesystem::path> files;
+    for (const auto& e : std::filesystem::directory_iterator(dir)) {
+        if (e.path().extension() == ".txt") { files.push_back(e.path()); }
+    }
+    std::sort(files.begin(), files.end());
+
+    std::vector<double> rate_move, bhp_move_bar, span_move;
+    int systems = 0, wells = 0, from_zero = 0;
+    for (const auto& file : files) {
+        std::ifstream f(file);
+        std::string head; std::getline(f, head);
+        if (head != "production") { continue; }
+        auto [system, guess] = NetworkSolve::readProduction<double>(f, props, units);
+        system.setAnalyticJacobian(true);
+        system.setComplementarity(true);
+        const auto r = NetworkSolve::solve(system, guess, {1e-2, 50}, NetworkSolve::FullStep{});
+        if (!r.converged) { continue; }
+        ++systems;
+        for (int w = 0; w < system.numWells(); ++w) {
+            const auto& well = system.wells()[w];
+            if (!(well.ipr_b[1] < 0.0)) { continue; }
+            ++wells;
+            if (!(well.q_start > 0.0)) { ++from_zero; continue; }
+            const double q0 = well.q_start;
+            const double q1 = r.well_rate[w];
+            rate_move.push_back(std::abs(q1 - q0) / q0);
+            const double bhp0 = (q0 - well.ipr_a[1]) / well.ipr_b[1];
+            const double dbhp = std::abs(r.well_bhp[w] - bhp0);
+            bhp_move_bar.push_back(dbhp * 1e-5);
+            // Against the well's whole operating range, bhp limit to shut-in.
+            // (Dividing by the drawdown from q_start instead just reproduces
+            // |dq|/q_start exactly, the IPR being linear -- no new information.)
+            double shut = well.bhp_limit;
+            for (int ph = 0; ph < 3; ++ph) {
+                if (well.ipr_b[ph] < 0.0) {
+                    shut = std::max(shut, -well.ipr_a[ph] / well.ipr_b[ph]);
+                }
+            }
+            if (shut > well.bhp_limit) {
+                span_move.push_back(dbhp / (shut - well.bhp_limit));
+            }
+        }
+    }
+    auto pct = [](std::vector<double> v, const double q) {
+        if (v.empty()) { return 0.0; }
+        std::sort(v.begin(), v.end());
+        return v[std::min(v.size() - 1, std::size_t(q * v.size()))];
+    };
+    BOOST_TEST_MESSAGE("solved " << systems << " systems, " << wells << " wells ("
+                       << from_zero << " starting from zero rate, skipped)");
+    BOOST_TEST_MESSAGE("  |dq|/q_start   median " << 100 * pct(rate_move, 0.5)
+                       << " %, p90 " << 100 * pct(rate_move, 0.9)
+                       << " %, p99 " << 100 * pct(rate_move, 0.99)
+                       << " %, max " << 100 * pct(rate_move, 1.0) << " %");
+    BOOST_TEST_MESSAGE("  |dbhp|/range   median " << 100 * pct(span_move, 0.5)
+                       << " %, p90 " << 100 * pct(span_move, 0.9)
+                       << " %, p99 " << 100 * pct(span_move, 0.99)
+                       << " %, max " << 100 * pct(span_move, 1.0) << " %");
+    BOOST_TEST_MESSAGE("  |dbhp|         median " << pct(bhp_move_bar, 0.5)
+                       << " bar, p90 " << pct(bhp_move_bar, 0.9)
+                       << " bar, p99 " << pct(bhp_move_bar, 0.99)
+                       << " bar, max " << pct(bhp_move_bar, 1.0) << " bar");
+}
+
 BOOST_AUTO_TEST_CASE(production_step_bounds)
 {
     ProductionCase c;
