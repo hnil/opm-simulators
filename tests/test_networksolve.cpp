@@ -3451,6 +3451,87 @@ BOOST_AUTO_TEST_CASE(the_dumps_behind_the_complementarity_fixes_converge)
     }
 }
 
+// thpPotential() searches for the IPR/tubing crossing -- 96 samples in bhp
+// then 40 bisections. It does not have to: with the phase fractions held
+// constant the IPR is linear in FLO and the table piecewise-linear on its own
+// flow axis, so the crossing is exact per interval, which is what
+// VFPHelpers::intersectWithIPR does. This sweeps node pressure over both and
+// reports where they differ and what each costs. Needs OPM_VFP_INCLUDE for the
+// model5 tables; reports and returns without them.
+BOOST_AUTO_TEST_CASE(exact_intersection_against_the_scan)
+{
+    const char* inc = std::getenv("OPM_VFP_INCLUDE");
+    if (inc == nullptr) {
+        BOOST_TEST_MESSAGE("OPM_VFP_INCLUDE not set; scan/exact comparison skipped");
+        return;
+    }
+    std::deque<VFPProdTable> tables;
+    VFPProdProperties<double> props;
+    const UnitSystem units{};
+    for (const char* name : {"well_vfp.ecl", "flowl_b_vfp.ecl", "flowl_c_vfp.ecl"}) {
+        const auto deck = Parser{}.parseFile((std::filesystem::path(inc) / name).string());
+        for (const auto& kw : deck.getKeywordList("VFPPROD")) {
+            tables.emplace_back(*kw, true, units);
+            props.addTable(tables.back());
+        }
+    }
+    // A real well, from the AUTOCHK dumps: table 1, and an inflow that puts the
+    // crossing inside the table rather than off its end.
+    const auto dir = std::filesystem::path(__FILE__).parent_path() / "network_dumps";
+    std::ifstream in(dir / "autochk_prod_992.txt");
+    BOOST_REQUIRE(in);
+    std::string head; std::getline(in, head);
+    auto [system, guess] = NetworkSolve::readProduction<double>(in, props, units);
+
+    int compared = 0, differ = 0;
+    double worst = 0.0, worst_p = 0.0;
+    long scan_lookups = 0, exact_lookups = 0;
+    for (int w = 0; w < system.numWells(); ++w) {
+        const auto& well = system.wells()[w];
+        for (int i = 0; i <= 40; ++i) {
+            const double p = convert::from(15.0 + 1.5 * i, bars);
+            system.resetLookups();
+            const double a = system.thpPotentialFor(well, p);
+            scan_lookups += system.lookups();
+            system.resetLookups();
+            const double b = system.thpPotentialExactFor(well, p, well.bhp_limit);
+            exact_lookups += system.lookups();
+            const bool inf_a = a == std::numeric_limits<double>::max();
+            const bool inf_b = b == std::numeric_limits<double>::max();
+            ++compared;
+            if (inf_a || inf_b) {
+                if (inf_a != inf_b) { ++differ; }
+                continue;
+            }
+            const double scale = std::max({std::abs(a), std::abs(b), 1e-9});
+            const double rel = std::abs(a - b) / scale;
+            // Where they disagree, refine the scan: if it walks toward the
+            // exact value the scan's resolution was the error, and if it does
+            // not the difference is the constant-fraction assumption.
+            if (!inf_a && !inf_b && std::abs(a - b) > 1e-3 * std::max({std::abs(a), std::abs(b), 1e-9})) {
+                BOOST_TEST_MESSAGE("    " << well.name << " at " << convert::to(p, bars)
+                                   << " bar: scan " << a * 86400.0 << ", exact " << b * 86400.0
+                                   << " m3/d");
+            }
+            if (rel > 1e-3) {
+                ++differ;
+                if (rel > worst) { worst = rel; worst_p = convert::to(p, bars); }
+            }
+        }
+    }
+    BOOST_TEST_MESSAGE("compared " << compared << " (well, node pressure) pairs: "
+                       << differ << " differ by more than 0.1 %"
+                       << ", worst " << 100.0 * worst << " % at " << worst_p << " bar");
+    // The scan's cost is table evaluations; the exact one's is axis walks, each
+    // of which costs (flo axis + 1) evaluations inside VFPHelpers.
+    const int axis = static_cast<int>(props.getTable(1).getFloAxis().size());
+    const double exact_evals = double(exact_lookups) * (axis + 1);
+    BOOST_TEST_MESSAGE("cost: scan " << scan_lookups << " table evaluations, exact "
+                       << exact_lookups << " axis walks x (" << axis << "+1) = " << exact_evals
+                       << "  (" << double(scan_lookups) / exact_evals << "x)");
+    BOOST_CHECK_LT(exact_lookups, scan_lookups);
+}
+
 BOOST_AUTO_TEST_CASE(production_step_bounds)
 {
     ProductionCase c;
