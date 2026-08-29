@@ -387,7 +387,25 @@ public:
     /// here at all; max() means thp does not bind.
     Scalar thpPotential(const Well& w, const Scalar p_node) const
     {
-        return thpPotentialExact(w, p_node, operatingBhp(w));
+        // OPM_NETWORK_FRAC_MODE, for bisecting a regression against the old
+        // search: 0 (default) fractions where the well is, 1 iterate them to
+        // the crossing (reproduces thpPotentialScan exactly), 2 use the scan.
+        static const int mode = std::getenv("OPM_NETWORK_FRAC_MODE")
+            ? std::atoi(std::getenv("OPM_NETWORK_FRAC_MODE")) : 0;   // >0 passes, <0 the old scan
+        if (mode < 0) { return thpPotentialScan(w, p_node); }
+        // Fixed number of passes, never a tolerance: the pass count must not
+        // depend on the iterate or this stops being a smooth function of the
+        // node pressure, and it is evaluated inside a Newton residual.
+        const int passes = mode > 0 ? mode : kFractionPasses;
+        Scalar bhp = operatingBhp(w), answer = Scalar{0};
+        for (int pass = 0; pass < passes; ++pass) {
+            answer = thpPotentialExact(w, p_node, bhp);
+            if (!(answer > Scalar{0}) || answer == std::numeric_limits<Scalar>::max()) {
+                return answer;
+            }
+            bhp = (answer - w.ipr_a[1]) / w.ipr_b[1];
+        }
+        return answer;
     }
 
     /// The same answer as thpPotential(), found instead of searched for.
@@ -446,6 +464,11 @@ public:
         const Scalar gfr = detail::getGFR(t, -qf[0], -qf[1], -qf[2]);
         return crossing(w, t, p_node, wfr, gfr);
     }
+
+    /// Passes over the fractions. One (fractions where the well is now) costs
+    /// 60 % more Newton on GASLIFT-13, because lifting a well moves it far from
+    /// that point; three reproduces the old search to 13 figures.
+    static constexpr int kFractionPasses = 3;
 
     /// Where the well is now: the bhp its current oil rate implies on its own
     /// IPR, which is the point that IPR was linearised about, so the phase
