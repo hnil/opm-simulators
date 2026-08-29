@@ -378,7 +378,104 @@ public:
     /// ~136, and exact: the scan's resolution is why cachedThpPotential() below
     /// needs a jump guard.
 
-    Scalar thpPotential(const Well& w, const Scalar p_node) const
+    /// Bench access to the two crossing routines and their cost.
+    Scalar thpPotentialFor(const Well& w, const Scalar p, const int n = 96) const
+    { return thpPotential(w, p, n); }
+    Scalar thpPotentialExactFor(const Well& w, const Scalar p, const Scalar fb) const
+    { return thpPotentialExact(w, p, fb); }
+    long lookups() const { return lookups_; }
+    void resetLookups() const { lookups_ = 0; }
+    /// Table lookups spent in thpPotential/thpPotentialExact, for the bench.
+    mutable long lookups_ = 0;
+
+    /// The same answer as thpPotential(), found instead of searched for.
+    ///
+    /// With the water and gas fractions held constant the IPR is linear in FLO,
+    /// and the table is piecewise-linear on its own flow axis, so on each axis
+    /// interval the crossing is available in closed form.
+    /// VFPHelpers::intersectWithIPR walks the axis and does exactly that --
+    /// same stable-crossing rule (positive slope, largest flow), same handling
+    /// of extrapolation past the last interval -- and estimateStableBhp already
+    /// uses it. ~21 lookups on the model5 axis against the scan's ~136, exact.
+    ///
+    /// fraction_bhp is where the constant water/gas fractions are taken; that
+    /// choice is the one modelling difference from the scan.
+    Scalar thpPotentialExact(const Well& w, const Scalar p_node, const Scalar fraction_bhp) const
+    {
+        if (!hasTubing(w) || !(w.ipr_b[1] < Scalar{0})) {
+            return Scalar{0};
+        }
+        Scalar shut = w.bhp_limit;
+        for (int ph = 0; ph < NP; ++ph) {
+            if (w.ipr_b[ph] < Scalar{0}) {
+                shut = std::max(shut, -w.ipr_a[ph] / w.ipr_b[ph]);
+            }
+        }
+        if (!(shut > w.bhp_limit)) {
+            return Scalar{0};
+        }
+        const auto& t = props_->getTable(w.vfp_table);
+        auto rates = [&](const Scalar bhp) {
+            std::array<Scalar, NP> q{};
+            for (int ph = 0; ph < NP; ++ph) { q[ph] = std::max(ipr(w, ph, bhp), Scalar{0}); }
+            return q;
+        };
+        // "thp does not bind": at the bhp limit the tubing already needs less
+        // than the limit. Kept from the scan -- it is a separate question from
+        // where the crossing is.
+        ++lookups_;
+        if (w.bhp_limit - (tableBhp(w.vfp_table, p_node, rates(w.bhp_limit), w.alq) - w.vfp_dp)
+                >= Scalar{0}) {
+            return std::numeric_limits<Scalar>::max();
+        }
+        // The fractions belong at the crossing, which is what we are solving
+        // for -- taking them at the bhp limit instead is worth up to 1.3 % on
+        // these tables, and 9 % near tangency. So iterate them: two or three
+        // passes and the rate stops moving. Each pass is one axis walk.
+        Scalar bhp_frac = fraction_bhp;
+        Scalar answer = Scalar{0};
+        for (int pass = 0; pass < 6; ++pass) {
+            const auto qf = rates(bhp_frac);
+            const Scalar wfr = detail::getWFR(t, -qf[0], -qf[1], -qf[2]);
+            const Scalar gfr = detail::getGFR(t, -qf[0], -qf[1], -qf[2]);
+            const Scalar got = crossing(w, t, p_node, wfr, gfr);
+            if (!(got > Scalar{0})) { return Scalar{0}; }
+            const Scalar bhp_new = (got - w.ipr_a[1]) / w.ipr_b[1];
+            const bool settled = std::abs(got - answer) <= Scalar{1e-10} * std::max(got, answer);
+            answer = got;
+            bhp_frac = bhp_new;
+            if (settled) { break; }
+        }
+        return answer;
+    }
+
+    /// One axis walk: the crossing at fixed fractions.
+    Scalar crossing(const Well& w, const VFPProdTable& t, const Scalar p_node,
+                    const Scalar wfr, const Scalar gfr) const
+    {
+        // FLO is a linear combination of the phase rates and our rates are
+        // linear in bhp, so flo is too: flo(bhp) = A + B*bhp, with flo the
+        // positive magnitude the helper's axis uses.
+        const Scalar A = detail::getFlo(t, w.ipr_a[0], w.ipr_a[1], w.ipr_a[2]);
+        const Scalar B = detail::getFlo(t, w.ipr_b[0], w.ipr_b[1], w.ipr_b[2]);
+        // The helper writes the same line as flo = ipr_a - ipr_b*bhp.
+        const Scalar ipr_a_flo = A;
+        const Scalar ipr_b_flo = -B;
+        if (!(ipr_b_flo != Scalar{0})) { return Scalar{0}; }
+        const Scalar dp = w.vfp_dp;
+        ++lookups_;              // one axis walk
+        const auto hit = VFPHelpers<Scalar>::intersectWithIPR(
+            t, p_node, wfr, gfr, w.alq, ipr_a_flo, ipr_b_flo,
+            [dp](const Scalar bhp_table) { return bhp_table - dp; });
+        if (!hit.has_value()) {
+            return Scalar{0};        // nowhere does the reservoir out-push the tubing
+        }
+        const Scalar bhp = hit->second;
+        if (!(bhp > Scalar{0})) { return Scalar{0}; }
+        return std::max(ipr(w, 1, bhp), Scalar{0});
+    }
+
+    Scalar thpPotential(const Well& w, const Scalar p_node, const int samples_in = 96) const
     {
         if (!hasTubing(w) || !(w.ipr_b[1] < Scalar{0})) {
             return Scalar{0};
@@ -423,6 +520,7 @@ public:
             }
         }
         auto h = [&](const Scalar bhp) {
+            ++lookups_;
             return bhp - (tableBhp(w.vfp_table, p_node, rates(bhp), w.alq) - w.vfp_dp);
         };
         // At the bhp limit the tubing already needs less than the limit, so thp
@@ -441,7 +539,7 @@ public:
         // h turns positive with rising bhp: more drawdown there means more
         // excess pressure, which is the one the well settles on. The other is
         // the loading point, and not an operating point.
-        constexpr int samples = 96;
+        const int samples = samples_in;
         Scalar a = lo, b = shut;
         bool found = false;
         Scalar h_prev = h(lo);
