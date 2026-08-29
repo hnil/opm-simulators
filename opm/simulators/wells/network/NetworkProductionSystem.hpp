@@ -387,11 +387,10 @@ public:
     /// here at all; max() means thp does not bind.
     Scalar thpPotential(const Well& w, const Scalar p_node) const
     {
-        // OPM_NETWORK_FRAC_MODE, for bisecting a regression against the old
-        // search: 0 (default) fractions where the well is, 1 iterate them to
-        // the crossing (reproduces thpPotentialScan exactly), 2 use the scan.
+        // OPM_NETWORK_FRAC_MODE, for A/B against the old search: 0 (default)
+        // kFractionPasses, >0 that many fraction passes, <0 the old scan.
         static const int mode = std::getenv("OPM_NETWORK_FRAC_MODE")
-            ? std::atoi(std::getenv("OPM_NETWORK_FRAC_MODE")) : 0;   // >0 passes, <0 the old scan
+            ? std::atoi(std::getenv("OPM_NETWORK_FRAC_MODE")) : 0;
         if (mode < 0) { return thpPotentialScan(w, p_node); }
         // Fixed number of passes, never a tolerance: the pass count must not
         // depend on the iterate or this stops being a smooth function of the
