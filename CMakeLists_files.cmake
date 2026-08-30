@@ -698,6 +698,7 @@ list (APPEND TEST_DATA_FILES
   tests/options_system_cpr_missing_well.json
   tests/options_system_cpr_res_precond_not_cpr.json
   tests/GCONSUMP.DATA
+  tests/GROUPTREE.DATA
   tests/GCONSUMP_COMPLEX.DATA
   tests/GROUP_HIGHER_CONSTRAINTS.DATA
   tests/GROUP_HIGHER_CONSTRAINTS_NETWORK.DATA
