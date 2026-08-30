@@ -1821,8 +1821,8 @@ void setTargets(Tree<Scalar>& tree, const std::string& topName)
 
 // ---------------------------------------------------------------------------
 
-template<class Scalar, typename IndexTraits>
-bool runBalancingAlgorithm(const BlackoilWellModelGeneric<Scalar, IndexTraits>& wellModel,
+template<class Scalar>
+bool runBalancingAlgorithm(const GuideRate& guideRate, int rank,
                            Tree<Scalar>& tree, Scalar tol, DeferredLogger& logger)
 {
     // Main algorithm entry point
@@ -1859,21 +1859,21 @@ bool runBalancingAlgorithm(const BlackoilWellModelGeneric<Scalar, IndexTraits>& 
         Scalar qm = 0.0;
         if (node.Limits.count(mode) > 0) {
             qm = node.Limits.at(mode);
-        } else if (wellModel.comm().rank() == 0) {
+        } else if (rank == 0) {
             logger.warning("ProdGroupTreeBalancer",
                 fmt::format("runBalancingAlgorithm: top node '{}' has no limit for given mode, returning", nodeName));
             return false;
         }
 
         // Balance this subtree
-        balanceGroupTree(tree, nodeName, wellModel.guideRate(), mode, qm, tol, logger);
+        balanceGroupTree(tree, nodeName, guideRate, mode, qm, tol, logger);
 
         // setTargets is intentionally not called here; group target values
         // (groupName, value, guideRateRatio) are populated by getWellGroupTargetProducer.
         //setTargets(tree, nodeName);
 
         // Report completion of this top node's balancing
-        if (tree.at(nodeName).type == ProdNodeType::Group && wellModel.comm().rank() == 0) {
+        if (tree.at(nodeName).type == ProdNodeType::Group && rank == 0) {
             const auto& n = tree.at(nodeName);
             logger.debug("ProdGroupTreeBalancer",
                 fmt::format("Balancer: Completed for top node '{}': balanced={}, iterations={}",
@@ -2242,7 +2242,8 @@ bool runGroupTreeBalancer(BlackoilWellModelGeneric<Scalar, IndexTraits>& wellMod
 
     auto tree = buildTree(wellModel, summaryState, reportStep, limits);
 
-    const bool success = runBalancingAlgorithm(wellModel, tree, tol, logger);
+    const bool success = runBalancingAlgorithm(wellModel.guideRate(), wellModel.comm().rank(),
+                                               tree, tol, logger);
 
     if (wellModel.comm().rank() == 0) {
         logTree(tree, logger);
@@ -2281,15 +2282,20 @@ bool runGroupTreeBalancer(BlackoilWellModelGeneric<Scalar, IndexTraits>& wellMod
 // ---------------------------------------------------------------------------
 
 template<class Scalar>
-void balanceTreeForTesting(Tree<Scalar>& tree,
-                           const std::string& root,
+bool balanceTreeForTesting(Tree<Scalar>& tree,
                            const GuideRate& guideRate,
-                           Well::ProducerCMode targetMode,
-                           Scalar targetRate,
                            Scalar tol,
                            DeferredLogger& logger)
 {
-    balanceGroupTree(tree, root, guideRate, targetMode, targetRate, tol, logger);
+    // The same top-down pass buildTree() ends with: effective modes, guide
+    // rates, preferred control, transparent groups. A hand-built tree has to
+    // get it too or the balancer sees a half-initialised tree.
+    propagateGuideRatesAndMode(tree, guideRate, "FIELD",
+                               Well::ProducerCMode::CMODE_UNDEFINED,
+                               Group::ProductionCMode::NONE,
+                               /* parentSeesLimits */ false);
+    const bool ok = runBalancingAlgorithm(guideRate, /*rank=*/0, tree, tol, logger);
+    return ok && checkTreeValidity(tree, "FIELD", tol, logger);
 }
 
 // ===========================================================================
@@ -2299,9 +2305,8 @@ void balanceTreeForTesting(Tree<Scalar>& tree,
 // Only the top-level entry point requires an explicit instantiation; all
 // internal helper functions are implicitly instantiated as part of it.
 
-template void balanceTreeForTesting<double>(
-    Tree<double>&, const std::string&, const GuideRate&,
-    Well::ProducerCMode, double, double, DeferredLogger&);
+template bool balanceTreeForTesting<double>(
+    Tree<double>&, const GuideRate&, double, DeferredLogger&);
 
 template bool runGroupTreeBalancer<double, BlackOilDefaultFluidSystemIndices>(
     BlackoilWellModelGeneric<double, BlackOilDefaultFluidSystemIndices>&,

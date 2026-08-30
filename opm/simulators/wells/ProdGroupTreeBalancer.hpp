@@ -56,11 +56,8 @@ using Tree = std::map<std::string, ProdGroupTreeNode<Scalar>>;
 /// algorithm can be used as an oracle in a standalone test. Everything else in
 /// this file is untouched; this is the only addition.
 template<class Scalar>
-void balanceTreeForTesting(Tree<Scalar>& tree,
-                           const std::string& root,
+bool balanceTreeForTesting(Tree<Scalar>& tree,
                            const GuideRate& guideRate,
-                           Well::ProducerCMode targetMode,
-                           Scalar targetRate,
                            Scalar tol,
                            DeferredLogger& logger);
 
