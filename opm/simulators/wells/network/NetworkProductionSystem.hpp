@@ -70,6 +70,29 @@ public:
     using ScalarType = Scalar;
     static constexpr int NP = 3;   // water, oil, gas -- the order VFPPROD wants
 
+    /// What a group's rate target is measured on. Mirrors the projections
+    /// Stein's ProdGroupTreeBalancer uses (projectOnMode), which is the set
+    /// GCONPROD can actually express as a rate: CRAT and PRBL are not rates in
+    /// this sense and are not here, and neither implementation handles them.
+    enum class Mode { None, Oil, Water, Gas, Liquid, Resv };
+
+    /// The rate a mode measures, as a linear functional of the phase rates.
+    /// Linear in every case, RESV included -- so the derivative is just the
+    /// coefficients, which matters when these rows get an analytic Jacobian.
+    static std::array<Scalar, NP> modeWeights(const Mode m,
+                                              const std::array<Scalar, NP>& resv)
+    {
+        switch (m) {                      // phase order here is water, oil, gas
+        case Mode::Oil:    return {0, 1, 0};
+        case Mode::Water:  return {1, 0, 0};
+        case Mode::Gas:    return {0, 0, 1};
+        case Mode::Liquid: return {1, 1, 0};
+        case Mode::Resv:   return resv;
+        case Mode::None:   break;
+        }
+        return {0, 0, 0};
+    }
+
     /// A node of the GRUPTREE, as the sparse formulation sees it: its own
     /// phase rates, one multiplier that scales what it hands its children, and
     /// at most one rate target. Off unless setGroupTree(true) -- with no groups
@@ -78,7 +101,9 @@ public:
     {
         std::string name;
         int parent = -1;               // index in groups_, -1 for the root
-        Scalar target = 0;             // oil target; 0 means none
+        Scalar target = 0;             // 0 means none
+        Mode mode = Mode::Oil;         // what the target is measured on
+        std::array<Scalar, NP> resv_coeff{};   // Mode::Resv only
         Scalar guide = 1;              // share of its parent
         Scalar efficiency = 1;
     };
@@ -784,9 +809,14 @@ public:
                 control = fb(fb(a, b), c);
                 if (usesGroupTree() && well.group >= 0) {
                     // One more slack in the same nest: the share the well's
-                    // group hands it. Four deep now -- see the bench.
-                    const Scalar d = (well.guide * x[glIdx(well.group)] - q[1]) / rate_scale_;
-                    control = fb(control, d);
+                    // group hands it, measured on that group's mode. Four deep
+                    // now -- see the bench.
+                    const auto& grp = groups_[well.group];
+                    const auto cw = modeWeights(grp.mode, grp.resv_coeff);
+                    Scalar own = 0;
+                    for (int ph = 0; ph < NP; ++ph) { own += cw[ph] * q[ph]; }
+                    const Scalar share = well.guide * x[glIdx(well.group)];
+                    control = fb(control, relativeSlack(share, own));
                 }
                 break;
             }
@@ -821,6 +851,33 @@ public:
         return r;
     }
 
+    /// A slack of "no limit at all", large enough that phi() never picks it.
+    static constexpr Scalar unbounded_slack = Scalar{1e30};
+
+    /// How much room is left under a limit. Absolute, on the system's rate
+    /// scale, exactly as every other rate row here.
+    ///
+    /// A relative slack (over the limit itself) is tempting, since phi()
+    /// compares its arguments directly and a gas limit is orders of magnitude
+    /// larger than an oil one. It also destabilises every case that used to
+    /// converge, because it changes the balance against the rest of the rows.
+    /// The mixed-unit problem is real but belongs in a per-mode rate scale,
+    /// not here.
+    Scalar relativeSlack(const Scalar limit, const Scalar rate) const
+    {
+        return (limit - rate) / rate_scale_;
+    }
+
+    /// The rate a group makes, measured on the given mode.
+    Scalar groupRate(const State& x, const int g, const Mode m,
+                     const std::array<Scalar, NP>& resv) const
+    {
+        const auto c = modeWeights(m, resv);
+        Scalar sum = 0;
+        for (int ph = 0; ph < NP; ++ph) { sum += c[ph] * x[gqIdx(g, ph)]; }
+        return sum;
+    }
+
     /// The group tree's own rows. Two per group, and they mirror the tree:
     ///
     ///   definition   Q_g,ph = sum over its child groups and its wells
@@ -850,30 +907,39 @@ public:
                 }
                 r[gqIdx(g, ph)] = bal / rate_scale_;
             }
-            // What holds this group down: its parent's share, or its own
-            // target, whichever is smaller. The root has no parent, so only
-            // its target.
-            const Scalar Q = x[gqIdx(g, 1)];
-            Scalar bound = grp.target > Scalar{0} ? grp.target : uncapped();
-            if (grp.parent >= 0) {
-                bound = std::min(bound, grp.guide * x[glIdx(grp.parent)]);
+            // Two things can hold a group down, and they are measured on
+            // different phases, so they cannot be compared with a min(): its
+            // own target, on its own mode, and the share its parent hands it,
+            // on the *parent's* mode. Each becomes its own slack, normalised
+            // by the limit it belongs to so a gas limit and an oil limit are
+            // comparable, and phi() says at least one of them binds.
+            std::array<Scalar, 2> slack{unbounded_slack, unbounded_slack};
+            if (grp.target > Scalar{0}) {
+                slack[0] = relativeSlack(grp.target, groupRate(x, g, grp.mode, grp.resv_coeff));
             }
-            if (bound >= uncapped()) {
+            if (grp.parent >= 0) {
+                const auto& par = groups_[grp.parent];
+                const Scalar share = grp.guide * x[glIdx(grp.parent)];
+                slack[1] = relativeSlack(share, groupRate(x, g, par.mode, par.resv_coeff));
+            }
+            if (slack[0] == unbounded_slack && slack[1] == unbounded_slack) {
                 // Nothing can hold it: its rate is whatever its children make,
                 // and it puts no ceiling on them.
                 r[glIdx(g)] = (x[glIdx(g)] - uncapped()) / rate_scale_;
                 continue;
             }
-            // Either the group sits at that bound, or its multiplier is
-            // uncapped and its children are limited by something of their own.
+            // Either one of those binds, or the multiplier is uncapped and the
+            // children are held by something of their own.
             //
-            // Writing this as fb(share - Q, target - Q) instead -- "one of the
-            // two bounds binds" -- looks natural and is wrong: with neither
-            // bound real, both slacks stand at the stand-in for infinity and FB
-            // demands one of them be zero, so the stand-in becomes a genuine
+            // Writing this as phi(share slack, target slack) alone -- "one of
+            // the two binds" -- looks natural and is wrong: with neither bound
+            // real, both slacks stand at the stand-in for infinity and phi
+            // demands one be zero, so the stand-in becomes a genuine
             // constraint. The residual sits at 1000*(2 - sqrt 2).
-            r[glIdx(g)] = fb((uncapped() - x[glIdx(g)]) / rate_scale_,
-                             (bound - Q) / rate_scale_);
+            const Scalar binds = (slack[0] == unbounded_slack) ? slack[1]
+                               : (slack[1] == unbounded_slack) ? slack[0]
+                               : fb(slack[0], slack[1]);
+            r[glIdx(g)] = fb((uncapped() - x[glIdx(g)]) / rate_scale_, binds);
         }
     }
 
