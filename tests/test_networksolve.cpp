@@ -3657,8 +3657,13 @@ namespace {
             return {-b * 250e5, b};
         }
 
+        /// water_cut: every well makes this fraction of its oil as water, so
+        /// a liquid target of (1 + wct) * T must give the same answer as an
+        /// oil target of T. That equivalence is the multi-phase check.
         Sys build(const double field_target, const double p1_target,
-                  const std::array<double, 3>& caps) const
+                  const std::array<double, 3>& caps,
+                  const typename Sys::Mode mode = Sys::Mode::Oil,
+                  const double water_cut = 0.0) const
         {
             Sys sys(props, units);
             NetworkSolve::Node root; root.name = "TERM"; root.parent = -1;
@@ -3669,6 +3674,7 @@ namespace {
 
             typename Sys::Group f; f.name = "FIELD"; f.parent = -1;
             f.target = field_target / 86400.0;
+            f.mode = mode;
             const int gf = sys.addGroup(f);
             typename Sys::Group p1; p1.name = "P1"; p1.parent = gf; p1.guide = 1.0;
             if (p1_target > 0.0) { p1.target = p1_target / 86400.0; }
@@ -3684,6 +3690,8 @@ namespace {
                 w.vfp_table = 0;                 // no tubing: rate/bhp/share only
                 const auto ab = ipr(caps[i]);
                 w.ipr_a[1] = ab[0]; w.ipr_b[1] = ab[1];
+                // Water on the same line, so the cut is constant in bhp.
+                w.ipr_a[0] = water_cut * ab[0]; w.ipr_b[0] = water_cut * ab[1];
                 w.bhp_limit = convert::from(100.0, bars);
                 w.oil_rate_limit = 5000.0 / 86400.0;
                 w.guide = 1.0;
@@ -3707,7 +3715,9 @@ BOOST_AUTO_TEST_CASE(the_group_tree_as_sparse_rows)
     const std::vector<double> guess{convert::from(120.0, bars)};
 
     struct Want { const char* what; double field; double p1; std::array<double,3> caps;
-                  std::array<double,3> q; };
+                  std::array<double,3> q;
+                  TreeCase::Sys::Mode mode = TreeCase::Sys::Mode::Oil;
+                  double wct = 0.0; };
     const std::vector<Want> cases{
         // Field 3000 shared 1:1 by the platforms; P2 can only make 400, so P1
         // absorbs 2600 and splits it evenly between two 2000-capable wells.
@@ -3716,10 +3726,14 @@ BOOST_AUTO_TEST_CASE(the_group_tree_as_sparse_rows)
         {"platform target binds too",       3000.0, 2000.0, {2000, 2000, 400}, {1000, 1000, 400}},
         // Nothing binds below the field: 1200 split 600/600, then 300/300.
         {"nothing below the field binds",   1200.0, 0.0, {2000, 2000, 2000}, {300, 300, 600}},
+        // Same physical answer as the first case, asked for as liquid: every
+        // well makes 25 % of its oil as water, so LRAT 3750 == ORAT 3000.
+        {"a liquid target, 25 % water",     3750.0, 0.0, {2000, 2000, 400}, {1300, 1300, 400},
+         TreeCase::Sys::Mode::Liquid, 0.25},
     };
 
     for (const auto& c : cases) {
-        auto sys = tc.build(c.field, c.p1, c.caps);
+        auto sys = tc.build(c.field, c.p1, c.caps, c.mode, c.wct);
         const auto r = NetworkSolve::solve(sys, guess, {1e-2, 60}, NetworkSolve::FullStep{});
         std::string got;
         for (int w = 0; w < sys.numWells(); ++w) {
