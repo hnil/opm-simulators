@@ -61,6 +61,10 @@
 #include <opm/input/eclipse/Deck/UDAValue.hpp>
 #include <opm/io/eclipse/ESmry.hpp>
 #include <opm/input/eclipse/Parser/Parser.hpp>
+#include <opm/simulators/utils/DeferredLogger.hpp>
+#include <opm/input/eclipse/Schedule/Group/GuideRate.hpp>
+#include <opm/simulators/wells/ProdGroupTreeNode.hpp>
+#include <opm/simulators/wells/ProdGroupTreeBalancer.hpp>
 #include <opm/input/eclipse/Schedule/SummaryState.hpp>
 #include <opm/input/eclipse/Schedule/Schedule.hpp>
 #include <opm/input/eclipse/EclipseState/EclipseState.hpp>
@@ -3860,6 +3864,174 @@ BOOST_AUTO_TEST_CASE(the_group_tree_from_a_deck)
         const double q = r.well_rate[w] * 86400.0;
         const double want = sys.wells()[w].name == "W3" ? 400.0 : 1300.0;
         BOOST_CHECK_CLOSE(q, want, 0.5);
+    }
+}
+
+// The sparse group equations against Stein's ProdGroupTreeBalancer, on the
+// same deck.
+//
+// The two reach the allocation by different routes -- his by a sorted
+// guide-rate-to-limit recursion, this by complementarity with multipliers --
+// under the same fixed-phase-fraction assumption. So where his accepts a
+// configuration, the equations should produce the same rates, and a
+// disagreement is informative rather than ambiguous.
+BOOST_AUTO_TEST_CASE(the_group_tree_against_steins_balancer)
+{
+    const auto deck_path = std::filesystem::path(__FILE__).parent_path() / "GROUPTREE.DATA";
+    if (!std::filesystem::exists(deck_path)) {
+        BOOST_TEST_MESSAGE("GROUPTREE.DATA not found, skipping");
+        return;
+    }
+    Parser parser;
+    const auto deck = parser.parseFile(deck_path.string());
+    const EclipseState es{deck};
+    const Schedule schedule{deck, es};
+    SummaryState summary_state{TimeService::now(), 0.0};
+
+    const std::map<std::string, std::string> parent{
+        {"PLAT", "FIELD"}, {"GP1", "PLAT"}, {"GP2", "PLAT"},
+        {"W1", "GP1"}, {"W2", "GP1"}, {"W3", "GP2"}};
+    const std::vector<std::string> wnames{"W1", "W2", "W3"};
+
+    struct Case {
+        const char* what;
+        double target;                      // PLAT ORAT, sm3/d
+        std::array<double, 3> cap;          // each well's own ORAT limit
+        std::array<double, 3> guide;        // well guide rates
+    };
+    const std::vector<Case> cases{
+        {"target binds, one well capped",   3000.0, {2000, 2000,  400}, {1, 1, 1}},
+        {"target binds, nothing else",      1200.0, {2000, 2000, 2000}, {1, 1, 1}},
+        {"target above what the wells make", 9000.0, {2000, 2000,  400}, {1, 1, 1}},
+        {"two wells capped",                3000.0, {2000,  900,  400}, {1, 1, 1}},
+        {"unequal guide rates",             3000.0, {2000, 2000, 2000}, {3, 2, 1}},
+    };
+
+    for (const auto& c : cases) {
+        // ---- the oracle ---------------------------------------------------
+        GuideRate guide_rate{schedule};
+        DeferredLogger logger;
+        // A fresh GuideRate holds nothing; the simulator fills it from the well
+        // potentials each step. Without it every guide rate reads zero, the
+        // sorted recursion has nothing to distribute by, and the balancer
+        // allocates nothing while still reporting the tree valid.
+        for (std::size_t i = 0; i < wnames.size(); ++i) {
+            guide_rate.compute(wnames[i], /*report_step=*/0, /*sim_time=*/0.0,
+                               c.guide[i] / 86400.0, 0.0, 0.0);
+        }
+
+        ProdGroupTreeBalancer::Tree<double> tree;
+        auto addGroup = [&](const std::string& name, const std::vector<std::string>& kids,
+                            const bool has_target) {
+            ProdGroupTreeNode<double> n;
+            n.name = name;
+            n.type = ProdNodeType::Group;
+            n.parent = parent.count(name) ? parent.at(name) : std::string{};
+            n.children = kids;
+            n.availableForGroupControl = true;
+            n.modeCategory = has_target ? ProdNodeModeCategory::Individual
+                                        : ProdNodeModeCategory::Group;
+            if (has_target) {
+                n.mode = Opm::Well::ProducerCMode::ORAT;
+                n.preferredMode = Opm::Group::ProductionCMode::ORAT;
+                n.Limits[Opm::Well::ProducerCMode::ORAT] = c.target / 86400.0;
+            }
+            tree.emplace(name, std::move(n));
+        };
+        addGroup("FIELD", {"PLAT"}, false);
+        addGroup("PLAT", {"GP1", "GP2"}, true);
+        addGroup("GP1", {"W1", "W2"}, false);
+        addGroup("GP2", {"W3"}, false);
+        for (std::size_t i = 0; i < wnames.size(); ++i) {
+            ProdGroupTreeNode<double> n;
+            n.name = wnames[i];
+            n.type = ProdNodeType::Well;
+            n.parent = parent.at(wnames[i]);
+            n.availableForGroupControl = true;
+            n.mode = Opm::Well::ProducerCMode::GRUP;
+            // populateWellNode() sets this for every well; the propagation pass
+            // only reads it, so without it no guide rate is ever assigned and
+            // the balancer allocates nothing while calling the tree valid.
+            n.hasGuideRate = true;
+            n.Limits[Opm::Well::ProducerCMode::ORAT] = c.cap[i] / 86400.0;
+            n.rates = {-c.cap[i] / 86400.0, 0.0, 0.0};   // [oil, water, gas], production negative
+            n.initialRates = n.rates;
+            tree.emplace(wnames[i], std::move(n));
+        }
+        const bool oracle_ok =
+            ProdGroupTreeBalancer::balanceTreeForTesting(tree, guide_rate, 1e-8, logger);
+
+        // ---- the equations --------------------------------------------------
+        using Sys = NetworkSolve::ProductionSystem<double>;
+        VFPProdProperties<double> props;
+        const UnitSystem units{};
+        Sys sys(props, units);
+        NetworkSolve::Node term; term.name = "TERM"; term.parent = -1; sys.addNode(term, 0.0);
+        NetworkSolve::Node nd; nd.name = "N"; nd.parent = 0; sys.addNode(nd, 0.0);
+        sys.setTerminalPressure(convert::from(120.0, bars));
+
+        // A group's guide rate is the sum of its children's. Leaving them at
+        // the default 1 makes PLAT split evenly between GP1 (two wells) and
+        // GP2 (one), which is a different answer from splitting evenly between
+        // the three wells -- 300/300/600 against 400/400/400. The oracle
+        // derives group guides from what is beneath; this has to match.
+        const std::map<std::string, double> gguide{
+            {"GP1", c.guide[0] + c.guide[1]}, {"GP2", c.guide[2]},
+            {"PLAT", c.guide[0] + c.guide[1] + c.guide[2]},
+            {"FIELD", c.guide[0] + c.guide[1] + c.guide[2]}};
+        std::map<std::string, int> gidx;
+        for (const auto& name : {"FIELD", "PLAT", "GP1", "GP2"}) {
+            typename Sys::Group g;
+            g.name = name;
+            g.parent = parent.count(name) ? gidx.at(parent.at(name)) : -1;
+            g.guide = gguide.at(name);
+            if (std::string(name) == "PLAT") {
+                g.mode = Sys::Mode::Oil;
+                g.target = c.target / 86400.0;
+            }
+            gidx[name] = sys.addGroup(std::move(g));
+        }
+        for (std::size_t i = 0; i < wnames.size(); ++i) {
+            typename Sys::Well w;
+            w.name = wnames[i];
+            w.node = 1;
+            w.vfp_table = 0;
+            const double cap = c.cap[i] / 86400.0;
+            const double b = -cap / (250e5 - 100e5);
+            w.ipr_a[1] = -b * 250e5;
+            w.ipr_b[1] = b;
+            w.bhp_limit = convert::from(100.0, bars);
+            w.oil_rate_limit = cap;
+            w.guide = c.guide[i];
+            w.group = gidx.at(parent.at(wnames[i]));
+            w.q_start = 0.5 * cap;
+            sys.addWell(std::move(w));
+        }
+        sys.setGroupTree(true);
+        sys.setAnalyticJacobian(false);
+        sys.setComplementarity(true);
+        sys.finish();
+        sys.finishGroups();
+
+        const auto r = NetworkSolve::solve(sys, {convert::from(120.0, bars)},
+                                           {1e-2, 80}, NetworkSolve::FullStep{});
+
+        // ---- compare ---------------------------------------------------------
+        std::string both;
+        double worst = 0.0;
+        for (int w = 0; w < sys.numWells(); ++w) {
+            const auto& name = sys.wells()[w].name;
+            const double mine = r.well_rate[w] * 86400.0;
+            const double theirs = -tree.at(name).rates[0] * 86400.0;
+            both += fmt::format(" {}={:.1f}/{:.1f}", name, mine, theirs);
+            worst = std::max(worst, std::abs(mine - theirs) / std::max(std::abs(theirs), 1.0));
+        }
+        BOOST_TEST_MESSAGE(c.what << ": equations/oracle" << both
+                           << "  (" << r.iterations << " it, worst gap "
+                           << 100 * worst << " %)");
+        BOOST_CHECK(oracle_ok);
+        BOOST_CHECK(r.converged);
+        BOOST_CHECK_LT(worst, 0.01);
     }
 }
 

@@ -149,12 +149,13 @@ COMPDAT
  'W3'  3  1  1  2  'OPEN' 1* 1* 0.2 /
 /
 
--- Equal guide rates, so the split is decided by the limits rather than by
--- the guides. GuideRate reads these; the balancer asks it by name.
+-- Available for group control, with the guide rate left defaulted so it comes
+-- from the well potentials. Setting it explicitly here pins every well to the
+-- same guide and silently overrides anything a test tries to vary.
 WGRUPCON
- 'W1'  YES  1.0  OIL /
- 'W2'  YES  1.0  OIL /
- 'W3'  YES  1.0  OIL /
+ 'W1'  YES  1*  OIL /
+ 'W2'  YES  1*  OIL /
+ 'W3'  YES  1*  OIL /
 /
 
 -- Wells on group control, each with its own oil ceiling.
