@@ -304,11 +304,11 @@ public:
     /// Needs the complementarity rows; see groupRows() in the residual.
     void setGroupTree(const bool on) { group_tree_ = on; }
 
-    /// Whether wells get the complementarity row. Normally it needs the
-    /// assembled Jacobian -- differencing across the kink was worth 678
-    /// fallbacks -- but the group-tree prototype has no analytic rows yet, so
-    /// it runs differenced while the formulation is being checked.
-    bool useCmplRows() const { return complementarity_ && (analytic_jacobian_ || group_tree_); }
+    /// Whether wells get the complementarity row. It needs the assembled
+    /// Jacobian: differencing across the kink was worth 678 fallbacks. The
+    /// group rows have their derivatives now, so the prototype's exemption is
+    /// gone and this is back to the plain rule.
+    bool useCmplRows() const { return complementarity_ && analytic_jacobian_; }
     bool usesGroupTree() const { return group_tree_ && !groups_.empty(); }
 
     int addGroup(Group g)
@@ -458,6 +458,8 @@ public:
     ///
 
     /// Bench access to the two crossing routines and their cost.
+    int wellRateIndex(const int w, const int ph) const { return qwIdx(w, ph); }
+    int wellBhpIndex(const int w) const { return bhpIdx(w); }
     Scalar thpPotentialFor(const Well& w, const Scalar p, const int n = 96) const
     { return thpPotentialScan(w, p, n); }
     Scalar thpPotentialExactFor(const Well& w, const Scalar p, const Scalar fb) const
@@ -863,9 +865,10 @@ public:
     /// converge, because it changes the balance against the rest of the rows.
     /// The mixed-unit problem is real but belongs in a per-mode rate scale,
     /// not here.
+    Scalar slackScale(const Scalar) const { return rate_scale_; }
     Scalar relativeSlack(const Scalar limit, const Scalar rate) const
     {
-        return (limit - rate) / rate_scale_;
+        return (limit - rate) / slackScale(limit);
     }
 
     /// The rate a group makes, measured on the given mode.
@@ -876,6 +879,101 @@ public:
         Scalar sum = 0;
         for (int ph = 0; ph < NP; ++ph) { sum += c[ph] * x[gqIdx(g, ph)]; }
         return sum;
+    }
+
+    /// Derivatives of the group rows. The definition rows are linear, so their
+    /// entries are the efficiencies themselves. The allocation row is one phi
+    /// over the multiplier's headroom and whatever binds, and the projections
+    /// inside it are linear too, so the chain never reaches a table.
+    template<class Add>
+    void groupJacobian(const State& x, Add&& add) const
+    {
+        if (!usesGroupTree()) { return; }
+        for (int g = 0; g < numGroups(); ++g) {
+            const auto& grp = groups_[g];
+            for (int ph = 0; ph < NP; ++ph) {
+                const int row = gqIdx(g, ph);
+                add(row, gqIdx(g, ph), 1.0, rate_scale_);
+                for (const int c : group_children_[g]) {
+                    add(row, gqIdx(c, ph), -groups_[c].efficiency, rate_scale_);
+                }
+                for (const int w : group_wells_[g]) {
+                    add(row, qwIdx(w, ph), -wells_[w].efficiency, rate_scale_);
+                }
+            }
+
+            const int row = glIdx(g);
+            const auto bound = groupBound(x, g);
+            if (!bound.has_own && !bound.has_share) {
+                add(row, glIdx(g), 1.0, rate_scale_);
+                continue;
+            }
+            // r = phi(u, binds),  u = (uncapped - lambda_g) / rate_scale
+            const Scalar u = (uncapped() - x[glIdx(g)]) / rate_scale_;
+            const auto g_out = dfb(u, bound.binds);
+            add(row, glIdx(g), -g_out[0], rate_scale_);
+
+            // d binds / d (own slack, share slack)
+            Scalar w_own = 0, w_share = 0;
+            if (bound.has_own && bound.has_share) {
+                const auto g_in = dfb(bound.own, bound.share);
+                w_own = g_out[1] * g_in[0];
+                w_share = g_out[1] * g_in[1];
+            } else if (bound.has_own) {
+                w_own = g_out[1];
+            } else {
+                w_share = g_out[1];
+            }
+            // Each slack is (limit - projection) / its own normaliser, and the
+            // projection is a fixed linear combination of the group's rates.
+            if (bound.has_own) {
+                const Scalar n = slackScale(grp.target);
+                for (int ph = 0; ph < NP; ++ph) {
+                    add(row, gqIdx(g, ph), -w_own * bound.c_own[ph], n);
+                }
+            }
+            if (bound.has_share) {
+                const Scalar share = grp.guide * x[glIdx(grp.parent)];
+                const Scalar n = slackScale(share);
+                for (int ph = 0; ph < NP; ++ph) {
+                    add(row, gqIdx(g, ph), -w_share * bound.c_share[ph], n);
+                }
+                add(row, glIdx(grp.parent), w_share * grp.guide, n);
+            }
+        }
+    }
+
+    /// What holds a group down, decided once so the residual and the Jacobian
+    /// cannot drift apart. Two candidates, on different phases: its own target
+    /// on its own mode, and its parent's share on the parent's mode.
+    struct GroupBound
+    {
+        bool has_own = false, has_share = false;
+        Scalar own = 0, share = 0;         // the slacks
+        std::array<Scalar, NP> c_own{}, c_share{};   // the projections they use
+        Scalar binds = 0;                  // phi of whichever are present
+    };
+
+    GroupBound groupBound(const State& x, const int g) const
+    {
+        const auto& grp = groups_[g];
+        GroupBound b;
+        if (grp.target > Scalar{0}) {
+            b.has_own = true;
+            b.c_own = modeWeights(grp.mode, grp.resv_coeff);
+            b.own = relativeSlack(grp.target, groupRate(x, g, grp.mode, grp.resv_coeff));
+        }
+        if (grp.parent >= 0) {
+            const auto& par = groups_[grp.parent];
+            b.has_share = true;
+            b.c_share = modeWeights(par.mode, par.resv_coeff);
+            b.share = relativeSlack(grp.guide * x[glIdx(grp.parent)],
+                                    groupRate(x, g, par.mode, par.resv_coeff));
+        }
+        b.binds = (b.has_own && b.has_share) ? fb(b.own, b.share)
+                : b.has_own                  ? b.own
+                : b.has_share                ? b.share : Scalar{0};
+        return b;
     }
 
     /// The group tree's own rows. Two per group, and they mirror the tree:
@@ -913,16 +1011,8 @@ public:
             // on the *parent's* mode. Each becomes its own slack, normalised
             // by the limit it belongs to so a gas limit and an oil limit are
             // comparable, and phi() says at least one of them binds.
-            std::array<Scalar, 2> slack{unbounded_slack, unbounded_slack};
-            if (grp.target > Scalar{0}) {
-                slack[0] = relativeSlack(grp.target, groupRate(x, g, grp.mode, grp.resv_coeff));
-            }
-            if (grp.parent >= 0) {
-                const auto& par = groups_[grp.parent];
-                const Scalar share = grp.guide * x[glIdx(grp.parent)];
-                slack[1] = relativeSlack(share, groupRate(x, g, par.mode, par.resv_coeff));
-            }
-            if (slack[0] == unbounded_slack && slack[1] == unbounded_slack) {
+            const auto bound = groupBound(x, g);
+            if (!bound.has_own && !bound.has_share) {
                 // Nothing can hold it: its rate is whatever its children make,
                 // and it puts no ceiling on them.
                 r[glIdx(g)] = (x[glIdx(g)] - uncapped()) / rate_scale_;
@@ -936,10 +1026,7 @@ public:
             // real, both slacks stand at the stand-in for infinity and phi
             // demands one be zero, so the stand-in becomes a genuine
             // constraint. The residual sits at 1000*(2 - sqrt 2).
-            const Scalar binds = (slack[0] == unbounded_slack) ? slack[1]
-                               : (slack[1] == unbounded_slack) ? slack[0]
-                               : fb(slack[0], slack[1]);
-            r[glIdx(g)] = fb((uncapped() - x[glIdx(g)]) / rate_scale_, binds);
+            r[glIdx(g)] = fb((uncapped() - x[glIdx(g)]) / rate_scale_, bound.binds);
         }
     }
 
@@ -1542,25 +1629,56 @@ public:
                 add(row, lambdaIdx(), -well.guide, rate_scale_);
                 break;
             case Control::Cmpl: {
-                if (cmplDead(w, pressure(well.node))) {
+                const bool tubing = hasTubing(well);
+                if (tubing && cmplDead(w, pressure(well.node))) {
                     add(row, qwIdx(w, 1), 1.0, rate_scale_);
                     break;
                 }
                 std::array<Scalar, NP> q{}, qp{};
                 for (int ph = 0; ph < NP; ++ph) { q[ph] = x[qwIdx(w, ph)]; qp[ph] = std::max(q[ph], Scalar{0}); }
-                const auto e = tableLookup(well.vfp_table, pressure(well.node), qp, well.alq);
+                // No VFPPROD means no tubing curve, so no table to look up and
+                // that slack never binds -- mirror the residual exactly.
+                Lookup e{};
+                if (tubing) { e = tableLookup(well.vfp_table, pressure(well.node), qp, well.alq); }
                 const bool has_rate = well.oil_rate_limit > Scalar{0};
                 const Scalar a = has_rate ? (well.oil_rate_limit - q[1]) / rate_scale_ : Scalar{1e6};
-                const Scalar b = (x[bhpIdx(w)] - (e.value - well.vfp_dp)) / pressure_scale_;
+                const Scalar b = tubing
+                    ? (x[bhpIdx(w)] - (e.value - well.vfp_dp)) / pressure_scale_ : Scalar{1e6};
                 const Scalar c = (x[bhpIdx(w)] - well.bhp_limit) / pressure_scale_;
                 const auto g_ab = dfb(a, b);                 // d fb(a,b) / da, db
-                const auto g_oc = dfb(fb(a, b), c);          // d psi / d fb(a,b), dc
-                const Scalar da = g_oc[0] * g_ab[0], db = g_oc[0] * g_ab[1], dc = g_oc[1];
+                const auto g_oc = dfb(fb(a, b), c);          // d inner / d fb(a,b), dc
+                Scalar da = g_oc[0] * g_ab[0], db = g_oc[0] * g_ab[1], dc = g_oc[1];
+                // The group share is one more slack on the outside; everything
+                // below it is scaled by d psi / d inner.
+                const bool in_tree = usesGroupTree() && well.group >= 0;
+                Scalar d_share = 0;
+                std::array<Scalar, NP> c_grp{};
+                if (in_tree) {
+                    const auto& grp = groups_[well.group];
+                    c_grp = modeWeights(grp.mode, grp.resv_coeff);
+                    Scalar own = 0;
+                    for (int ph = 0; ph < NP; ++ph) { own += c_grp[ph] * q[ph]; }
+                    const Scalar share = well.guide * x[glIdx(well.group)];
+                    const auto g_sh = dfb(fb(fb(a, b), c), relativeSlack(share, own));
+                    da *= g_sh[0]; db *= g_sh[0]; dc *= g_sh[0];
+                    d_share = g_sh[1];
+                }
                 if (has_rate) { add(row, qwIdx(w, 1), -da, rate_scale_); }
                 add(row, bhpIdx(w), db + dc, pressure_scale_);
-                if (well.node != 0) { add(row, pIdx(well.node), -db * e.dthp, pressure_scale_); }
-                for (int ph = 0; ph < NP; ++ph) {
-                    if (q[ph] > Scalar{0}) { add(row, qwIdx(w, ph), -db * e.dq[ph], pressure_scale_); }
+                if (tubing) {
+                    if (well.node != 0) { add(row, pIdx(well.node), -db * e.dthp, pressure_scale_); }
+                    for (int ph = 0; ph < NP; ++ph) {
+                        if (q[ph] > Scalar{0}) { add(row, qwIdx(w, ph), -db * e.dq[ph], pressure_scale_); }
+                    }
+                }
+                if (in_tree) {
+                    const auto& grp = groups_[well.group];
+                    const Scalar n = slackScale(well.guide * x[glIdx(well.group)]);
+                    for (int ph = 0; ph < NP; ++ph) {
+                        add(row, qwIdx(w, ph), -d_share * c_grp[ph], n);
+                    }
+                    add(row, glIdx(well.group), d_share * well.guide, n);
+                    (void)grp;
                 }
                 break;
             }
@@ -1596,6 +1714,7 @@ public:
         if (!(grouped() && any_grup)) {
             add(lambdaIdx(), lambdaIdx(), 1.0, rate_scale_);
         }
+        groupJacobian(x, add);
         return J;
     }
 

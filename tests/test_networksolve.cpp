@@ -3707,7 +3707,7 @@ namespace {
                 sys.addWell(std::move(w));
             }
             sys.setGroupTree(true);
-            sys.setAnalyticJacobian(false);      // group rows differenced for now
+            sys.setAnalyticJacobian(true);      // group rows differenced for now
             sys.setComplementarity(true);
             sys.finish();
             sys.finishGroups();
@@ -3840,7 +3840,7 @@ BOOST_AUTO_TEST_CASE(the_group_tree_from_a_deck)
         sys.addWell(std::move(w));
     }
     sys.setGroupTree(true);
-    sys.setAnalyticJacobian(false);
+    sys.setAnalyticJacobian(true);
     sys.setComplementarity(true);
     sys.finish();
     sys.finishGroups();
@@ -4008,7 +4008,7 @@ BOOST_AUTO_TEST_CASE(the_group_tree_against_steins_balancer)
             sys.addWell(std::move(w));
         }
         sys.setGroupTree(true);
-        sys.setAnalyticJacobian(false);
+        sys.setAnalyticJacobian(true);
         sys.setComplementarity(true);
         sys.finish();
         sys.finishGroups();
@@ -4032,6 +4032,53 @@ BOOST_AUTO_TEST_CASE(the_group_tree_against_steins_balancer)
         BOOST_CHECK(oracle_ok);
         BOOST_CHECK(r.converged);
         BOOST_CHECK_LT(worst, 0.01);
+    }
+}
+
+// The group rows' analytic derivatives against differences, entry by entry.
+//
+// This is the check that says the linearisation is right, independently of
+// whether any solve converges: if the assembled Jacobian matches the
+// difference quotient everywhere, the rows are differentiated correctly.
+BOOST_AUTO_TEST_CASE(the_group_jacobian_matches_differences)
+{
+    TreeCase tc;
+    struct Shape { const char* what; double field; double p1;
+                   std::array<double,3> caps; TreeCase::Sys::Mode mode; double wct; };
+    const std::vector<Shape> shapes{
+        {"oil target",            3000.0,    0.0, {2000, 2000, 400}, TreeCase::Sys::Mode::Oil,    0.0},
+        {"target at both levels", 3000.0, 2000.0, {2000, 2000, 400}, TreeCase::Sys::Mode::Oil,    0.0},
+        {"liquid target",         3750.0,    0.0, {2000, 2000, 400}, TreeCase::Sys::Mode::Liquid, 0.25},
+    };
+    for (const auto& sh : shapes) {
+        auto sys = tc.build(sh.field, sh.p1, sh.caps, sh.mode, sh.wct);
+        auto x = sys.start({convert::from(120.0, bars)});
+        // Away from the start, where the slacks are not all at their initial
+        // values and the kinks are not sitting exactly on zero.
+        for (int w = 0; w < sys.numWells(); ++w) {
+            x[sys.wellRateIndex(w, 1)] *= 0.83;
+            x[sys.wellBhpIndex(w)] += convert::from(4.0, bars);
+        }
+        const auto J = sys.jacobian(x);
+        const auto r0 = sys.residual(x);
+        const int n = sys.size();
+        double worst = 0.0;
+        int worst_i = -1, worst_j = -1;
+        for (int j = 0; j < n; ++j) {
+            auto shifted = x;
+            const double h = 1e-6 * sys.columnScale(j);
+            shifted[j] += h;
+            const auto rj = sys.residual(shifted);
+            for (int i = 0; i < n; ++i) {
+                const double fd = (rj[i] - r0[i]) / h;
+                const double an = J(i, j);
+                const double d = std::abs(fd - an) / std::max({std::abs(fd), std::abs(an), 1.0});
+                if (d > worst) { worst = d; worst_i = i; worst_j = j; }
+            }
+        }
+        BOOST_TEST_MESSAGE(sh.what << ": " << n << " unknowns, worst entry mismatch "
+                           << 100 * worst << " % at (" << worst_i << "," << worst_j << ")");
+        BOOST_CHECK_LT(worst, 1e-4);
     }
 }
 
