@@ -61,6 +61,9 @@
 #include <opm/input/eclipse/Deck/UDAValue.hpp>
 #include <opm/io/eclipse/ESmry.hpp>
 #include <opm/input/eclipse/Parser/Parser.hpp>
+#include <opm/input/eclipse/Schedule/SummaryState.hpp>
+#include <opm/input/eclipse/Schedule/Schedule.hpp>
+#include <opm/input/eclipse/EclipseState/EclipseState.hpp>
 #include <opm/input/eclipse/Schedule/VFPInjTable.hpp>
 #include <opm/input/eclipse/Schedule/VFPProdTable.hpp>
 #include <opm/input/eclipse/Units/Units.hpp>
@@ -1398,7 +1401,7 @@ BOOST_AUTO_TEST_CASE(built_from_deck_matches_the_builtin_case)
     for (const auto& well : builtin.wells()) {
         const auto& w = from_deck.wells();
         const auto it = std::find_if(w.begin(), w.end(),
-                                     [&](const Well& x) { return x.name == well.name; });
+                                     [&](const auto& x) { return x.name == well.name; });
         BOOST_REQUIRE(it != w.end());
         BOOST_CHECK_EQUAL(nodeName(from_deck, it->node), nodeName(builtin, well.node));
         BOOST_CHECK_EQUAL(it->vfp_table, well.vfp_table);
@@ -3746,6 +3749,117 @@ BOOST_AUTO_TEST_CASE(the_group_tree_as_sparse_rows)
         for (int w = 0; w < sys.numWells(); ++w) {
             BOOST_CHECK_CLOSE(r.well_rate[w] * 86400.0, c.q[w], 0.5);
         }
+    }
+}
+
+// The group tree built from a deck rather than by hand.
+//
+// tests/GROUPTREE.DATA: FIELD -> PLAT -> {GP1 -> W1 W2, GP2 -> W3}, PLAT on
+// GCONPROD ORAT 3000, W3 held to 400 by its own limit. Reads GRUPTREE,
+// GCONPROD and WCONPROD out of the Schedule and builds the sparse system from
+// them, so the deck is the single description of the case -- and the same
+// Schedule is what Stein's balancer needs for its GuideRate, which is what
+// makes it usable as an oracle on exactly this configuration.
+BOOST_AUTO_TEST_CASE(the_group_tree_from_a_deck)
+{
+    const auto deck_path = std::filesystem::path(__FILE__).parent_path() / "GROUPTREE.DATA";
+    if (!std::filesystem::exists(deck_path)) {
+        BOOST_TEST_MESSAGE("GROUPTREE.DATA not found, skipping");
+        return;
+    }
+    Parser parser;
+    const auto deck = parser.parseFile(deck_path.string());
+    const EclipseState es{deck};
+    const Schedule schedule{deck, es};
+    SummaryState summary_state{TimeService::now(), 0.0};
+
+    using Sys = NetworkSolve::ProductionSystem<double>;
+    VFPProdProperties<double> props;
+    const UnitSystem units{};
+    Sys sys(props, units);
+
+    NetworkSolve::Node term; term.name = "TERM"; term.parent = -1;
+    sys.addNode(term, 0.0);
+    NetworkSolve::Node n; n.name = "N"; n.parent = 0;
+    sys.addNode(n, 0.0);
+    sys.setTerminalPressure(convert::from(120.0, bars));
+
+    // Groups, parents first so a parent's index is known when its child is
+    // added. FIELD has no production target here; PLAT carries it.
+    std::map<std::string, int> gidx;
+    std::function<void(const std::string&, int)> addTree =
+        [&](const std::string& name, const int parent) {
+            typename Sys::Group g;
+            g.name = name;
+            g.parent = parent;
+            const auto& grp = schedule.getGroup(name, 0);
+            g.efficiency = grp.getGroupEfficiencyFactor();
+            if (grp.isProductionGroup()) {
+                const auto ctl = grp.productionControls(summary_state);
+                if (ctl.cmode == Opm::Group::ProductionCMode::ORAT) {
+                    g.mode = Sys::Mode::Oil;   g.target = ctl.oil_target;
+                } else if (ctl.cmode == Opm::Group::ProductionCMode::LRAT) {
+                    g.mode = Sys::Mode::Liquid; g.target = ctl.liquid_target;
+                } else if (ctl.cmode == Opm::Group::ProductionCMode::GRAT) {
+                    g.mode = Sys::Mode::Gas;   g.target = ctl.gas_target;
+                } else if (ctl.cmode == Opm::Group::ProductionCMode::WRAT) {
+                    g.mode = Sys::Mode::Water; g.target = ctl.water_target;
+                }
+            }
+            const int me = sys.addGroup(std::move(g));
+            gidx[name] = me;
+            for (const auto& child : grp.groups()) { addTree(child, me); }
+        };
+    addTree("FIELD", -1);
+    BOOST_TEST_MESSAGE("groups from the deck: " << gidx.size());
+
+    // Wells, with their own ORAT ceiling from WCONPROD as the individual limit.
+    for (const auto& wname : schedule.wellNames(0)) {
+        const auto& well = schedule.getWell(wname, 0);   // Opm::Well
+        if (!well.isProducer()) { continue; }
+        const auto ctl = well.productionControls(summary_state);
+        typename Sys::Well w;
+        w.name = wname;
+        w.node = 1;
+        w.vfp_table = 0;                       // no tubing on this deck
+        // A linear inflow reaching the well's own ORAT limit at 100 bar and
+        // shutting in at 250; the deck fixes the limit, this fixes the slope.
+        const double cap = ctl.oil_rate;
+        const double b = -cap / (250e5 - 100e5);
+        w.ipr_a[1] = -b * 250e5;
+        w.ipr_b[1] = b;
+        w.bhp_limit = convert::from(100.0, bars);
+        w.oil_rate_limit = cap;
+        w.guide = 1.0;
+        w.group = gidx.at(well.groupName());
+        w.q_start = 0.5 * cap;
+        sys.addWell(std::move(w));
+    }
+    sys.setGroupTree(true);
+    sys.setAnalyticJacobian(false);
+    sys.setComplementarity(true);
+    sys.finish();
+    sys.finishGroups();
+
+    const auto r = NetworkSolve::solve(sys, {convert::from(120.0, bars)},
+                                       {1e-2, 60}, NetworkSolve::FullStep{});
+    std::string got;
+    double total = 0.0;
+    for (int w = 0; w < sys.numWells(); ++w) {
+        got += fmt::format(" {}={:.1f}", sys.wells()[w].name, r.well_rate[w] * 86400.0);
+        total += r.well_rate[w] * 86400.0;
+    }
+    BOOST_TEST_MESSAGE("deck-driven: " << (r.converged ? "converged" : "FAILED")
+                       << " in " << r.iterations << " it," << got
+                       << ", PLAT total " << total);
+    BOOST_REQUIRE(r.converged);
+    // PLAT's ORAT target is 3000 and the wells can make 4400, so it binds.
+    BOOST_CHECK_CLOSE(total, 3000.0, 0.5);
+    // W3 is capped at 400 by its own limit, so GP1 carries the remaining 2600.
+    for (int w = 0; w < sys.numWells(); ++w) {
+        const double q = r.well_rate[w] * 86400.0;
+        const double want = sys.wells()[w].name == "W3" ? 400.0 : 1300.0;
+        BOOST_CHECK_CLOSE(q, want, 0.5);
     }
 }
 

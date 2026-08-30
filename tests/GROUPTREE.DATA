@@ -1,0 +1,174 @@
+-- This reservoir simulation deck is made available under the Open Database
+-- License: http://opendatacommons.org/licenses/odbl/1.0/. Any rights in
+-- individual contents of the database are licensed under the Database Contents
+-- License: http://opendatacommons.org/licenses/dbcl/1.0/
+
+-- Test case for GCONSUMP efficiency factor handling in update_gconsump()
+--
+-- Group hierarchy:
+--                       FIELD
+--                         |
+--                      PLAT-A (GEFAC=0.9)
+--                         |
+--                      SUB-B (GEFAC=0.8, GCONSUMP consumption=100, import=50)
+--                         |
+--                      WELL-C
+--
+-- This setup tests:
+-- - Hierarchical efficiency factor application (multiplicative: 0.8 × 0.9 = 0.72)
+-- - GCONSUMP rate accumulation with efficiency factors
+
+RUNSPEC
+
+TITLE
+GROUP_TREE_SPARSE_SYSTEM_TEST
+
+DIMENS
+   3 3 2 /
+
+OIL
+WATER
+GAS
+DISGAS
+
+METRIC
+
+START
+ 1 'JAN' 2020 /
+
+WELLDIMS
+-- max wells, max cons/well, max groups, max wells/group
+   4 4 8 4 /
+
+EQLDIMS
+ 1 1*  25 1* 1 /
+
+TABDIMS
+-- NTSFUN NTPVT NSSFUN NPPVT NTFIP NRPVT NTEND NKRH
+     1     1     50    60     1     60    1   1 /
+
+UNIFOUT
+
+GRID
+
+INIT
+
+DXV
+1000 1000 1000 /
+
+DYV
+1000 1000 1000 /
+
+DZV
+50 50 /
+
+TOPS
+9*7000 /
+
+PORO
+18*0.2 /
+
+PERMX
+18*200 /
+
+PERMY
+18*200 /
+
+PERMZ
+18*20 /
+
+PROPS
+
+SWOF
+-- Sw     Krw   Krow  Pcow
+   0.2    0     1     0
+   0.3    0.07  0.8   0
+   1.0    1     0     0 /
+
+SGOF
+-- Sg     Krg   Krog  Pcog
+   0      0     1     0
+   0.05   0     0.8   0
+   0.79   1     0     0 /
+
+DENSITY
+  800 1000 1 /
+
+PVTW
+  1 1.0 4.0E-5 0.5 0.0 /
+
+PVDG
+  1   1.0    0.01
+100   0.1    0.015
+300   0.033  0.02 /
+
+PVTO
+  1    50  1.2  1.0
+      150  1.15 1.1
+      300  1.10 1.2 /
+  10  150  1.25 0.9
+      250  1.20 1.0
+      350  1.15 1.1 /
+/
+
+REGIONS
+
+EQLNUM
+18*1 /
+
+SOLUTION
+
+EQUIL
+-- depth  press  woc    pcow  goc    pcog  rsvd  rvvd  N
+  7000   270     7050   0     7000   0     1*    0     0 /
+
+SUMMARY
+FOPR
+FGPR
+FWPR
+GOPR 'PLAT-A' /
+GGPR 'SUB-B' /
+
+SCHEDULE
+
+GRUPTREE
+ 'PLAT'  'FIELD' /
+ 'GP1'   'PLAT' /
+ 'GP2'   'PLAT' /
+/
+
+WELSPECS
+ 'W1'  'GP1'  1  1  7000  'OIL' /
+ 'W2'  'GP1'  2  1  7000  'OIL' /
+ 'W3'  'GP2'  3  1  7000  'OIL' /
+/
+
+COMPDAT
+ 'W1'  1  1  1  2  'OPEN' 1* 1* 0.2 /
+ 'W2'  2  1  1  2  'OPEN' 1* 1* 0.2 /
+ 'W3'  3  1  1  2  'OPEN' 1* 1* 0.2 /
+/
+
+-- Equal guide rates, so the split is decided by the limits rather than by
+-- the guides. GuideRate reads these; the balancer asks it by name.
+WGRUPCON
+ 'W1'  YES  1.0  OIL /
+ 'W2'  YES  1.0  OIL /
+ 'W3'  YES  1.0  OIL /
+/
+
+-- Wells on group control, each with its own oil ceiling.
+WCONPROD
+ 'W1'  'OPEN'  'GRUP'  2000  4*  50 /
+ 'W2'  'OPEN'  'GRUP'  2000  4*  50 /
+ 'W3'  'OPEN'  'GRUP'   400  4*  50 /
+/
+
+GCONPROD
+ 'PLAT'  'ORAT'  3000  3*  'RATE' /
+/
+
+TSTEP
+1 /
+
+END
