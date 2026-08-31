@@ -3670,7 +3670,8 @@ namespace {
         Sys build(const double field_target, const double p1_target,
                   const std::array<double, 3>& caps,
                   const typename Sys::Mode mode = Sys::Mode::Oil,
-                  const double water_cut = 0.0) const
+                  const double water_cut = 0.0,
+                  const bool active_set = false) const
         {
             Sys sys(props, units);
             NetworkSolve::Node root; root.name = "TERM"; root.parent = -1;
@@ -3707,8 +3708,9 @@ namespace {
                 sys.addWell(std::move(w));
             }
             sys.setGroupTree(true);
-            sys.setAnalyticJacobian(true);      // group rows differenced for now
+            sys.setAnalyticJacobian(true);
             sys.setComplementarity(true);
+            sys.setGroupActiveSet(active_set);
             sys.finish();
             sys.finishGroups();
             return sys;
@@ -3752,6 +3754,60 @@ BOOST_AUTO_TEST_CASE(the_group_tree_as_sparse_rows)
         if (!r.converged) { continue; }
         for (int w = 0; w < sys.numWells(); ++w) {
             BOOST_CHECK_CLOSE(r.well_rate[w] * 86400.0, c.q[w], 0.5);
+        }
+    }
+}
+
+// The same four shapes, resolved by an active set instead of by
+// Fischer-Burmeister.
+//
+// Both paths solve the same equations; they differ only in who decides which
+// limit holds each group and each well. With the choice made outside the
+// Newton every group row is linear -- the definition rows always were, and the
+// allocation row becomes one of three equalities -- so the group block is
+// exact and constant. The point of the comparison is that the two agree on the
+// answer; the iteration counts say what the switching costs.
+//
+// This is also the path that matters near convergence, where the active set is
+// already right and there is nothing to switch.
+BOOST_AUTO_TEST_CASE(the_group_tree_by_active_set)
+{
+    TreeCase tc;
+    const std::vector<double> guess{convert::from(120.0, bars)};
+
+    struct Want { const char* what; double field; double p1; std::array<double,3> caps;
+                  std::array<double,3> q;
+                  TreeCase::Sys::Mode mode = TreeCase::Sys::Mode::Oil;
+                  double wct = 0.0; };
+    const std::vector<Want> cases{
+        {"one well caps, field target met", 3000.0, 0.0, {2000, 2000, 400}, {1300, 1300, 400}},
+        {"platform target binds too",       3000.0, 2000.0, {2000, 2000, 400}, {1000, 1000, 400}},
+        {"nothing below the field binds",   1200.0, 0.0, {2000, 2000, 2000}, {300, 300, 600}},
+        {"a liquid target, 25 % water",     3750.0, 0.0, {2000, 2000, 400}, {1300, 1300, 400},
+         TreeCase::Sys::Mode::Liquid, 0.25},
+    };
+
+    for (const auto& c : cases) {
+        auto fb = tc.build(c.field, c.p1, c.caps, c.mode, c.wct, false);
+        auto as = tc.build(c.field, c.p1, c.caps, c.mode, c.wct, true);
+        const auto rf = NetworkSolve::solve(fb, guess, {1e-2, 60}, NetworkSolve::FullStep{});
+        const auto ra = NetworkSolve::solve(as, guess, {1e-2, 60}, NetworkSolve::FullStep{});
+        std::string got;
+        for (int w = 0; w < as.numWells(); ++w) {
+            got += fmt::format(" {}={:.1f}", as.wells()[w].name, ra.well_rate[w] * 86400.0);
+        }
+        BOOST_TEST_MESSAGE(c.what << ": active set "
+                           << (ra.converged ? "converged" : "FAILED")
+                           << " in " << ra.iterations << " it (fb "
+                           << (rf.converged ? "converged" : "FAILED") << " in "
+                           << rf.iterations << "), residual " << ra.residual << got);
+        BOOST_CHECK(ra.converged);
+        if (!ra.converged) { continue; }
+        for (int w = 0; w < as.numWells(); ++w) {
+            BOOST_CHECK_CLOSE(ra.well_rate[w] * 86400.0, c.q[w], 0.5);
+            if (rf.converged) {
+                BOOST_CHECK_CLOSE(ra.well_rate[w] * 86400.0, rf.well_rate[w] * 86400.0, 0.5);
+            }
         }
     }
 }
@@ -3907,6 +3963,9 @@ BOOST_AUTO_TEST_CASE(the_group_tree_against_steins_balancer)
         {"unequal guide rates",             3000.0, {2000, 2000, 2000}, {3, 2, 1}},
     };
 
+    // Both routes to the active set are held to the same oracle: complementarity
+    // inside the Newton, and the tree pass outside it.
+    for (const bool active_set : {false, true}) {
     for (const auto& c : cases) {
         // ---- the oracle ---------------------------------------------------
         GuideRate guide_rate{schedule};
@@ -4010,6 +4069,7 @@ BOOST_AUTO_TEST_CASE(the_group_tree_against_steins_balancer)
         sys.setGroupTree(true);
         sys.setAnalyticJacobian(true);
         sys.setComplementarity(true);
+        sys.setGroupActiveSet(active_set);
         sys.finish();
         sys.finishGroups();
 
@@ -4026,12 +4086,14 @@ BOOST_AUTO_TEST_CASE(the_group_tree_against_steins_balancer)
             both += fmt::format(" {}={:.1f}/{:.1f}", name, mine, theirs);
             worst = std::max(worst, std::abs(mine - theirs) / std::max(std::abs(theirs), 1.0));
         }
-        BOOST_TEST_MESSAGE(c.what << ": equations/oracle" << both
+        BOOST_TEST_MESSAGE((active_set ? "[active set] " : "[fb] ")
+                           << c.what << ": equations/oracle" << both
                            << "  (" << r.iterations << " it, worst gap "
                            << 100 * worst << " %)");
         BOOST_CHECK(oracle_ok);
         BOOST_CHECK(r.converged);
         BOOST_CHECK_LT(worst, 0.01);
+    }
     }
 }
 
