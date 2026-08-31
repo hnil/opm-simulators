@@ -203,11 +203,11 @@ private:
             return this->cell_to_aquifer_cell_idx_[cell_index] == 0;
         });
 
-        assert ((elemIt != this->simulator_.gridView().template end</*codim=*/0>())
-                && "Internal error locating numerical aquifer's connecting cell");
-
+        // In parallel a rank may hold aquifer cells without holding the
+        // connecting one (index 0); then it simply contributes no flux.
         this->connects_to_reservoir_ =
-            elemIt->partitionType() == Dune::InteriorEntity;
+            (elemIt != this->simulator_.gridView().template end</*codim=*/0>())
+            && (elemIt->partitionType() == Dune::InteriorEntity);
     }
 
     Scalar calculateAquiferPressure() const
