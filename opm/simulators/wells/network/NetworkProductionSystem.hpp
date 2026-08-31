@@ -31,6 +31,8 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
+#include <cstdlib>
 #include <limits>
 #include <istream>
 #include <ostream>
@@ -111,7 +113,11 @@ public:
     /// Tied: on its rate limit and its tubing at once -- see the residual.
     /// Cmpl: all three of a well's own limits as one complementarity row.
     /// Shut: its tubing cannot lift at this node pressure; q = 0.
-    enum class Control { Thp, Bhp, OilRate, Grup, Tied, Cmpl, Shut };
+    enum class Control { Thp, Bhp, OilRate, Grup, Tree, Tied, Cmpl, Shut };
+
+    /// Which of a group's two possible limits is held as an equality: its own
+    /// target, the share its parent hands it, or neither.
+    enum class GroupBind { Free, Own, Share };
 
     struct Well
     {
@@ -304,6 +310,13 @@ public:
     /// Needs the complementarity rows; see groupRows() in the residual.
     void setGroupTree(const bool on) { group_tree_ = on; }
 
+    /// Resolve the group tree by an active set instead of Fischer-Burmeister:
+    /// which limit holds each group is chosen between iterations, and every
+    /// group row is then linear in the unknowns. Opt-in, and the two are
+    /// alternatives -- see updateGroupBinds().
+    void setGroupActiveSet(const bool on) { group_active_set_ = on; }
+    bool usesGroupActiveSet() const { return usesGroupTree() && group_active_set_; }
+
     /// Whether wells get the complementarity row. It needs the assembled
     /// Jacobian: differencing across the kink was worth 678 fallbacks. The
     /// group rows have their derivatives now, so the prototype's exemption is
@@ -316,6 +329,7 @@ public:
         groups_.push_back(std::move(g));
         group_children_.emplace_back();
         group_wells_.emplace_back();
+        group_bind_.push_back(GroupBind::Free);
         return static_cast<int>(groups_.size()) - 1;
     }
     const std::vector<Group>& groups() const { return groups_; }
@@ -406,6 +420,7 @@ public:
         case Control::Bhp:     return 'B';
         case Control::OilRate: return 'O';
         case Control::Grup:    return 'G';
+        case Control::Tree:    return 'R';
         case Control::Tied:    return 'C';
         case Control::Cmpl:    return 'M';
         case Control::Shut:    return 'S';
@@ -784,6 +799,18 @@ public:
             case Control::Grup:
                 control = (q[1] - well.guide * x[lambdaIdx()]) / rate_scale_;
                 break;
+            case Control::Tree: {
+                // The well delivers exactly the share its group hands it,
+                // measured on that group's mode. Linear in the rates and in
+                // the multiplier -- the active-set counterpart of the share
+                // slack inside the Cmpl row below.
+                const auto& grp = groups_[well.group];
+                const auto cw = modeWeights(grp.mode, grp.resv_coeff);
+                Scalar own = 0;
+                for (int ph = 0; ph < NP; ++ph) { own += cw[ph] * q[ph]; }
+                control = (own - well.guide * x[glIdx(well.group)]) / rate_scale_;
+                break;
+            }
             case Control::Cmpl: {
                 // All three of the well's own limits as one row. a, b, c are
                 // the slacks on rate, tubing and bhp; at the solution each is
@@ -904,6 +931,23 @@ public:
 
             const int row = glIdx(g);
             const auto bound = groupBound(x, g);
+            if (usesGroupActiveSet()) {
+                // Every branch is linear, so these entries are the projection
+                // coefficients themselves.
+                const auto held = group_bind_[g];
+                if (held == GroupBind::Free) {
+                    add(row, glIdx(g), 1.0, rate_scale_);
+                    continue;
+                }
+                const auto& c = (held == GroupBind::Own) ? bound.c_own : bound.c_share;
+                for (int ph = 0; ph < NP; ++ph) {
+                    add(row, gqIdx(g, ph), -c[ph], rate_scale_);
+                }
+                if (held == GroupBind::Share) {
+                    add(row, glIdx(grp.parent), grp.guide, rate_scale_);
+                }
+                continue;
+            }
             if (!bound.has_own && !bound.has_share) {
                 add(row, glIdx(g), 1.0, rate_scale_);
                 continue;
@@ -976,6 +1020,149 @@ public:
         return b;
     }
 
+    /// No limit at all, for the allowance arithmetic below.
+    static constexpr Scalar kNoLimit = std::numeric_limits<Scalar>::max();
+
+    /// A rate on the oil axis, re-measured on the mode `c`, using the well's
+    /// phase fractions at the iterate. Exact when the mode *is* oil; otherwise
+    /// the fixed-fraction approximation the whole linearisation rests on.
+    Scalar wellCapOnMode(const State& x, const int w, const Scalar oil_allow,
+                         const std::array<Scalar, NP>& c) const
+    {
+        const Scalar q_oil = x[qwIdx(w, 1)];
+        Scalar on = 0;
+        for (int ph = 0; ph < NP; ++ph) { on += c[ph] * x[qwIdx(w, ph)]; }
+        return (q_oil > Scalar{0} && on > Scalar{0}) ? oil_allow * on / q_oil
+                                                     : oil_allow * c[1];
+    }
+
+    Scalar groupOnMode(const State& x, const int g, const std::array<Scalar, NP>& c) const
+    {
+        Scalar on = 0;
+        for (int ph = 0; ph < NP; ++ph) { on += c[ph] * x[gqIdx(g, ph)]; }
+        return on;
+    }
+
+    /// A group's own target, re-measured on the mode `c`.
+    Scalar groupTargetOnMode(const State& x, const int g, const std::array<Scalar, NP>& c) const
+    {
+        const auto& grp = groups_[g];
+        const auto cg = modeWeights(grp.mode, grp.resv_coeff);
+        const Scalar on_g = groupOnMode(x, g, cg), on_c = groupOnMode(x, g, c);
+        return (on_g > Scalar{0}) ? grp.target * on_c / on_g : grp.target;
+    }
+
+    /// What a subtree could deliver on the mode `c` if only its own limits held
+    /// it: every well at the tightest of its bhp/thp/rate allowance, every
+    /// group under its own target.
+    Scalar childrenCapacity(const State& x, const int g, const std::array<Scalar, NP>& c) const
+    {
+        Scalar cap = 0;
+        for (const int cc : group_children_[g]) {
+            cap += groups_[cc].efficiency * subtreeCapacity(x, cc, c);
+        }
+        for (const int w : group_wells_[g]) {
+            cap += wells_[w].efficiency * wellCapOnMode(x, w, own_allowance_[w], c);
+        }
+        return cap;
+    }
+
+    /// As seen from the parent: the group's own target caps it too.
+    Scalar subtreeCapacity(const State& x, const int g, const std::array<Scalar, NP>& c) const
+    {
+        const Scalar cap = childrenCapacity(x, g, c);
+        return (groups_[g].target > Scalar{0})
+            ? std::min(cap, groupTargetOnMode(x, g, c)) : cap;
+    }
+
+    /// Resolve the tree into an active set: which limit holds each group, and
+    /// which wells are held by their share rather than by their own limits.
+    /// This is the alternative to Fischer-Burmeister, and it is not a
+    /// per-group choice -- it cannot be.
+    ///
+    /// The reason is structural. lambda_g appears in exactly one kind of row:
+    /// the share rows of its children. Bind a group without moving any child
+    /// onto its share and lambda_g has no column at all, and the Jacobian is
+    /// singular -- which is what a per-group slack-sign rule does on the very
+    /// first switch. So the pass has to walk the tree: capacities bottom-up,
+    /// shares top-down, and a group whose bound is above what its subtree can
+    /// deliver is not bound at all (its multiplier runs to the ceiling, which
+    /// is exactly phi's other branch).
+    ///
+    /// That walk is Stein's balancer, used here to pick the *set* only. The
+    /// Newton still supplies every number -- rates, pressures, the tubing
+    /// curve, the multipliers -- so the split between the two is combinatorics
+    /// outside, physics inside.
+    bool resolveTree(const State& x)
+    {
+        if (!usesGroupActiveSet()) { return false; }
+        bool changed = false;
+        for (int g = 0; g < numGroups(); ++g) {
+            if (groups_[g].parent < 0) { resolveGroup(x, g, kNoLimit, changed); }
+        }
+        return changed;
+    }
+
+    void resolveGroup(const State& x, const int g, const Scalar share_on_own_mode,
+                      bool& changed)
+    {
+        const auto& grp = groups_[g];
+        const auto cg = modeWeights(grp.mode, grp.resv_coeff);
+        const Scalar own = (grp.target > Scalar{0}) ? grp.target : kNoLimit;
+        const Scalar bound = std::min(own, share_on_own_mode);
+
+        auto bind = GroupBind::Free;
+        if (bound < kNoLimit) {
+            // A limit the subtree cannot reach is not a limit.
+            const Scalar cap = childrenCapacity(x, g, cg);
+            if (bound < cap * (Scalar{1} - Scalar{1e-9})) {
+                bind = (own <= share_on_own_mode) ? GroupBind::Own : GroupBind::Share;
+            }
+        }
+        if (std::getenv("OPM_TREE_DBG")) {
+            std::fprintf(stderr, "[tree] g=%s own=%g share=%g bound=%g cap=%g -> %d\n",
+                         grp.name.c_str(), own * 86400.0, share_on_own_mode * 86400.0,
+                         bound * 86400.0, childrenCapacity(x, g, cg) * 86400.0,
+                         static_cast<int>(bind));
+        }
+        changed |= (bind != group_bind_[g]);
+        group_bind_[g] = bind;
+
+        // Split whatever holds this group among its children by guide rate,
+        // dropping any child its own capacity already holds below its share.
+        const auto& kids = group_children_[g];
+        const auto& mine = group_wells_[g];
+        const int nk = static_cast<int>(kids.size()), nw = static_cast<int>(mine.size());
+        std::vector<Scalar> guide(nk + nw), cap(nk + nw);
+        const std::vector<char> pooled(nk + nw, 1);
+        for (int i = 0; i < nk; ++i) {
+            const auto& c = groups_[kids[i]];
+            guide[i] = c.guide;
+            cap[i] = c.efficiency * subtreeCapacity(x, kids[i], cg);
+        }
+        for (int i = 0; i < nw; ++i) {
+            const auto& w = wells_[mine[i]];
+            guide[nk + i] = w.guide;
+            cap[nk + i] = w.efficiency * wellCapOnMode(x, mine[i], own_allowance_[mine[i]], cg);
+        }
+        const auto share = shareByGuide<Scalar>(guide, pooled,
+                                                cap, bind == GroupBind::Free ? Scalar{0} : bound);
+
+        for (int i = 0; i < nk; ++i) {
+            const Scalar eff = groups_[kids[i]].efficiency;
+            const Scalar down = (share[i] < kNoLimit && eff > Scalar{0}) ? share[i] / eff : kNoLimit;
+            resolveGroup(x, kids[i], down, changed);
+        }
+        for (int i = 0; i < nw; ++i) {
+            const int w = mine[i];
+            if (controls_[w] == Control::Shut) { continue; }
+            const bool held = share[nk + i] < cap[nk + i];
+            const auto wanted = held ? Control::Tree : own_control_[w];
+            changed |= (wanted != controls_[w]);
+            controls_[w] = wanted;
+        }
+    }
+
     /// The group tree's own rows. Two per group, and they mirror the tree:
     ///
     ///   definition   Q_g,ph = sum over its child groups and its wells
@@ -1012,6 +1199,14 @@ public:
             // by the limit it belongs to so a gas limit and an oil limit are
             // comparable, and phi() says at least one of them binds.
             const auto bound = groupBound(x, g);
+            if (usesGroupActiveSet()) {
+                switch (group_bind_[g]) {
+                case GroupBind::Own:   r[glIdx(g)] = bound.own; break;
+                case GroupBind::Share: r[glIdx(g)] = bound.share; break;
+                case GroupBind::Free:  r[glIdx(g)] = (x[glIdx(g)] - uncapped()) / rate_scale_; break;
+                }
+                continue;
+            }
             if (!bound.has_own && !bound.has_share) {
                 // Nothing can hold it: its rate is whatever its children make,
                 // and it puts no ceiling on them.
@@ -1052,6 +1247,8 @@ public:
         // that pressure here, from the allowances alone -- the same cheap
         // model the control rule runs on -- and let the Newton only polish it.
         bool changed = false;
+        own_allowance_.assign(n, kNoLimit);
+        own_control_.assign(n, Control::Bhp);
         std::vector<Scalar> choke_pressure(numNodes() + 1, Scalar{0});
         for (int node = 1; node <= numNodes(); ++node) {
             if (!isChoke(node) || (complementarity_ && analytic_jacobian_)) {
@@ -1178,8 +1375,8 @@ public:
                     // under a 6000 choke target: dump_prod_1112).
                     // A well in the group tree gets the row whether or not it
                     // has a tubing curve: its share slack lives there.
-                    const bool in_tree = usesGroupTree() && well.group >= 0;
-                    cmpl_[w] = well.shut ? 2
+                    const bool in_tree = usesGroupTree() && !group_active_set_ && well.group >= 0;
+                    cmpl_[w] = well.shut ? 2 : (usesGroupActiveSet() && well.group >= 0) ? 0
                         : (hasTubing(well) || in_tree) && !well.pinned
                           && (in_tree || !(grouped() && well.in_group))
                         ? (dead ? 2 : 1) : 0;
@@ -1202,11 +1399,22 @@ public:
                 // a derivative of anything.
                 wanted = Control::Tied;
             }
+            if (usesGroupActiveSet() && well.group >= 0) {
+                // Not assigned here: the share this well competes against is
+                // set by a multiplier that is an unknown of the system, so
+                // nothing about it is knowable inside this loop. Record what
+                // the well's own limits allow and let resolveTree() weigh the
+                // two, once, at the end.
+                own_allowance_[w] = smallest;
+                own_control_[w] = wanted;
+                continue;
+            }
             recent_[w] = {recent_[w][1], controls_[w]};
             changed |= (wanted != controls_[w]);
             controls_[w] = wanted;
         }
         cmpl_decided_ = true;
+        changed |= resolveTree(x);
         return changed;
     }
 
@@ -1628,6 +1836,15 @@ public:
                 add(row, qwIdx(w, 1), 1.0, rate_scale_);
                 add(row, lambdaIdx(), -well.guide, rate_scale_);
                 break;
+            case Control::Tree: {
+                const auto& grp = groups_[well.group];
+                const auto cw = modeWeights(grp.mode, grp.resv_coeff);
+                for (int ph = 0; ph < NP; ++ph) {
+                    add(row, qwIdx(w, ph), cw[ph], rate_scale_);
+                }
+                add(row, glIdx(well.group), -well.guide, rate_scale_);
+                break;
+            }
             case Control::Cmpl: {
                 const bool tubing = hasTubing(well);
                 if (tubing && cmplDead(w, pressure(well.node))) {
@@ -1763,6 +1980,12 @@ private:
     Scalar terminal_pressure_ = 0.0;
     Scalar group_target_ = 0.0;
     bool group_tree_ = false;
+    bool group_active_set_ = false;
+    std::vector<GroupBind> group_bind_;
+    // What each well's own limits allow, and which of them wins -- recorded by
+    // updateControls() so resolveTree() can weigh it against the share.
+    std::vector<Scalar> own_allowance_;
+    std::vector<Control> own_control_;
     std::vector<Group> groups_;
     std::vector<std::vector<int>> group_children_;
     std::vector<std::vector<int>> group_wells_;
