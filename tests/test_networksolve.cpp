@@ -78,6 +78,7 @@
 #include <opm/simulators/wells/network/NetworkNodePressureUpdater.hpp>
 #include <opm/simulators/wells/network/NetworkInjectionSystem.hpp>
 #include <opm/simulators/wells/network/NetworkProductionSystem.hpp>
+#include <opm/simulators/wells/network/NetworkTreeSolve.hpp>
 
 #include <algorithm>
 #include <array>
@@ -4142,6 +4143,342 @@ BOOST_AUTO_TEST_CASE(the_group_jacobian_matches_differences)
                            << 100 * worst << " % at (" << worst_i << "," << worst_j << ")");
         BOOST_CHECK_LT(worst, 1e-4);
     }
+}
+
+// ---------------------------------------------------------------------------
+// The group tree on a real network.
+//
+// Everything above solved the tree with no tubing, so the node pressure moved
+// nothing. Here the tree of GROUPTREE.DATA -- FIELD -> PLAT -> {GP1 -> W1 W2,
+// GP2 -> W3} -- hangs on branches with the VFPPROD table, so a well's capacity
+// depends on the node pressure, the node pressure on the allocation, and the
+// two have to be found together. Three routes to the same answer:
+// complementarity inside the Newton, the tree pass every iteration, and the
+// tree pass between converged solves (NetworkTreeSolve.hpp).
+// ---------------------------------------------------------------------------
+namespace {
+    struct NetTreeCase
+    {
+        using Sys = NetworkSolve::ProductionSystem<double>;
+        // props keeps a reference to the table, so the table lives here too.
+        VFPProdTable table;
+        VFPProdProperties<double> props;
+        UnitSystem units{};
+        NetTreeCase()
+            : table(Parser{}.parseString(vfp_prod)["VFPPROD"].front(), false, UnitSystem{})
+        {
+            props.addTable(table);
+        }
+
+        /// Liquid q(bhp) = 2 q0 (1 - bhp / shut_in), split 0.3 water, 0.7 oil,
+        /// GOR 100 -- the prototype's wells. water_shut_in moves the water
+        /// line's zero away from the oil line's, so the cut varies with bhp.
+        static void ipr(Sys::Well& w, const double q0_sm3d, const double water_shut_in_bar)
+        {
+            const double q0 = q0_sm3d / 86400.0;
+            const double oil_shut = convert::from(120.0, bars);
+            const double water_shut = convert::from(water_shut_in_bar, bars);
+            const double share[3] = {0.3, 0.7, 70.0};   // water, oil, gas
+            for (int ph = 0; ph < Sys::NP; ++ph) {
+                const double shut = (ph == 0) ? water_shut : oil_shut;
+                w.ipr_a[ph] = 2.0 * share[ph] * q0;
+                w.ipr_b[ph] = -2.0 * share[ph] * q0 / shut;
+            }
+        }
+
+        /// fork: N1 and N2 both hang off the terminal; chain: N2 under N1.
+        Sys build(const double plat_target, const std::array<double, 3>& q0,
+                  const bool fork, const Sys::Mode mode = Sys::Mode::Oil,
+                  const double water_shut_in_bar = 120.0) const
+        {
+            Sys sys(props, units);
+            sys.addNode(NetworkSolve::Node{"TERM", -1, NetworkSolve::NoTable}, 0.0);
+            sys.addNode(NetworkSolve::Node{"N1", 0, 3}, 0.0);
+            sys.addNode(NetworkSolve::Node{"N2", fork ? 0 : 1, 3}, 0.0);
+            sys.setTerminalPressure(convert::from(20.0, bars));
+
+            typename Sys::Group f; f.name = "FIELD"; f.parent = -1;
+            const int gf = sys.addGroup(f);
+            typename Sys::Group plat; plat.name = "PLAT"; plat.parent = gf;
+            plat.target = plat_target / 86400.0; plat.mode = mode; plat.guide = 3.0;
+            const int gp = sys.addGroup(plat);
+            typename Sys::Group g1; g1.name = "GP1"; g1.parent = gp; g1.guide = 2.0;
+            const int gp1 = sys.addGroup(g1);
+            typename Sys::Group g2; g2.name = "GP2"; g2.parent = gp; g2.guide = 1.0;
+            const int gp2 = sys.addGroup(g2);
+
+            const int grp[3] = {gp1, gp1, gp2};
+            const int node[3] = {1, 1, 2};
+            for (int i = 0; i < 3; ++i) {
+                typename Sys::Well w;
+                w.name = "W" + std::to_string(i + 1);
+                w.node = node[i];
+                w.vfp_table = 3;
+                ipr(w, q0[i], water_shut_in_bar);
+                w.bhp_limit = convert::from(40.0, bars);
+                w.oil_rate_limit = 5000.0 / 86400.0;
+                w.guide = 1.0;
+                w.group = grp[i];
+                w.q_start = 0.5 * std::max(w.ipr_a[1] + w.ipr_b[1] * w.bhp_limit, 0.0);
+                sys.addWell(std::move(w));
+            }
+            sys.setGroupTree(true);
+            sys.setAnalyticJacobian(true);
+            sys.setComplementarity(true);
+            sys.finish();
+            sys.finishGroups();
+            return sys;
+        }
+
+        static std::vector<double> guess(const double bar)
+        {
+            return {convert::from(20.0, bars), convert::from(bar, bars), convert::from(bar, bars)};
+        }
+    };
+
+    /// Stein's balancer fed with the system's own capacities at a state: each
+    /// well's limit is what its own controls allow at the node pressure there,
+    /// its phase rates the IPR at the bhp that allowance implies. Same IPR,
+    /// same tubing curve, same pressures as the Newton. Returns oil rates per
+    /// well in sm3/d, or empty if the balancer rejected the tree.
+    std::vector<double> steinAllocation(NetTreeCase::Sys& sys, const std::vector<double>& x,
+                                        const Schedule& schedule, const double plat_target_sm3d)
+    {
+        sys.updateControls(x);      // the capacities at this state's pressures
+        const std::map<std::string, std::string> parent{
+            {"PLAT", "FIELD"}, {"GP1", "PLAT"}, {"GP2", "PLAT"},
+            {"W1", "GP1"}, {"W2", "GP1"}, {"W3", "GP2"}};
+        GuideRate guide_rate{schedule};
+        DeferredLogger logger;
+        for (int w = 0; w < sys.numWells(); ++w) {
+            guide_rate.compute(sys.wells()[w].name, 0, 0.0, sys.wells()[w].guide / 86400.0, 0.0, 0.0);
+        }
+        ProdGroupTreeBalancer::Tree<double> tree;
+        auto addGroup = [&](const std::string& name, const std::vector<std::string>& kids,
+                            const bool has_target) {
+            ProdGroupTreeNode<double> n;
+            n.name = name;
+            n.type = ProdNodeType::Group;
+            n.parent = parent.count(name) ? parent.at(name) : std::string{};
+            n.children = kids;
+            n.availableForGroupControl = true;
+            n.modeCategory = has_target ? ProdNodeModeCategory::Individual
+                                        : ProdNodeModeCategory::Group;
+            if (has_target) {
+                n.mode = Opm::Well::ProducerCMode::ORAT;
+                n.preferredMode = Opm::Group::ProductionCMode::ORAT;
+                n.Limits[Opm::Well::ProducerCMode::ORAT] = plat_target_sm3d / 86400.0;
+            }
+            tree.emplace(name, std::move(n));
+        };
+        addGroup("FIELD", {"PLAT"}, false);
+        addGroup("PLAT", {"GP1", "GP2"}, true);
+        addGroup("GP1", {"W1", "W2"}, false);
+        addGroup("GP2", {"W3"}, false);
+        for (int w = 0; w < sys.numWells(); ++w) {
+            const auto& well = sys.wells()[w];
+            ProdGroupTreeNode<double> n;
+            n.name = well.name;
+            n.type = ProdNodeType::Well;
+            n.parent = parent.at(well.name);
+            n.availableForGroupControl = true;
+            n.mode = Opm::Well::ProducerCMode::GRUP;
+            n.hasGuideRate = true;
+            const double allow = sys.ownAllowance(w);
+            const double bhp = (allow - well.ipr_a[1]) / well.ipr_b[1];
+            n.Limits[Opm::Well::ProducerCMode::ORAT] = allow;
+            // canonical [oil, water, gas], production negative
+            n.rates = {-std::max(well.ipr_a[1] + well.ipr_b[1] * bhp, 0.0),
+                       -std::max(well.ipr_a[0] + well.ipr_b[0] * bhp, 0.0),
+                       -std::max(well.ipr_a[2] + well.ipr_b[2] * bhp, 0.0)};
+            n.initialRates = n.rates;
+            tree.emplace(well.name, std::move(n));
+        }
+        if (!ProdGroupTreeBalancer::balanceTreeForTesting(tree, guide_rate, 1e-8, logger)) {
+            return {};
+        }
+        std::vector<double> q(sys.numWells());
+        for (int w = 0; w < sys.numWells(); ++w) {
+            q[w] = -tree.at(sys.wells()[w].name).rates[0] * 86400.0;
+        }
+        return q;
+    }
+
+    std::string rateList(const NetTreeCase::Sys& sys, const std::vector<double>& q_sm3s)
+    {
+        std::string s;
+        for (int w = 0; w < sys.numWells(); ++w) {
+            s += fmt::format(" {}={:.1f}", sys.wells()[w].name, q_sm3s[w] * 86400.0);
+        }
+        return s;
+    }
+}
+
+BOOST_AUTO_TEST_CASE(the_tree_on_a_network_by_three_routes)
+{
+    const auto deck_path = std::filesystem::path(__FILE__).parent_path() / "GROUPTREE.DATA";
+    if (!std::filesystem::exists(deck_path)) {
+        BOOST_TEST_MESSAGE("GROUPTREE.DATA not found, skipping");
+        return;
+    }
+    const auto deck = Parser{}.parseFile(deck_path.string());
+    const EclipseState es{deck};
+    const Schedule schedule{deck, es};
+
+    NetTreeCase tc;
+    struct Case { const char* what; double target; std::array<double, 3> q0; bool fork; };
+    const std::vector<Case> cases{
+        {"target far above the tubing, chain",  2000.0, {400, 400, 300}, false},
+        {"target holds every well, chain",       300.0, {400, 400, 300}, false},
+        {"target between, chain",                600.0, {400, 400, 300}, false},
+        {"target between, fork",                 600.0, {400, 400, 300}, true},
+        {"one weak well, fork",                  600.0, {500, 500, 120}, true},
+        {"one weak well, chain",                 600.0, {500, 500, 120}, false},
+    };
+    const NetworkSolve::Parameters<double> params{1e-2, 80};
+    for (const auto& c : cases) {
+        for (const double g : {20.0, 30.0}) {
+            const auto guess = NetTreeCase::guess(g);
+            auto fb = tc.build(c.target, c.q0, c.fork);
+            auto every = tc.build(c.target, c.q0, c.fork);
+            every.setGroupActiveSet(true);
+            auto outer = tc.build(c.target, c.q0, c.fork);
+            const auto rf = NetworkSolve::solve(fb, guess, params, NetworkSolve::FullStep{});
+            const auto re = NetworkSolve::solve(every, guess, params, NetworkSolve::FullStep{});
+            const auto ro = NetworkSolve::solveWithTree(outer, guess, params, NetworkSolve::FullStep{});
+            std::string sets;
+            for (const auto& s : ro.sets) { sets += " " + s; }
+            BOOST_TEST_MESSAGE(fmt::format(
+                "{} (guess {} bar): outer {} passes / {} it{}{} sets{}; every-iteration {} it; fb {} it",
+                c.what, g, ro.passes, ro.inner_iterations,
+                ro.consistent ? "" : " NOT CONSISTENT", ro.cycled ? " CYCLED" : "", sets,
+                re.converged ? std::to_string(re.iterations) : "FAILED",
+                rf.converged ? std::to_string(rf.iterations) : "FAILED"));
+            BOOST_TEST_MESSAGE("  outer" << rateList(outer, ro.result.well_rate)
+                               << "  N1=" << convert::to(ro.result.node_pressure[1], bars)
+                               << " N2=" << convert::to(ro.result.node_pressure[2], bars) << " bar");
+            BOOST_CHECK(ro.result.converged);
+            BOOST_CHECK(ro.consistent);
+            BOOST_CHECK(!ro.cycled);
+            BOOST_CHECK(re.converged);
+            BOOST_CHECK(rf.converged);
+            if (!ro.result.converged) { continue; }
+            for (int w = 0; w < outer.numWells(); ++w) {
+                if (re.converged) { BOOST_CHECK_CLOSE(ro.result.well_rate[w], re.well_rate[w], 0.5); }
+                if (rf.converged) { BOOST_CHECK_CLOSE(ro.result.well_rate[w], rf.well_rate[w], 0.5); }
+            }
+            // The balancer, given the capacities at the converged pressures,
+            // allocates what the Newton produced: its answer solves the network.
+            const auto stein = steinAllocation(outer, ro.result.state, schedule, c.target);
+            BOOST_REQUIRE(!stein.empty());
+            std::string both;
+            for (int w = 0; w < outer.numWells(); ++w) {
+                both += fmt::format(" {}={:.1f}/{:.1f}", outer.wells()[w].name,
+                                    ro.result.well_rate[w] * 86400.0, stein[w]);
+                BOOST_CHECK_CLOSE(ro.result.well_rate[w] * 86400.0, stein[w], 0.5);
+            }
+            BOOST_TEST_MESSAGE("  newton/stein at the converged pressures:" << both);
+        }
+    }
+}
+
+// Constant phase fractions are exact when every phase line has the same
+// shut-in pressure -- one cell, one pressure, fractions are mobility ratios
+// -- and only then. With the water line's zero moved, the cut at the well's
+// operating point and the cut where its own control puts it differ, and so
+// do the two capacity measures. The outer loop is held to consistency under
+// both; the answer is the Newton's either way, so what the fractions decide
+// is only which set is tried.
+BOOST_AUTO_TEST_CASE(constant_fractions_hold_only_on_a_common_shut_in)
+{
+    NetTreeCase tc;
+    const NetworkSolve::Parameters<double> params{1e-2, 80};
+    using Sys = NetTreeCase::Sys;
+    const auto guess = NetTreeCase::guess(20.0);
+    for (const double water_shut : {120.0, 200.0, 80.0}) {
+        std::array<double, 2> caps{};
+        std::array<std::vector<double>, 2> rates;
+        std::array<std::string, 2> sets;
+        int i = 0;
+        for (const auto frac : {Sys::CapacityFractions::Fixed, Sys::CapacityFractions::Ipr}) {
+            auto sys = tc.build(700.0, {400, 400, 300}, true, Sys::Mode::Liquid, water_shut);
+            sys.setCapacityFractions(frac);
+            const auto r = NetworkSolve::solveWithTree(sys, guess, params, NetworkSolve::FullStep{});
+            BOOST_CHECK(r.result.converged);
+            BOOST_CHECK(r.consistent);
+            // W1's capacity on the liquid mode at the converged pressures.
+            sys.updateControls(r.result.state);
+            const auto cw = sys.modeWeights(Sys::Mode::Liquid, {});
+            caps[i] = sys.wellCapOnMode(r.result.state, 0, sys.ownAllowance(0), cw) * 86400.0;
+            rates[i] = r.result.well_rate;
+            sets[i] = r.sets.back();
+            ++i;
+        }
+        BOOST_TEST_MESSAGE(fmt::format("water shut-in {} bar: W1 liquid capacity fixed {:.2f} / ipr {:.2f}"
+                                       " sm3/d, sets {} / {}", water_shut, caps[0], caps[1], sets[0], sets[1]));
+        if (water_shut == 120.0) {
+            BOOST_CHECK_CLOSE(caps[0], caps[1], 1e-8);
+        } else {
+            BOOST_CHECK_GT(std::abs(caps[0] - caps[1]), 1e-3);
+        }
+        for (std::size_t w = 0; w < rates[0].size(); ++w) {
+            BOOST_CHECK_CLOSE(rates[0][w], rates[1][w], 0.5);
+        }
+    }
+}
+
+// Looking for the flapping the outer loop could do: the balancer hands a set
+// down, the network moves the pressures, the balancer takes it back. Fork and
+// chain, targets from below every capacity to above their sum, stiff and
+// soft wells, both starting guesses; count passes and any revisited set.
+BOOST_AUTO_TEST_CASE(hunting_a_cycle_in_the_tree_pass)
+{
+    NetTreeCase tc;
+    const NetworkSolve::Parameters<double> params{1e-2, 80};
+    int runs = 0, cycles = 0, inconsistent = 0, failed = 0, max_passes = 0;
+    std::map<int, int> passes;
+    long every_it = 0, outer_it = 0; int every_failed = 0;
+    std::string worst;
+    for (const bool fork : {false, true}) {
+        for (const double scale : {0.5, 1.0, 2.0}) {
+            for (double target = 100.0; target <= 1300.0; target += 50.0) {
+                for (const double g : {20.0, 30.0}) {
+                    const std::array<double, 3> q0{500.0 * scale, 400.0 * scale, 120.0 * scale};
+                    auto sys = tc.build(target, q0, fork);
+                    const auto r = NetworkSolve::solveWithTree(sys, NetTreeCase::guess(g), params,
+                                                               NetworkSolve::FullStep{});
+                    auto every = tc.build(target, q0, fork);
+                    every.setGroupActiveSet(true);
+                    const auto re = NetworkSolve::solve(every, NetTreeCase::guess(g), params,
+                                                        NetworkSolve::FullStep{});
+                    ++runs;
+                    every_it += re.iterations; every_failed += re.converged ? 0 : 1;
+                    outer_it += r.inner_iterations;
+                    cycles += r.cycled ? 1 : 0;
+                    inconsistent += (r.result.converged && !r.consistent) ? 1 : 0;
+                    failed += r.result.converged ? 0 : 1;
+                    ++passes[r.passes];
+                    if (r.passes > max_passes || r.cycled) {
+                        max_passes = std::max(max_passes, r.passes);
+                        std::string sets;
+                        for (const auto& s : r.sets) { sets += " " + s; }
+                        worst = fmt::format("{} target {} scale {} guess {}: {} passes{}{}",
+                                            fork ? "fork" : "chain", target, scale, g, r.passes,
+                                            r.cycled ? " CYCLED" : "", sets);
+                    }
+                }
+            }
+        }
+    }
+    std::string hist;
+    for (const auto& [n, k] : passes) { hist += fmt::format(" {}:{}", n, k); }
+    BOOST_TEST_MESSAGE(fmt::format("{} runs: {} cycled, {} inconsistent, {} failed; passes{}; "
+                                   "newton it outer {} vs every-iteration {} ({} failed)",
+                                   runs, cycles, inconsistent, failed, hist, outer_it, every_it, every_failed));
+    BOOST_TEST_MESSAGE("longest: " << worst);
+    BOOST_CHECK_EQUAL(cycles, 0);
+    BOOST_CHECK_EQUAL(inconsistent, 0);
+    BOOST_CHECK_EQUAL(failed, 0);
 }
 
 BOOST_AUTO_TEST_CASE(production_step_bounds)

@@ -317,6 +317,38 @@ public:
     void setGroupActiveSet(const bool on) { group_active_set_ = on; }
     bool usesGroupActiveSet() const { return usesGroupTree() && group_active_set_; }
 
+    /// Hold the tree's active set between explicit calls to resolveTree():
+    /// the outer loop in NetworkTreeSolve.hpp decides it, the Newton only
+    /// solves with it. A well's own control still follows the node pressure.
+    void setTreeFrozen(const bool on) { tree_frozen_ = on; }
+    bool treeFrozen() const { return tree_frozen_; }
+
+    /// How a well's capacity is re-measured on a group's mode: with the phase
+    /// fractions it has at its operating point, held constant (Stein's model),
+    /// or from its IPR at the bhp its own control would put it at.
+    enum class CapacityFractions { Fixed, Ipr };
+    void setCapacityFractions(const CapacityFractions f) { capacity_fractions_ = f; }
+    CapacityFractions capacityFractions() const { return capacity_fractions_; }
+
+    /// What updateControls() recorded for a tree well: the oil rate its own
+    /// limits allow at the iterate's node pressure, and which limit that is.
+    Scalar ownAllowance(const int w) const { return own_allowance_[w]; }
+    Control ownControl(const int w) const { return own_control_[w]; }
+    GroupBind groupBind(const int g) const { return group_bind_[g]; }
+
+    /// The tree's active set as text -- one letter per group (F/O/S) and per
+    /// well -- so an outer loop can tell a revisited set from a new one.
+    std::string treeSignature() const
+    {
+        std::string s;
+        for (const auto b : group_bind_) {
+            s += (b == GroupBind::Free) ? 'F' : (b == GroupBind::Own) ? 'O' : 'S';
+        }
+        s += ':';
+        for (int w = 0; w < numWells(); ++w) { s += controlLetter(w); }
+        return s;
+    }
+
     /// Whether wells get the complementarity row. It needs the assembled
     /// Jacobian: differencing across the kink was worth 678 fallbacks. The
     /// group rows have their derivatives now, so the prototype's exemption is
@@ -1023,15 +1055,27 @@ public:
     /// No limit at all, for the allowance arithmetic below.
     static constexpr Scalar kNoLimit = std::numeric_limits<Scalar>::max();
 
-    /// A rate on the oil axis, re-measured on the mode `c`, using the well's
-    /// phase fractions at the iterate. Exact when the mode *is* oil; otherwise
-    /// the fixed-fraction approximation the whole linearisation rests on.
-    Scalar wellCapOnMode(const State& x, const int w, const Scalar oil_allow,
+    /// A rate on the oil axis, re-measured on the mode `c`. Exact when the
+    /// mode *is* oil. Otherwise either the well's fractions at its operating
+    /// point, held constant -- what Stein's balancer sees -- or its IPR at
+    /// the bhp the allowance implies, which is where the Newton will put it.
+    /// The two agree exactly when the phase lines share a shut-in pressure.
+    Scalar wellCapOnMode(const State&, const int w, const Scalar oil_allow,
                          const std::array<Scalar, NP>& c) const
     {
-        const Scalar q_oil = x[qwIdx(w, 1)];
-        Scalar on = 0;
-        for (int ph = 0; ph < NP; ++ph) { on += c[ph] * x[qwIdx(w, ph)]; }
+        const auto& well = wells_[w];
+        if (oil_allow == kNoLimit || !(well.ipr_b[1] < Scalar{0})) {
+            return oil_allow * c[1];
+        }
+        const Scalar bhp = (capacity_fractions_ == CapacityFractions::Ipr)
+            ? (oil_allow - well.ipr_a[1]) / well.ipr_b[1] : operatingBhp(well);
+        Scalar on = 0, q_oil = 0;
+        for (int ph = 0; ph < NP; ++ph) {
+            const Scalar q = std::max(ipr(well, ph, bhp), Scalar{0});
+            on += c[ph] * q;
+            if (ph == 1) { q_oil = q; }
+        }
+        if (capacity_fractions_ == CapacityFractions::Ipr) { return on; }
         return (q_oil > Scalar{0} && on > Scalar{0}) ? oil_allow * on / q_oil
                                                      : oil_allow * c[1];
     }
@@ -1407,6 +1451,10 @@ public:
                 // two, once, at the end.
                 own_allowance_[w] = smallest;
                 own_control_[w] = wanted;
+                if (tree_frozen_ && controls_[w] != Control::Tree) {
+                    changed |= (wanted != controls_[w]);
+                    controls_[w] = wanted;
+                }
                 continue;
             }
             recent_[w] = {recent_[w][1], controls_[w]};
@@ -1414,7 +1462,7 @@ public:
             controls_[w] = wanted;
         }
         cmpl_decided_ = true;
-        changed |= resolveTree(x);
+        if (!tree_frozen_) { changed |= resolveTree(x); }
         return changed;
     }
 
@@ -1981,6 +2029,8 @@ private:
     Scalar group_target_ = 0.0;
     bool group_tree_ = false;
     bool group_active_set_ = false;
+    bool tree_frozen_ = false;
+    CapacityFractions capacity_fractions_ = CapacityFractions::Fixed;
     std::vector<GroupBind> group_bind_;
     // What each well's own limits allow, and which of them wins -- recorded by
     // updateControls() so resolveTree() can weigh it against the share.

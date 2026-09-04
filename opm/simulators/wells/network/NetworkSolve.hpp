@@ -72,6 +72,8 @@ struct Result
     /// Production only: every well's water/oil/gas and bhp at the solution.
     std::vector<std::array<Scalar, 3>> well_phase_rates;
     std::vector<Scalar> well_bhp;
+    /// The iterate it stopped at, so a caller can continue from it.
+    std::vector<Scalar> state;
 };
 
 /// Dense square system, solved by Dune. The networks this solves have tens of
@@ -345,6 +347,7 @@ solve(Sys& system,
                                 false, false, {}, switches};
             done.well_phase_rates = system.wellPhaseRates(x);
             done.well_bhp = system.wellBhps(x);
+            done.state = x;
             return done;
         }
         last = {false, it, {}, {}, worst, controls_moved, false, joined(), switches};
@@ -374,6 +377,7 @@ solve(Sys& system,
         if (!J.solve(negative, dx)) {
             last.node_pressure = system.pressures(x);
             last.well_rate = system.wellRates(x);
+            last.state = x;
             return last;
         }
 
@@ -392,6 +396,7 @@ solve(Sys& system,
     last.iterations = max_iterations + 1;
     last.node_pressure = system.pressures(x);
     last.well_rate = system.wellRates(x);
+    last.state = x;
     return last;
 }
 
