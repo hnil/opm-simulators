@@ -333,6 +333,12 @@ public:
     /// What updateControls() recorded for a tree well: the oil rate its own
     /// limits allow at the iterate's node pressure, and which limit that is.
     Scalar ownAllowance(const int w) const { return own_allowance_[w]; }
+    /// What the tree walk gave the well: its share, or its own allowance.
+    Scalar treeRate(const int w) const { return tree_rate_[w]; }
+    /// Read the tubing crossing off the table at every call instead of the
+    /// 0.25 bar grid: the reduced form differences it, and its answer should
+    /// not carry the grid's interpolation error.
+    void setExactPotential(const bool on) { exact_potential_ = on; }
     Control ownControl(const int w) const { return own_control_[w]; }
     GroupBind groupBind(const int g) const { return group_bind_[g]; }
 
@@ -1080,6 +1086,29 @@ public:
                                                      : oil_allow * c[1];
     }
 
+    /// The inverse: the oil rate at which the well makes `share` on the mode
+    /// `c`, under the same fraction model as wellCapOnMode().
+    Scalar oilForShare(const int w, const Scalar share, const std::array<Scalar, NP>& c) const
+    {
+        const auto& well = wells_[w];
+        if (!(well.ipr_b[1] < Scalar{0})) { return share / std::max(c[1], Scalar{1e-30}); }
+        if (capacity_fractions_ == CapacityFractions::Ipr) {
+            Scalar ca = 0, cb = 0;
+            for (int ph = 0; ph < NP; ++ph) { ca += c[ph] * well.ipr_a[ph]; cb += c[ph] * well.ipr_b[ph]; }
+            if (!(cb < Scalar{0})) { return share / std::max(c[1], Scalar{1e-30}); }
+            return ipr(well, 1, (share - ca) / cb);
+        }
+        const Scalar bhp = operatingBhp(well);
+        Scalar on = 0, q_oil = 0;
+        for (int ph = 0; ph < NP; ++ph) {
+            const Scalar q = std::max(ipr(well, ph, bhp), Scalar{0});
+            on += c[ph] * q;
+            if (ph == 1) { q_oil = q; }
+        }
+        return (q_oil > Scalar{0} && on > Scalar{0}) ? share * q_oil / on
+                                                     : share / std::max(c[1], Scalar{1e-30});
+    }
+
     Scalar groupOnMode(const State& x, const int g, const std::array<Scalar, NP>& c) const
     {
         Scalar on = 0;
@@ -1201,6 +1230,7 @@ public:
             const int w = mine[i];
             if (controls_[w] == Control::Shut) { continue; }
             const bool held = share[nk + i] < cap[nk + i];
+            tree_rate_[w] = held ? oilForShare(w, share[nk + i], cg) : own_allowance_[w];
             const auto wanted = held ? Control::Tree : own_control_[w];
             changed |= (wanted != controls_[w]);
             controls_[w] = wanted;
@@ -1277,6 +1307,56 @@ public:
     /// Nothing here reads the iterate's rates, bhp or multiplier: mid-Newton
     /// those are not a consistent well state, on rate control q *is* the limit,
     /// and the multiplier is defined by the very active set being chosen here.
+    /// The network alone, with the tree walk as the well model. At these node
+    /// pressures every well sits where the walk puts it -- its own allowance
+    /// or its share -- with its other phases from the IPR at that rate, and
+    /// the rows are p - branch(p_up, q), one per node. The state it was
+    /// evaluated at is kept for the caller (reducedState()).
+    State reducedResidual(const State& node_pressure)
+    {
+        State x = start(node_pressure);
+        updateControls(x);
+        for (int w = 0; w < numWells(); ++w) {
+            const auto& well = wells_[w];
+            Scalar q_oil = (well.group >= 0 && usesGroupActiveSet()) ? tree_rate_[w]
+                                                                      : own_allowance_[w];
+            if (controls_[w] == Control::Shut || q_oil == kNoLimit) { q_oil = Scalar{0}; }
+            if (well.pinned) { q_oil = well.oil_rate_limit; }
+            const Scalar bhp = (well.ipr_b[1] < Scalar{0})
+                ? (q_oil - well.ipr_a[1]) / well.ipr_b[1] : well.bhp_limit;
+            x[bhpIdx(w)] = bhp;
+            for (int ph = 0; ph < NP; ++ph) {
+                x[qwIdx(w, ph)] = std::max(ipr(well, ph, bhp), Scalar{0});
+            }
+        }
+        for (int n = numNodes(); n >= 1; --n) {
+            for (int ph = 0; ph < NP; ++ph) {
+                Scalar q = node_source_[n][ph];
+                for (const int w : wells_at_[n]) {
+                    q += wells_[w].efficiency
+                       * (x[qwIdx(w, ph)] + (ph == 2 ? wells_[w].lift_gas : Scalar{0}));
+                }
+                for (const int c : children_[n]) {
+                    q += nodes_[c].efficiency * x[qIdx(c, ph)];
+                }
+                x[qIdx(n, ph)] = q;
+            }
+        }
+        State r(numNodes());
+        for (int n = 1; n <= numNodes(); ++n) {
+            const auto& node = nodes_[n];
+            const Scalar upstream = (node.parent == 0) ? terminal_pressure_ : x[pIdx(node.parent)];
+            std::array<Scalar, NP> q{};
+            for (int ph = 0; ph < NP; ++ph) { q[ph] = x[qIdx(n, ph)]; }
+            const Scalar p_calc = hasTable(node)
+                ? tableBhp(node.vfp_table, upstream, q, branch_alq_[n]) : upstream;
+            r[n - 1] = (x[pIdx(n)] - p_calc) / pressure_scale_;
+        }
+        reduced_state_ = std::move(x);
+        return r;
+    }
+    const State& reducedState() const { return reduced_state_; }
+
     bool updateControls(const State& x) override
     {
         const int n = numWells();
@@ -1293,6 +1373,7 @@ public:
         bool changed = false;
         own_allowance_.assign(n, kNoLimit);
         own_control_.assign(n, Control::Bhp);
+        tree_rate_.assign(n, kNoLimit);
         std::vector<Scalar> choke_pressure(numNodes() + 1, Scalar{0});
         for (int node = 1; node <= numNodes(); ++node) {
             if (!isChoke(node) || (complementarity_ && analytic_jacobian_)) {
@@ -1338,7 +1419,8 @@ public:
             // tubing crossing happens to be.
             if (hasTubing(well) && !well.pinned
                 && !(well.dead_above > Scalar{0} && p_node >= well.dead_above)) {
-                const Scalar found = cachedThpPotential(well, p_node);
+                const Scalar found = exact_potential_ ? thpPotential(well, p_node)
+                                                      : cachedThpPotential(well, p_node);
                 if (found > Scalar{0}) {
                     thp[w] = found;
                 }
@@ -1390,6 +1472,7 @@ public:
             if (grouped() && well.in_group) {
                 consider(Control::Grup, share[w]);
             }
+            own_allowance_[w] = smallest;
             // A control is overtaken by a margin, not by rounding. A well that
             // sits exactly where its tubing passes its own rate limit -- which
             // is where a choke puts the marginal well -- would otherwise flip
@@ -2036,6 +2119,9 @@ private:
     // updateControls() so resolveTree() can weigh it against the share.
     std::vector<Scalar> own_allowance_;
     std::vector<Control> own_control_;
+    std::vector<Scalar> tree_rate_;
+    bool exact_potential_ = false;
+    State reduced_state_;
     std::vector<Group> groups_;
     std::vector<std::vector<int>> group_children_;
     std::vector<std::vector<int>> group_wells_;

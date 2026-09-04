@@ -1,0 +1,136 @@
+/*
+  Copyright 2026 Equinor ASA.
+
+  This file is part of the Open Porous Media project (OPM).
+
+  OPM is free software: you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation, either version 3 of the License, or
+  (at your option) any later version.
+
+  OPM is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  GNU General Public License for more details.
+
+  You should have received a copy of the GNU General Public License
+  along with OPM.  If not, see <http://www.gnu.org/licenses/>.
+*/
+#ifndef OPM_NETWORK_REDUCED_SOLVE_HEADER_INCLUDED
+#define OPM_NETWORK_REDUCED_SOLVE_HEADER_INCLUDED
+
+#include <opm/simulators/wells/network/NetworkSolve.hpp>
+
+#include <opm/input/eclipse/Units/Units.hpp>
+
+#include <algorithm>
+#include <cmath>
+#include <string>
+#include <vector>
+
+namespace Opm::NetworkSolve {
+
+template<class Scalar>
+struct ReducedResult
+{
+    bool converged = false;
+    int iterations = 0;
+    int evaluations = 0;      // residual evaluations, differences included
+    int stalls = 0;           // steps the line search could not improve on
+    int set_changes = 0;      // iterations after which the tree walk chose differently
+    Scalar residual = 0;
+    std::vector<Scalar> node_pressure;
+    std::vector<Scalar> well_rate;
+    std::string sets;
+};
+
+/// Newton on the node pressures alone, with the tree walk as the well model:
+/// r(p) = p - branch(p_up, q(c(p))), c the wells' capacities at p, q what the
+/// walk makes of them. Continuous and piecewise smooth; the Jacobian is that
+/// of the piece the iterate is on, by differences, and a backtracking line
+/// search takes the steps that cross into another.
+template<class Sys>
+ReducedResult<typename Sys::ScalarType>
+solveReduced(Sys& system,
+             const std::vector<typename Sys::ScalarType>& node_pressure_guess,
+             const Parameters<typename Sys::ScalarType> params)
+{
+    using Scalar = typename Sys::ScalarType;
+    ReducedResult<Scalar> out;
+    system.setGroupActiveSet(true);
+    system.setTreeFrozen(false);
+    system.setExactPotential(true);
+    const int n = system.numNodes();
+    auto p = node_pressure_guess;
+    auto norm = [](const std::vector<Scalar>& r) {
+        Scalar worst = 0;
+        for (const auto e : r) { worst = std::max(worst, std::abs(e)); }
+        return worst;
+    };
+    auto r = system.reducedResidual(p);
+    ++out.evaluations;
+    std::string last_set = system.treeSignature();
+    out.sets = last_set;
+    const Scalar max_step = Scalar{50} * unit::barsa, floor = unit::barsa;
+    for (int it = 1; it <= params.max_iterations; ++it) {
+        out.iterations = it;
+        out.residual = norm(r);
+        if (out.residual < params.tolerance) {
+            out.converged = true;
+            break;
+        }
+        DenseMatrix<Scalar> J(n);
+        const Scalar h = Scalar{1e-3} * unit::barsa;
+        for (int j = 0; j < n; ++j) {
+            auto pj = p;
+            pj[j + 1] += h;
+            const auto rj = system.reducedResidual(pj);
+            ++out.evaluations;
+            for (int i = 0; i < n; ++i) { J(i, j) = (rj[i] - r[i]) / h; }
+        }
+        std::vector<Scalar> negative(n), dx;
+        for (int i = 0; i < n; ++i) { negative[i] = -r[i]; }
+        if (!J.solve(negative, dx)) { break; }
+        Scalar alpha = 1;
+        for (int i = 0; i < n; ++i) {
+            if (std::abs(dx[i]) > max_step) { alpha = std::min(alpha, max_step / std::abs(dx[i])); }
+            if (p[i + 1] + alpha * dx[i] < floor) { alpha = std::min(alpha, (floor - p[i + 1]) / dx[i]); }
+        }
+        auto trial = [&](const Scalar step) {
+            auto q = p;
+            for (int i = 0; i < n; ++i) { q[i + 1] += step * dx[i]; }
+            return q;
+        };
+        bool accepted = false;
+        Scalar step = alpha;
+        for (int k = 0; k < 12; ++k) {
+            const auto pt = trial(step);
+            const auto rt = system.reducedResidual(pt);
+            ++out.evaluations;
+            if (norm(rt) < out.residual) {
+                p = pt; r = rt; accepted = true;
+                break;
+            }
+            step *= Scalar{0.5};
+        }
+        if (!accepted) {
+            // Nothing along the direction improves: a kink between here and
+            // there. Take the step anyway and let the next piece's Jacobian
+            // say where to go.
+            ++out.stalls;
+            p = trial(alpha);
+            r = system.reducedResidual(p);
+            ++out.evaluations;
+        }
+        const auto set = system.treeSignature();
+        if (set != last_set) { ++out.set_changes; out.sets += " " + set; }
+        last_set = set;
+    }
+    out.node_pressure = p;
+    out.well_rate = system.wellRates(system.reducedState());
+    return out;
+}
+
+} // namespace Opm::NetworkSolve
+
+#endif // OPM_NETWORK_REDUCED_SOLVE_HEADER_INCLUDED

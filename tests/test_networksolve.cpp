@@ -78,6 +78,7 @@
 #include <opm/simulators/wells/network/NetworkNodePressureUpdater.hpp>
 #include <opm/simulators/wells/network/NetworkInjectionSystem.hpp>
 #include <opm/simulators/wells/network/NetworkProductionSystem.hpp>
+#include <opm/simulators/wells/network/NetworkReducedSolve.hpp>
 #include <opm/simulators/wells/network/NetworkTreeSolve.hpp>
 
 #include <algorithm>
@@ -4479,6 +4480,112 @@ BOOST_AUTO_TEST_CASE(hunting_a_cycle_in_the_tree_pass)
     BOOST_CHECK_EQUAL(cycles, 0);
     BOOST_CHECK_EQUAL(inconsistent, 0);
     BOOST_CHECK_EQUAL(failed, 0);
+}
+
+// The reduced form: Newton on the node pressures alone, the tree walk as the
+// well model (NetworkReducedSolve.hpp), against the outer loop on the same
+// cases and the same sweep. Same fixed points by construction; what differs
+// is how the kinks are met -- crossed inside a differenced Jacobian and a
+// line search here, frozen out of the Newton there -- and what each costs.
+BOOST_AUTO_TEST_CASE(the_reduced_form_against_the_outer_loop)
+{
+    NetTreeCase tc;
+    const NetworkSolve::Parameters<double> params{1e-2, 80};
+    struct Case { const char* what; double target; std::array<double, 3> q0; bool fork; };
+    const std::vector<Case> cases{
+        {"target far above the tubing, chain",  2000.0, {400, 400, 300}, false},
+        {"target holds every well, chain",       300.0, {400, 400, 300}, false},
+        {"target between, fork",                 600.0, {400, 400, 300}, true},
+        {"one weak well, fork",                  600.0, {500, 500, 120}, true},
+        {"one weak well, chain",                 600.0, {500, 500, 120}, false},
+    };
+    for (const auto& c : cases) {
+        for (const double g : {20.0, 30.0}) {
+            const auto guess = NetTreeCase::guess(g);
+            auto outer = tc.build(c.target, c.q0, c.fork);
+            auto reduced = tc.build(c.target, c.q0, c.fork);
+            outer.resetLookups(); reduced.resetLookups();
+            const auto ro = NetworkSolve::solveWithTree(outer, guess, params, NetworkSolve::FullStep{});
+            const auto rr = NetworkSolve::solveReduced(reduced, guess, params);
+            BOOST_TEST_MESSAGE(fmt::format(
+                "{} (guess {} bar): reduced {} in {} it, {} evaluations, {} stalls, {} set changes,"
+                " {} lookups [{}]; outer {} passes / {} it, {} lookups",
+                c.what, g, rr.converged ? "converged" : "FAILED", rr.iterations, rr.evaluations,
+                rr.stalls, rr.set_changes, reduced.lookups(), rr.sets,
+                ro.passes, ro.inner_iterations, outer.lookups()));
+            BOOST_TEST_MESSAGE("  reduced" << rateList(reduced, rr.well_rate)
+                               << "  N1=" << convert::to(rr.node_pressure[1], bars)
+                               << " N2=" << convert::to(rr.node_pressure[2], bars) << " bar");
+            BOOST_CHECK(rr.converged);
+            BOOST_CHECK(ro.result.converged);
+            if (!rr.converged || !ro.result.converged) { continue; }
+            for (int w = 0; w < outer.numWells(); ++w) {
+                BOOST_CHECK_CLOSE(rr.well_rate[w], ro.result.well_rate[w], 0.5);
+            }
+            for (int nd = 1; nd <= outer.numNodes(); ++nd) {
+                BOOST_CHECK_CLOSE(rr.node_pressure[nd], ro.result.node_pressure[nd], 0.5);
+            }
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(the_reduced_form_on_the_sweep)
+{
+    NetTreeCase tc;
+    const NetworkSolve::Parameters<double> params{1e-2, 80};
+    int runs = 0, failed = 0, stalls = 0, disagree = 0, max_it = 0;
+    long it_reduced = 0, it_outer = 0, eval = 0, look_reduced = 0, look_outer = 0, set_changes = 0;
+    std::map<int, int> hist;
+    std::string worst;
+    for (const bool fork : {false, true}) {
+        for (const double scale : {0.5, 1.0, 2.0}) {
+            for (double target = 100.0; target <= 1300.0; target += 50.0) {
+                for (const double g : {20.0, 30.0}) {
+                    const std::array<double, 3> q0{500.0 * scale, 400.0 * scale, 120.0 * scale};
+                    auto outer = tc.build(target, q0, fork);
+                    auto reduced = tc.build(target, q0, fork);
+                    outer.resetLookups(); reduced.resetLookups();
+                    const auto ro = NetworkSolve::solveWithTree(outer, NetTreeCase::guess(g), params,
+                                                                NetworkSolve::FullStep{});
+                    const auto rr = NetworkSolve::solveReduced(reduced, NetTreeCase::guess(g), params);
+                    ++runs;
+                    it_reduced += rr.iterations; it_outer += ro.inner_iterations;
+                    eval += rr.evaluations; stalls += rr.stalls; set_changes += rr.set_changes;
+                    look_reduced += reduced.lookups(); look_outer += outer.lookups();
+                    ++hist[rr.iterations];
+                    failed += rr.converged ? 0 : 1;
+                    bool off = false;
+                    if (rr.converged && ro.result.converged) {
+                        for (int w = 0; w < outer.numWells(); ++w) {
+                            const double a = rr.well_rate[w], b = ro.result.well_rate[w];
+                            if (std::abs(a - b) > 0.005 * std::max(std::abs(b), 1.0 / 86400.0)) { off = true; }
+                        }
+                    }
+                    disagree += off ? 1 : 0;
+                    if (rr.iterations > max_it || !rr.converged || off) {
+                        max_it = std::max(max_it, rr.iterations);
+                        worst = fmt::format("{} target {} scale {} guess {}: {} it, {} stalls{}{} [{}]"
+                                            " reduced{} outer{}",
+                                            fork ? "fork" : "chain", target, scale, g, rr.iterations,
+                                            rr.stalls, rr.converged ? "" : " FAILED",
+                                            off ? " DISAGREES" : "", rr.sets,
+                                            rateList(reduced, rr.well_rate),
+                                            rateList(outer, ro.result.well_rate));
+                    }
+                }
+            }
+        }
+    }
+    std::string h;
+    for (const auto& [k, v] : hist) { h += fmt::format(" {}:{}", k, v); }
+    BOOST_TEST_MESSAGE(fmt::format(
+        "{} runs: reduced {} failed, {} disagree, {} stalls, {} set changes, {} it, {} evaluations,"
+        " {} lookups; outer {} it, {} lookups; reduced iterations{}",
+        runs, failed, disagree, stalls, set_changes, it_reduced, eval, look_reduced, it_outer,
+        look_outer, h));
+    BOOST_TEST_MESSAGE("worst: " << worst);
+    BOOST_CHECK_EQUAL(failed, 0);
+    BOOST_CHECK_EQUAL(disagree, 0);
 }
 
 BOOST_AUTO_TEST_CASE(production_step_bounds)
