@@ -44,16 +44,51 @@ struct ReducedResult
     std::string sets;
 };
 
+/// The reduced Jacobian by elimination instead of differences. At the state
+/// the reduced residual was evaluated at, the full system's rows for the
+/// same active set are all satisfied except the node rows, and their
+/// assembled Jacobian J splits into node pressures p and the rest x; the
+/// derivative of the node rows along the manifold the rest defines is the
+/// Schur complement J_pp - J_px J_xx^-1 J_xp. One assembly and N solves of
+/// the well-and-group block, no table lookups beyond the gradients the
+/// assembly already takes.
+template<class Sys>
+DenseMatrix<typename Sys::ScalarType>
+reducedJacobianByElimination(const Sys& system)
+{
+    using Scalar = typename Sys::ScalarType;
+    const auto J = system.jacobian(system.reducedState());
+    const int n = system.numNodes(), nf = system.size(), nx = nf - n;
+    DenseMatrix<Scalar> Jxx(nx);
+    for (int i = 0; i < nx; ++i) {
+        for (int k = 0; k < nx; ++k) { Jxx(i, k) = J(n + i, n + k); }
+    }
+    DenseMatrix<Scalar> S(n);
+    std::vector<Scalar> col(nx), y;
+    for (int j = 0; j < n; ++j) {
+        for (int i = 0; i < nx; ++i) { col[i] = J(n + i, j); }
+        if (!Jxx.solve(col, y)) { y.assign(nx, Scalar{0}); }
+        for (int i = 0; i < n; ++i) {
+            Scalar s = J(i, j);
+            for (int k = 0; k < nx; ++k) { s -= J(i, n + k) * y[k]; }
+            S(i, j) = s;
+        }
+    }
+    return S;
+}
+
 /// Newton on the node pressures alone, with the tree walk as the well model:
 /// r(p) = p - branch(p_up, q(c(p))), c the wells' capacities at p, q what the
 /// walk makes of them. Continuous and piecewise smooth; the Jacobian is that
-/// of the piece the iterate is on, by differences, and a backtracking line
-/// search takes the steps that cross into another.
+/// of the piece the iterate is on -- by differences, or by elimination from
+/// the full system's -- and a backtracking line search takes the steps that
+/// cross into another.
 template<class Sys>
 ReducedResult<typename Sys::ScalarType>
 solveReduced(Sys& system,
              const std::vector<typename Sys::ScalarType>& node_pressure_guess,
-             const Parameters<typename Sys::ScalarType> params)
+             const Parameters<typename Sys::ScalarType> params,
+             const bool eliminate = false)
 {
     using Scalar = typename Sys::ScalarType;
     ReducedResult<Scalar> out;
@@ -80,13 +115,17 @@ solveReduced(Sys& system,
             break;
         }
         DenseMatrix<Scalar> J(n);
-        const Scalar h = Scalar{1e-3} * unit::barsa;
-        for (int j = 0; j < n; ++j) {
-            auto pj = p;
-            pj[j + 1] += h;
-            const auto rj = system.reducedResidual(pj);
-            ++out.evaluations;
-            for (int i = 0; i < n; ++i) { J(i, j) = (rj[i] - r[i]) / h; }
+        if (eliminate) {
+            J = reducedJacobianByElimination(system);
+        } else {
+            const Scalar h = Scalar{1e-3} * unit::barsa;
+            for (int j = 0; j < n; ++j) {
+                auto pj = p;
+                pj[j + 1] += h;
+                const auto rj = system.reducedResidual(pj);
+                ++out.evaluations;
+                for (int i = 0; i < n; ++i) { J(i, j) = (rj[i] - r[i]) / h; }
+            }
         }
         std::vector<Scalar> negative(n), dx;
         for (int i = 0; i < n; ++i) { negative[i] = -r[i]; }
