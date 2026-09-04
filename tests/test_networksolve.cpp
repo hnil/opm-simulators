@@ -4588,6 +4588,91 @@ BOOST_AUTO_TEST_CASE(the_reduced_form_on_the_sweep)
     BOOST_CHECK_EQUAL(disagree, 0);
 }
 
+// The reduced Jacobian two ways: differenced along p, and eliminated from
+// the full system's assembled one. They must agree wherever the differences
+// stay on one piece -- and then the eliminated one is the derivative, exact,
+// for one assembly and N small solves instead of N + 1 evaluations.
+BOOST_AUTO_TEST_CASE(the_reduced_jacobian_by_elimination)
+{
+    NetTreeCase tc;
+    struct Case { const char* what; double target; std::array<double, 3> q0; bool fork; };
+    const std::vector<Case> cases{
+        {"target far above the tubing, chain",  2000.0, {400, 400, 300}, false},
+        {"target holds every well, chain",       300.0, {400, 400, 300}, false},
+        {"one weak well, fork",                  600.0, {500, 500, 120}, true},
+        {"one weak well, chain",                 600.0, {500, 500, 120}, false},
+    };
+    for (const auto& c : cases) {
+        auto sys = tc.build(c.target, c.q0, c.fork);
+        sys.setGroupActiveSet(true);
+        sys.setExactPotential(true);
+        // Where the wells are on their tubing, so the node rows feel the wells:
+        // at the guess pressures they are on bhp or share and the Jacobian is
+        // the trivial one.
+        const std::vector<double> p{convert::from(20.0, bars), convert::from(34.0, bars),
+                                    convert::from(41.0, bars)};
+        const auto r = sys.reducedResidual(p);
+        const auto S = NetworkSolve::reducedJacobianByElimination(sys);
+        const int n = sys.numNodes();
+        double worst = 0.0;
+        std::string entries;
+        const double h = 1e-3 * unit::barsa;
+        for (int j = 0; j < n; ++j) {
+            auto pj = p; pj[j + 1] += h;
+            const auto rj = sys.reducedResidual(pj);
+            for (int i = 0; i < n; ++i) {
+                const double fd = (rj[i] - r[i]) / h * unit::barsa;   // per bar
+                const double an = S(i, j) * unit::barsa;
+                entries += fmt::format(" [{},{}] {:.4f}/{:.4f}", i, j, fd, an);
+                worst = std::max(worst, std::abs(fd - an) / std::max({std::abs(fd), std::abs(an), 1e-2}));
+            }
+        }
+        sys.reducedResidual(p);       // leave the state where S was taken
+        BOOST_TEST_MESSAGE(c.what << " [" << sys.treeSignature() << "]: fd/eliminated" << entries
+                           << fmt::format("  worst {:.3g} %", 100 * worst));
+        BOOST_CHECK_LT(worst, 1e-3);
+    }
+
+    // And the sweep with the eliminated Jacobian, against the differenced.
+    const NetworkSolve::Parameters<double> params{1e-2, 80};
+    int runs = 0, failed = 0, stalls = 0, disagree = 0;
+    long it_e = 0, it_d = 0, eval_e = 0, eval_d = 0, look_e = 0, look_d = 0;
+    for (const bool fork : {false, true}) {
+        for (const double scale : {0.5, 1.0, 2.0}) {
+            for (double target = 100.0; target <= 1300.0; target += 50.0) {
+                for (const double g : {20.0, 30.0}) {
+                    const std::array<double, 3> q0{500.0 * scale, 400.0 * scale, 120.0 * scale};
+                    auto a = tc.build(target, q0, fork);
+                    auto b = tc.build(target, q0, fork);
+                    a.resetLookups(); b.resetLookups();
+                    const auto re = NetworkSolve::solveReduced(a, NetTreeCase::guess(g), params, true);
+                    const auto rd = NetworkSolve::solveReduced(b, NetTreeCase::guess(g), params, false);
+                    ++runs;
+                    failed += re.converged ? 0 : 1;
+                    stalls += re.stalls;
+                    it_e += re.iterations; it_d += rd.iterations;
+                    eval_e += re.evaluations; eval_d += rd.evaluations;
+                    look_e += a.lookups(); look_d += b.lookups();
+                    if (re.converged && rd.converged) {
+                        for (int w = 0; w < a.numWells(); ++w) {
+                            if (std::abs(re.well_rate[w] - rd.well_rate[w])
+                                > 0.005 * std::max(std::abs(rd.well_rate[w]), 1.0 / 86400.0)) {
+                                ++disagree; break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    BOOST_TEST_MESSAGE(fmt::format(
+        "{} runs, eliminated Jacobian: {} failed, {} stalls, {} disagree; it {} vs {} differenced;"
+        " evaluations {} vs {}; lookups {} vs {}",
+        runs, failed, stalls, disagree, it_e, it_d, eval_e, eval_d, look_e, look_d));
+    BOOST_CHECK_EQUAL(failed, 0);
+    BOOST_CHECK_EQUAL(disagree, 0);
+}
+
 BOOST_AUTO_TEST_CASE(production_step_bounds)
 {
     ProductionCase c;
