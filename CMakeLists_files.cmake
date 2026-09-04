@@ -1322,6 +1322,7 @@ list (APPEND PUBLIC_HEADER_FILES
   opm/simulators/wells/network/NetworkNodePressureUpdater.hpp
   opm/simulators/wells/network/NetworkProductionSystem.hpp
   opm/simulators/wells/network/NetworkSolve.hpp
+  opm/simulators/wells/network/NetworkTreeSolve.hpp
   opm/simulators/wells/rescoup/RescoupProxy.hpp
 )
 if (USE_GPU_BRIDGE)
