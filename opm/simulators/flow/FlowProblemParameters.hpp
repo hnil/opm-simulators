@@ -43,9 +43,10 @@ struct EnableDriftCompensationTemp { static constexpr bool value = true; };
 // implicit or explicit pressure in rock compaction
 struct ExplicitRockCompaction { static constexpr bool value = false; };
 
-//! \brief Take a refined cell's transmissibility from its host cell instead of
-//!        computing it from the child's own geometry.
-struct LgrTransFromHost { static constexpr bool value = false; };
+//! \brief Take a refined cell's lateral transmissibility from its host cell,
+//!        scaled by the child's own face area and centre-to-face distance.
+//!        Matches the reference simulator; off recomputes from the child geometry.
+struct LgrTransFromHost { static constexpr bool value = true; };
 
 // Whether or not to check saturation function consistency requirements.
 struct CheckSatfuncConsistency { static constexpr bool value = true; };
