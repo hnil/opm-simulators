@@ -28,6 +28,7 @@
 #include <opm/models/utils/parametersystem.hpp>
 
 #include <opm/simulators/flow/AdaptiveLgr.hpp>
+#include <opm/simulators/flow/WellZoneLgr.hpp>
 #include <opm/simulators/flow/CpGridVanguard.hpp>
 
 // A grid backend may require a refinement builder to be registered before a
@@ -80,6 +81,11 @@ public:
             "Adaptive local grid refinement on a deck with no CARFIN: one or more "
             "CARFIN-style boxes 'I1 I2 J1 J2 K1 K2 NX NY NZ' (1-based, "
             "';'-separated). Empty (default) => behaves like flow_blackoil.");
+        Parameters::Register<Parameters::WellRefine>(
+            "Nested refinement rings around wells, ';'-separated zones "
+            "PATTERN:FX,FY,FZ:rings=W1[,W2,...][:layers=all][:klayers=N]. Each ring "
+            "is refined FX x FY x FZ relative to the ring outside it; the K range "
+            "covers the perforated layers (plus N above and below) or every layer.");
     }
 
     //! \brief The refinement spec to apply; overridable so a dynamic driver
@@ -94,26 +100,46 @@ public:
         Base::addLgrs();
 
         const std::string spec = this->adaptiveLgrSpec();
-        if (spec.empty()) {
+        const std::string wellSpec = Parameters::Get<Parameters::WellRefine>();
+        if (spec.empty() && wellSpec.empty()) {
             return;
         }
-        const auto boxes = parseAdaptiveLgrSpec(spec);
-        if (boxes.empty()) {
+        const auto& cartDims = this->grid_->logicalCartesianSize();
+
+        // Explicit boxes and well zones go into one request list: the builder
+        // refines once and checks the boxes against each other.
+        std::vector<Opm::Refinement::BlockRefinement> requests;
+        for (const auto& b : parseAdaptiveLgrSpec(spec)) {
+            Opm::Refinement::BlockRefinement req;
+            req.name = b.name;
+            req.cellsPerDim = b.cellsPerDim;
+            req.startIJK = b.startIJK;
+            req.endIJK = b.endIJK;
+            requests.push_back(std::move(req));
+        }
+        const auto zoneRequests = wellZoneRefinements(parseWellZoneSpec(wellSpec),
+                                                     this->schedule(), cartDims);
+        requests.insert(requests.end(), zoneRequests.begin(), zoneRequests.end());
+        if (requests.empty()) {
             return;
         }
 
         const auto& inputGrid = this->eclState().getInputGrid();
 
-        std::vector<std::array<int,3>> cellsPerDim, startIJK, endIJK;
-        std::vector<std::string> names;
-        for (const auto& b : boxes) {
-            cellsPerDim.push_back(b.cellsPerDim);
-            startIJK.push_back(b.startIJK);
-            endIJK.push_back(b.endIJK);
-            names.push_back(b.name);
+        std::vector<LgrCellBox> cellBoxes;
+        for (const auto& r : requests) {
+            if (r.parentGridName == "GLOBAL") {
+                cellBoxes.push_back({ r.startIJK, r.endIJK });
+            }
+            OpmLog::info(fmt::format("  refinement {} on {}: cells [{},{}]x[{},{}]x[{},{}] by {}x{}x{}",
+                                     r.name, r.parentGridName,
+                                     r.startIJK[0] + 1, r.endIJK[0], r.startIJK[1] + 1, r.endIJK[1],
+                                     r.startIJK[2] + 1, r.endIJK[2],
+                                     r.cellsPerDim[0], r.cellsPerDim[1], r.cellsPerDim[2]));
         }
-        OpmLog::info("\nAdaptive refinement (--adaptive-lgr): refining "
-                     + std::to_string(boxes.size())
+        refuseDeckConnectionsInsideBoxes(this->eclState(), cartDims, cellBoxes);
+        OpmLog::info("\nAdaptive refinement: refining "
+                     + std::to_string(requests.size())
                      + " box(es) on the coarse grid post-construction");
 
         // Refine through the grid's own entry point, exactly as a deck CARFIN
@@ -129,7 +155,7 @@ public:
                 inputGrid.getNXYZ(), inputGrid.getCOORD(), inputGrid.getZCORN(),
                 std::move(actnum)));
         try {
-            this->grid_->addLgrsUpdateLeafView(cellsPerDim, startIJK, endIJK, names);
+            this->grid_->addLgrsUpdateLeafView(requests);
         }
         catch (...) {
             Opm::Refinement::setBuilder(std::move(previous));
@@ -137,7 +163,7 @@ public:
         }
         Opm::Refinement::setBuilder(std::move(previous));
 #else
-        this->grid_->addLgrsUpdateLeafView(cellsPerDim, startIJK, endIJK, names);
+        this->grid_->addLgrsUpdateLeafView(requests);
 #endif
 
         // Same post-refinement bookkeeping the base addLgrs() does for a deck
