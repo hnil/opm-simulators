@@ -1546,6 +1546,28 @@ applyHostTransToRefinedFaces_()
             return;
         }
 
+        // A nested LGR's cells in a distributed grid come out wrong on this
+        // path (SPE1CASE1_CARFIN1_NESTED_CONTAINED fails to converge at np=2,
+        // and a WELLREF ring pair's well rate differs from serial); serial
+        // nested and parallel single-level are fine. Refuse rather than
+        // diverge until the nested host lookup is done for the distributed
+        // grid.
+        if (gridView_.comm().size() > 1) {
+            bool nested = false;
+            for (const auto& elem : elements(gridView_)) {
+                if (elem.hasFather() && elem.father().hasFather()) {
+                    nested = true;
+                    break;
+                }
+            }
+            if (gridView_.comm().max(nested ? 1 : 0) > 0) {
+                OPM_THROW(std::invalid_argument,
+                          "Taking a refined transmissibility from its host cell is not "
+                          "supported for a nested LGR in a parallel run. Run in serial, "
+                          "or pass --lgr-trans-from-host=false.");
+            }
+        }
+
         using LevelView = std::remove_const_t<decltype(grid_.levelGridView(0))>;
         const LevelView level0 = grid_.levelGridView(0);
         const auto levelMapper = Dune::MultipleCodimMultipleGeomTypeMapper<LevelView>
