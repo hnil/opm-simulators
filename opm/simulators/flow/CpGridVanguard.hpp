@@ -36,6 +36,7 @@
 #include <opm/simulators/flow/FlowBaseVanguard.hpp>
 #include <opm/simulators/flow/FlowProblemParameters.hpp>
 #include <opm/simulators/flow/GenericCpGridVanguard.hpp>
+#include <opm/simulators/flow/LgrDeckConnectionCheck.hpp>
 #include <opm/simulators/flow/Transmissibility.hpp>
 
 #include <algorithm>
@@ -545,6 +546,14 @@ public:
      */
     void loadBalance()
     {
+        // Decided on every rank, and before the transmissibility the I/O rank
+        // builds for load balancing and output can hit the same refusal on its
+        // own: a rank that throws alone leaves the others in a collective.
+        if (const auto& lgrs = this->eclState().getLgrs(); lgrs.size() > 0) {
+            refuseDeckConnectionsInsideBoxes(this->eclState(),
+                                             this->grid_->logicalCartesianSize(),
+                                             lgrCellBoxes(lgrs));
+        }
 #if HAVE_MPI
         if (const auto& extPFile = this->externalPartitionFile();
             !extPFile.empty() && (extPFile != "none"))
