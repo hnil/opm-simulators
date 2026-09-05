@@ -254,25 +254,30 @@ doLoadBalance_(const Dune::EdgeWeightMethod             edgeWeightsMethod,
             if (lgrs.size() > 0) {
                 const auto cartDims = this->grid_->logicalCartesianSize();
                 for (const auto& well : wells) {
-                    const auto lgrTag = well.get_lgr_well_tag();
-                    if (!lgrTag.has_value() || !lgrs.hasLgr(*lgrTag)) {
-                        continue;
-                    }
-                    const auto& carfin = lgrs.getLgr(*lgrTag);
-                    const int rx = carfin.NX() / (carfin.I2() + 1 - carfin.I1());
-                    const int ry = carfin.NY() / (carfin.J2() + 1 - carfin.J1());
-                    const int rz = carfin.NZ() / (carfin.K2() + 1 - carfin.K1());
                     auto& anchors = possibleFutureConnections[well.name()];
                     for (const auto& conn : well.getConnections()) {
-                        if (conn.get_lgr_level() == 0) {
-                            continue; // a coarse connection is already in the graph
+                        // A connection carries its own LGR (deck number); a
+                        // coarse connection is already in the graph.
+                        const int n = conn.get_lgr_level();
+                        if (n <= 0 || static_cast<std::size_t>(n) > lgrs.size()) {
+                            continue;
                         }
-                        // LGR-local (i,j,k) -> coarse father cell -> level-zero
-                        // Cartesian index used by the well partition graph.
-                        const int ci = carfin.I1() + conn.getI() / rx;
-                        const int cj = carfin.J1() + conn.getJ() / ry;
-                        const int ck = carfin.K1() + conn.getK() / rz;
-                        anchors.insert(ci + cartDims[0] * (cj + cartDims[1] * ck));
+                        // LGR-local (i,j,k) -> father cell, up through nested
+                        // parents to the level-zero Cartesian index the well
+                        // partition graph uses.
+                        const Carfin* box = &lgrs.getLgr(static_cast<std::size_t>(n) - 1);
+                        std::array<int,3> ijk{ conn.getI(), conn.getJ(), conn.getK() };
+                        while (true) {
+                            const int rx = box->NX() / (box->I2() + 1 - box->I1());
+                            const int ry = box->NY() / (box->J2() + 1 - box->J1());
+                            const int rz = box->NZ() / (box->K2() + 1 - box->K1());
+                            ijk = { box->I1() + ijk[0] / rx, box->J1() + ijk[1] / ry, box->K1() + ijk[2] / rz };
+                            if (box->PARENT_NAME() == "GLOBAL" || !lgrs.hasLgr(box->PARENT_NAME())) {
+                                break;
+                            }
+                            box = &lgrs.getLgr(box->PARENT_NAME());
+                        }
+                        anchors.insert(ijk[0] + cartDims[0] * (ijk[1] + cartDims[1] * ijk[2]));
                     }
                 }
             }

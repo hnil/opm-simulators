@@ -143,6 +143,34 @@ public:
         this->callImplementationInit();
     }
 
+    /// The LGR a connection's grid number names: a deck LGR by its deck
+    /// number, else (--adaptive-lgr, --well-refine) the grid level itself.
+    std::string lgrTagOfConnection(const Connection& conn) const
+    {
+        const int n = conn.get_lgr_level();
+        const auto& lgrs = this->eclState().getLgrs();
+        if (n >= 1 && static_cast<std::size_t>(n) <= lgrs.size()) {
+            return lgrs.getLgr(static_cast<std::size_t>(n) - 1).NAME();
+        }
+        for (const auto& [name, level] : this->grid().getLgrNameToLevel()) {
+            if (level == n) {
+                return name;
+            }
+        }
+        OPM_THROW(std::logic_error,
+                  fmt::format("Connection ({},{},{}) names LGR grid number {}, which "
+                              "neither the deck nor the grid has.",
+                              conn.getI() + 1, conn.getJ() + 1, conn.getK() + 1, n));
+    }
+
+    /// Leaf cell of a connection, resolved against the connection's own LGR.
+    int compressedIndexForConnection(const Connection& conn) const
+    {
+        return (conn.get_lgr_level() > 0)
+            ? this->compressedIndexForInteriorLGR(this->lgrTagOfConnection(conn), conn)
+            : this->compressedIndexForInterior(conn.global_index());
+    }
+
     int compressedIndexForInteriorLGR(const std::string& lgr_tag, const Connection& conn) const override
     {
         // Every rank registers every requested LGR name, with an empty level
@@ -692,24 +720,11 @@ public:
             // Done before the canary below: it legitimately reads refined cells'
             // geometry while building the trajectory connections.
             //
-            // WELLREF put the LGRs around COMPDAT wells, which carry no
-            // trajectory; give them one from their connection cells so the
-            // replay below lands them in the refined cells.
-            if (this->eclState().hasWellRefinement()) {
-                if (this->grid_->comm().size() > 1) {
-                    OPM_THROW(std::invalid_argument,
-                              "WELLREF (refinement around wells) is supported in "
-                              "serial runs only for now: the well trajectories are "
-                              "synthesized from the input grid, which the I/O rank "
-                              "alone holds in parallel.");
-                }
-                const auto& inputGrid = this->eclState().getInputGrid();
-                this->schedule().synthesizeWellTrajectories(
-                    [&inputGrid](std::size_t globalIdx)
-                    { return inputGrid.getCellCenter(globalIdx); },
-                    [&inputGrid](std::size_t globalIdx)
-                    { return inputGrid.getCellDims(globalIdx); });
-            }
+            // A COMPDAT connection inside a box (WELLREF, or a deck that kept a
+            // global well in a CARFIN) is moved into the innermost LGR covering
+            // it by index, with its connection factor rescaled -- deck work,
+            // the same on every rank. Trajectory wells are replayed below.
+            this->schedule().refineConnectionsIntoLgrs(lgrs);
             this->recomputeWellTrajectoriesInLgr_();
 
             // Opt-in canary (OPM_LGR_POISON_REFINED=1): poison every refined leaf
