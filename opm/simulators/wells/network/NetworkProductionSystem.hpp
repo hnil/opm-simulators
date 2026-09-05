@@ -371,6 +371,12 @@ public:
         return static_cast<int>(groups_.size()) - 1;
     }
     const std::vector<Group>& groups() const { return groups_; }
+    /// Change a group's own limit after the tree is built, for a sweep.
+    void setGroupLimit(const int g, const Mode m, const Scalar target)
+    {
+        groups_[g].mode = m;
+        groups_[g].target = target;
+    }
     int numGroups() const { return static_cast<int>(groups_.size()); }
 
     /// Rate at which a multiplier counts as "not limiting": comfortably above
