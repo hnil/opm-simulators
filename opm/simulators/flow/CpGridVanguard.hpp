@@ -36,6 +36,7 @@
 #include <opm/models/blackoil/blackoilproperties.hh>
 #include <opm/simulators/flow/FemCpGridCompat.hpp>
 #include <opm/simulators/flow/FlowBaseVanguard.hpp>
+#include <opm/simulators/flow/FlowProblemParameters.hpp>
 #include <opm/simulators/flow/GenericCpGridVanguard.hpp>
 #include <opm/simulators/flow/Transmissibility.hpp>
 
@@ -406,12 +407,27 @@ public:
     void releaseGlobalTransmissibilities()
     {
         globalTrans_.reset();
+        outputTrans_.reset();
+        outputGridView_.reset();
     }
 
     const TransmissibilityType& globalTransmissibility() const
     {
         assert( globalTrans_ != nullptr );
         return *globalTrans_;
+    }
+
+    /*!
+     * \brief Transmissibility on the grid the ECL output is written from.
+     *
+     * In a parallel LGR run that is the I/O rank's refined reference grid
+     * (built in allocTrans()). globalTrans_ lives on the coarse
+     * pre-distribution grid, and writing the INIT from it hands every refined
+     * cell its father's value.
+     */
+    const TransmissibilityType& eclOutputTransmissibility() const
+    {
+        return outputTrans_ ? *outputTrans_ : this->globalTransmissibility();
     }
 
     /*!
@@ -929,6 +945,25 @@ protected:
                                                     getPropValue<TypeTag, Properties::EnableDiffusion>(),
                                                     getPropValue<TypeTag, Properties::EnableDispersion>()));
         globalTrans_->update(false, TransmissibilityType::TransUpdateQuantities::Trans);
+
+        // The refined I/O-rank reference grid of a parallel LGR run gets its own
+        // object, here rather than on demand: after distribution this rank's
+        // field properties are the local ones, which no longer cover that grid.
+        if (this->outputGrid_) {
+            const auto& grid = *this->outputGrid_;
+            const auto& cartMapper = *this->outputCartesianIndexMapper_;
+            outputGridView_ = std::make_unique<GridView>(grid.leafGridView());
+            const LookUpCellCentroid<Grid, GridView> centroid(*outputGridView_, cartMapper, nullptr);
+            outputTrans_ = std::make_unique<TransmissibilityType>(
+                this->eclState(), *outputGridView_, cartMapper, grid,
+                [centroid](int elemIdx) { return centroid(elemIdx); },
+                getPropValue<TypeTag, Properties::EnergyModuleType>() == EnergyModules::FullyImplicitThermal ||
+                getPropValue<TypeTag, Properties::EnergyModuleType>() == EnergyModules::SequentialImplicitThermal,
+                getPropValue<TypeTag, Properties::EnableDiffusion>(),
+                getPropValue<TypeTag, Properties::EnableDispersion>(),
+                Parameters::Get<Parameters::LgrTransFromHost>());
+            outputTrans_->update(false, TransmissibilityType::TransUpdateQuantities::Trans);
+        }
     }
 
     double getTransmissibility(unsigned I, unsigned J) const override
@@ -958,6 +993,11 @@ protected:
     // diffusivity_ abd dispersivity_. The main reason is to reduce the memory usage for rank 0
     // during parallel running.
     std::unique_ptr<TransmissibilityType> globalTrans_;
+    // Transmissibility on the refined I/O-rank reference grid of a parallel LGR
+    // run (eclOutputTransmissibility()); the view is kept because the object
+    // holds it by reference.
+    std::unique_ptr<GridView> outputGridView_;
+    std::unique_ptr<TransmissibilityType> outputTrans_;
 };
 
 } // namespace Opm

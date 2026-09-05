@@ -206,6 +206,8 @@ protected:
     std::optional<GatheredLgrOutputTrans> gatheredLgrTrans_;
     const Dune::CartesianIndexMapper<Grid>& cartMapper_;
     const Dune::CartesianIndexMapper<EquilGrid>* equilCartMapper_;
+    // Mapper of collectGrid_; equals equilCartMapper_ outside a parallel LGR run.
+    const Dune::CartesianIndexMapper<EquilGrid>* collectCartMapper_;
     const EquilGrid* equilGrid_;
     // Refined I/O-rank reference grid used to gather and split cell data in a
     // parallel LGR run; equals equilGrid_ otherwise.
