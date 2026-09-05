@@ -67,6 +67,10 @@
 #include <opm/simulators/wells/ProdGroupTreeBalancer.hpp>
 #include <opm/input/eclipse/Schedule/SummaryState.hpp>
 #include <opm/input/eclipse/Schedule/Schedule.hpp>
+#include <opm/input/eclipse/Schedule/Well/WellEnums.hpp>
+#include <opm/input/eclipse/Schedule/Network/ExtNetwork.hpp>
+#include <opm/input/eclipse/Schedule/Network/Branch.hpp>
+#include <opm/input/eclipse/Schedule/Network/Node.hpp>
 #include <opm/input/eclipse/EclipseState/EclipseState.hpp>
 #include <opm/input/eclipse/Schedule/VFPInjTable.hpp>
 #include <opm/input/eclipse/Schedule/VFPProdTable.hpp>
@@ -93,6 +97,7 @@
 #include <numeric>
 #include <tuple>
 #include <map>
+#include <memory>
 #include <iomanip>
 #include <cmath>
 #include <functional>
@@ -4240,49 +4245,69 @@ namespace {
     /// Stein's balancer fed with the system's own capacities at a state: each
     /// well's limit is what its own controls allow at the node pressure there,
     /// its phase rates the IPR at the bhp that allowance implies. Same IPR,
-    /// same tubing curve, same pressures as the Newton. Returns oil rates per
-    /// well in sm3/d, or empty if the balancer rejected the tree.
-    std::vector<double> steinAllocation(NetTreeCase::Sys& sys, const std::vector<double>& x,
-                                        const Schedule& schedule, const double plat_target_sm3d)
+    /// same tubing curve, same pressures as the Newton. The tree, the targets
+    /// and the guides are the system's; the Schedule only supplies GuideRate.
+    /// Returns oil rates per well in sm3/d, or empty if the balancer rejected
+    /// the tree.
+    std::vector<double> steinAllocation(NetworkSolve::ProductionSystem<double>& sys,
+                                        const std::vector<double>& x,
+                                        const Schedule& schedule, const int step = 0)
     {
+        using Sys = NetworkSolve::ProductionSystem<double>;
         sys.updateControls(x);      // the capacities at this state's pressures
-        const std::map<std::string, std::string> parent{
-            {"PLAT", "FIELD"}, {"GP1", "PLAT"}, {"GP2", "PLAT"},
-            {"W1", "GP1"}, {"W2", "GP1"}, {"W3", "GP2"}};
         GuideRate guide_rate{schedule};
         DeferredLogger logger;
         for (int w = 0; w < sys.numWells(); ++w) {
-            guide_rate.compute(sys.wells()[w].name, 0, 0.0, sys.wells()[w].guide / 86400.0, 0.0, 0.0);
+            guide_rate.compute(sys.wells()[w].name, step, 0.0, sys.wells()[w].guide, 0.0, 0.0);
         }
+        auto wmode = [](const Sys::Mode m) {
+            switch (m) {
+            case Sys::Mode::Water:  return Opm::Well::ProducerCMode::WRAT;
+            case Sys::Mode::Gas:    return Opm::Well::ProducerCMode::GRAT;
+            case Sys::Mode::Liquid: return Opm::Well::ProducerCMode::LRAT;
+            default:                return Opm::Well::ProducerCMode::ORAT;
+            }
+        };
+        auto gmode = [](const Sys::Mode m) {
+            switch (m) {
+            case Sys::Mode::Water:  return Opm::Group::ProductionCMode::WRAT;
+            case Sys::Mode::Gas:    return Opm::Group::ProductionCMode::GRAT;
+            case Sys::Mode::Liquid: return Opm::Group::ProductionCMode::LRAT;
+            default:                return Opm::Group::ProductionCMode::ORAT;
+            }
+        };
         ProdGroupTreeBalancer::Tree<double> tree;
-        auto addGroup = [&](const std::string& name, const std::vector<std::string>& kids,
-                            const bool has_target) {
+        const auto& groups = sys.groups();
+        for (int g = 0; g < sys.numGroups(); ++g) {
             ProdGroupTreeNode<double> n;
-            n.name = name;
+            n.name = groups[g].name;
             n.type = ProdNodeType::Group;
-            n.parent = parent.count(name) ? parent.at(name) : std::string{};
-            n.children = kids;
+            n.parent = groups[g].parent >= 0 ? groups[groups[g].parent].name : std::string{};
             n.availableForGroupControl = true;
+            n.efficiencyFactor = groups[g].efficiency;
+            const bool has_target = groups[g].target > 0.0;
             n.modeCategory = has_target ? ProdNodeModeCategory::Individual
                                         : ProdNodeModeCategory::Group;
             if (has_target) {
-                n.mode = Opm::Well::ProducerCMode::ORAT;
-                n.preferredMode = Opm::Group::ProductionCMode::ORAT;
-                n.Limits[Opm::Well::ProducerCMode::ORAT] = plat_target_sm3d / 86400.0;
+                n.mode = wmode(groups[g].mode);
+                n.preferredMode = gmode(groups[g].mode);
+                n.Limits[n.mode] = groups[g].target;
             }
-            tree.emplace(name, std::move(n));
-        };
-        addGroup("FIELD", {"PLAT"}, false);
-        addGroup("PLAT", {"GP1", "GP2"}, true);
-        addGroup("GP1", {"W1", "W2"}, false);
-        addGroup("GP2", {"W3"}, false);
+            tree.emplace(n.name, std::move(n));
+        }
+        for (int g = 0; g < sys.numGroups(); ++g) {
+            if (groups[g].parent >= 0) {
+                tree.at(groups[groups[g].parent].name).children.push_back(groups[g].name);
+            }
+        }
         for (int w = 0; w < sys.numWells(); ++w) {
             const auto& well = sys.wells()[w];
             ProdGroupTreeNode<double> n;
             n.name = well.name;
             n.type = ProdNodeType::Well;
-            n.parent = parent.at(well.name);
+            n.parent = groups[well.group].name;
             n.availableForGroupControl = true;
+            n.efficiencyFactor = well.efficiency;
             n.mode = Opm::Well::ProducerCMode::GRUP;
             n.hasGuideRate = true;
             const double allow = sys.ownAllowance(w);
@@ -4293,6 +4318,7 @@ namespace {
                        -std::max(well.ipr_a[0] + well.ipr_b[0] * bhp, 0.0),
                        -std::max(well.ipr_a[2] + well.ipr_b[2] * bhp, 0.0)};
             n.initialRates = n.rates;
+            tree.at(n.parent).children.push_back(n.name);
             tree.emplace(well.name, std::move(n));
         }
         if (!ProdGroupTreeBalancer::balanceTreeForTesting(tree, guide_rate, 1e-8, logger)) {
@@ -4370,7 +4396,7 @@ BOOST_AUTO_TEST_CASE(the_tree_on_a_network_by_three_routes)
             }
             // The balancer, given the capacities at the converged pressures,
             // allocates what the Newton produced: its answer solves the network.
-            const auto stein = steinAllocation(outer, ro.result.state, schedule, c.target);
+            const auto stein = steinAllocation(outer, ro.result.state, schedule);
             BOOST_REQUIRE(!stein.empty());
             std::string both;
             for (int w = 0; w < outer.numWells(); ++w) {
@@ -4670,6 +4696,380 @@ BOOST_AUTO_TEST_CASE(the_reduced_jacobian_by_elimination)
         " evaluations {} vs {}; lookups {} vs {}",
         runs, failed, stalls, disagree, it_e, it_d, eval_e, eval_d, look_e, look_d));
     BOOST_CHECK_EQUAL(failed, 0);
+    BOOST_CHECK_EQUAL(disagree, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Both trees from a real deck.
+//
+// The group tree (GRUPTREE / GCONPROD / WCONPROD) and the flow network
+// (NODEPROP / BRANPROP / VFPPROD) of the same deck, as one system. They share
+// only the wells: on MODEL5 the group C1 reports to M5N, which is no node,
+// while its wells flow to PLAT-A directly. The IPR is not in the deck --
+// there is no reservoir here -- so every producer gets a straight line,
+// liquid J (p_res - bhp) split by a water cut and a GOR, and a well's other
+// rate limits are turned into the oil rate at which that line meets them,
+// which is exact for a linear IPR.
+// ---------------------------------------------------------------------------
+namespace {
+    struct DeckTrees
+    {
+        using Sys = NetworkSolve::ProductionSystem<double>;
+        struct Ipr {
+            double p_res_bar = 280.0;
+            /// oil at the bhp limit, as a multiple of the well's own ORAT limit
+            double j_scale = 2.0;
+            double wct = 0.2;
+            double gor = 100.0;
+        };
+        std::unique_ptr<Deck> deck;
+        std::unique_ptr<EclipseState> es;
+        std::unique_ptr<Schedule> schedule;
+        SummaryState st{TimeService::now(), 0.0};
+        std::deque<VFPProdTable> tables;       // props keeps references
+        VFPProdProperties<double> props;
+        UnitSystem units{};
+        std::vector<std::string> node_order;
+        std::map<std::string, int> gidx;
+        std::string description;
+
+        explicit DeckTrees(const std::string& path)
+        {
+            deck = std::make_unique<Deck>(Parser{}.parseFile(path));
+            es = std::make_unique<EclipseState>(*deck);
+            schedule = std::make_unique<Schedule>(*deck, *es);
+            for (const auto& kw : deck->getKeywordList("VFPPROD")) {
+                tables.emplace_back(*kw, /*gaslift_opt_active=*/false, units);
+                props.addTable(tables.back());
+            }
+        }
+
+        Sys build(const int step, const Ipr& ipr)
+        {
+            const auto& sched = *schedule;
+            const auto& network = sched[step].network();
+            Sys sys(props, units);
+            description.clear();
+
+            // The flow network: the fixed-pressure root and everything under it.
+            const auto roots = network.roots();
+            BOOST_REQUIRE(!roots.empty());
+            const auto& root = roots.front().get();
+            BOOST_REQUIRE(root.terminal_pressure().has_value());
+            sys.setTerminalPressure(*root.terminal_pressure());
+            node_order = {root.name()};
+            std::map<std::string, int> nidx{{root.name(), 0}};
+            sys.addNode(NetworkSolve::Node{root.name(), -1, NetworkSolve::NoTable}, 0.0);
+            for (std::size_t at = 0; at < node_order.size(); ++at) {
+                for (const auto& br : network.downtree_branches(node_order[at])) {
+                    const auto& child = br.downtree_node();
+                    const int table = br.vfp_table().has_value() && props.hasTable(*br.vfp_table())
+                        ? *br.vfp_table() : NetworkSolve::NoTable;
+                    nidx[child] = static_cast<int>(node_order.size());
+                    node_order.push_back(child);
+                    sys.addNode(NetworkSolve::Node{child, static_cast<int>(at), table}, 0.0);
+                    description += fmt::format(" {}->{}{}", child, node_order[at],
+                                               table == NetworkSolve::NoTable ? "" : fmt::format("[{}]", table));
+                }
+            }
+
+            // Producers: which are open, what they may make, where they flow.
+            struct W { std::string name, group; int node; Opm::Well::ProductionControls ctl;
+                       double eff; int vfp; };
+            std::vector<W> wells;
+            for (const auto& wname : sched.wellNames(step)) {
+                const auto& well = sched.getWell(wname, step);
+                if (!well.isProducer() || well.getStatus() != Opm::Well::Status::OPEN) { continue; }
+                // A well flows into the node named as its group, or the nearest
+                // group above it that is a node.
+                std::string g = well.groupName();
+                while (!g.empty() && !nidx.count(g)) {
+                    g = (g == "FIELD") ? std::string{} : sched.getGroup(g, step).parent();
+                }
+                if (g.empty()) { continue; }         // not in the network
+                wells.push_back({wname, well.groupName(), nidx.at(g),
+                                 well.productionControls(st), well.getEfficiencyFactor(),
+                                 well.vfp_table_number()});
+            }
+
+            // Every well's line, and the oil it makes at its bhp limit -- its
+            // guide, as a potential would be. Group guides are the sums beneath.
+            std::map<std::string, double> wguide;
+            auto line = [&](const W& w, Sys::Well& out) {
+                const double p_res = convert::from(ipr.p_res_bar, bars);
+                const double bhp_lim = w.ctl.bhp_limit > 0.0 ? w.ctl.bhp_limit : unit::barsa;
+                const double orat = w.ctl.hasControl(WellProducerCMode::ORAT) && w.ctl.oil_rate > 0.0
+                    ? w.ctl.oil_rate : 1000.0 / 86400.0;
+                const double j_oil = ipr.j_scale * orat / (p_res - bhp_lim);
+                const double j_liq = j_oil / (1.0 - ipr.wct);
+                const double j[3] = {ipr.wct * j_liq, j_oil, ipr.gor * j_oil};   // water, oil, gas
+                for (int ph = 0; ph < Sys::NP; ++ph) { out.ipr_a[ph] = j[ph] * p_res; out.ipr_b[ph] = -j[ph]; }
+                out.bhp_limit = bhp_lim;
+                // Each rate limit as the oil rate at which the line meets it.
+                double allow = 0.0;
+                auto limit = [&](const bool has, const double value, const Sys::Mode m) {
+                    if (!has || !(value > 0.0)) { return; }
+                    const auto c = Sys::modeWeights(m, {});
+                    double ca = 0.0, cb = 0.0;
+                    for (int ph = 0; ph < Sys::NP; ++ph) { ca += c[ph] * out.ipr_a[ph]; cb += c[ph] * out.ipr_b[ph]; }
+                    const double bhp = (value - ca) / cb;
+                    const double oil = out.ipr_a[1] + out.ipr_b[1] * bhp;
+                    allow = (allow > 0.0) ? std::min(allow, oil) : oil;
+                };
+                limit(w.ctl.hasControl(WellProducerCMode::ORAT), w.ctl.oil_rate, Sys::Mode::Oil);
+                limit(w.ctl.hasControl(WellProducerCMode::WRAT), w.ctl.water_rate, Sys::Mode::Water);
+                limit(w.ctl.hasControl(WellProducerCMode::GRAT), w.ctl.gas_rate, Sys::Mode::Gas);
+                limit(w.ctl.hasControl(WellProducerCMode::LRAT), w.ctl.liquid_rate, Sys::Mode::Liquid);
+                out.oil_rate_limit = allow;
+                return out.ipr_a[1] + out.ipr_b[1] * bhp_lim;
+            };
+            std::vector<Sys::Well> built(wells.size());
+            for (std::size_t i = 0; i < wells.size(); ++i) {
+                built[i].name = wells[i].name;
+                built[i].node = wells[i].node;
+                built[i].vfp_table = (wells[i].vfp > 0 && props.hasTable(wells[i].vfp)) ? wells[i].vfp : 0;
+                built[i].efficiency = wells[i].eff;
+                wguide[wells[i].name] = line(wells[i], built[i]);
+                built[i].guide = wguide[wells[i].name];
+                built[i].q_start = 0.5 * wguide[wells[i].name];
+            }
+            std::function<double(const std::string&)> subtreeGuide = [&](const std::string& name) {
+                const auto& grp = sched.getGroup(name, step);
+                double g = 0.0;
+                for (const auto& child : grp.groups()) { g += subtreeGuide(child); }
+                for (const auto& w : grp.wells()) { if (wguide.count(w)) { g += wguide.at(w); } }
+                return g;
+            };
+
+            // The group tree, parents first, with each group's own target.
+            gidx.clear();
+            std::function<void(const std::string&, int)> addTree = [&](const std::string& name, const int parent) {
+                const auto& grp = sched.getGroup(name, step);
+                typename Sys::Group g;
+                g.name = name;
+                g.parent = parent;
+                g.efficiency = grp.getGroupEfficiencyFactor();
+                g.guide = subtreeGuide(name);
+                if (grp.isProductionGroup()) {
+                    const auto ctl = grp.productionControls(st);
+                    using C = Opm::Group::ProductionCMode;
+                    if (ctl.cmode == C::ORAT)      { g.mode = Sys::Mode::Oil;    g.target = ctl.oil_target; }
+                    else if (ctl.cmode == C::LRAT) { g.mode = Sys::Mode::Liquid; g.target = ctl.liquid_target; }
+                    else if (ctl.cmode == C::GRAT) { g.mode = Sys::Mode::Gas;    g.target = ctl.gas_target; }
+                    else if (ctl.cmode == C::WRAT) { g.mode = Sys::Mode::Water;  g.target = ctl.water_target; }
+                }
+                const int me = sys.addGroup(std::move(g));
+                gidx[name] = me;
+                if (sys.groups()[me].target > 0.0) {
+                    description += fmt::format(" {}:{:.0f}", name, sys.groups()[me].target * 86400.0);
+                }
+                for (const auto& child : grp.groups()) { addTree(child, me); }
+            };
+            addTree("FIELD", -1);
+            for (std::size_t i = 0; i < wells.size(); ++i) {
+                built[i].group = gidx.at(wells[i].group);
+                description += fmt::format(" {}@{}/{}", wells[i].name, node_order[wells[i].node], wells[i].group);
+                sys.addWell(std::move(built[i]));
+            }
+            sys.setGroupTree(true);
+            sys.setAnalyticJacobian(true);
+            sys.setComplementarity(true);
+            sys.finish();
+            sys.finishGroups();
+            return sys;
+        }
+
+        std::vector<double> guess(const double bar) const
+        {
+            std::vector<double> p(node_order.size(), convert::from(bar, bars));
+            return p;
+        }
+    };
+
+    const std::string kNetworkDecks = "/Users/hnil/Documents/OPM/opm_feature/opm-tests/network/";
+
+    /// The three routes and the oracle on one built system; a line of report.
+    void threeRoutesAndOracle(DeckTrees& dt, const DeckTrees::Ipr& ipr, const int step,
+                              const double guess_bar, const char* tag,
+                              int* passes_out = nullptr)
+    {
+        using Sys = DeckTrees::Sys;
+        const NetworkSolve::Parameters<double> params{1e-2, 80};
+        auto fb = dt.build(step, ipr);
+        auto outer = dt.build(step, ipr);
+        auto reduced = dt.build(step, ipr);
+        const auto guess = dt.guess(guess_bar);
+        const auto rf = NetworkSolve::solve(fb, guess, params, NetworkSolve::FullStep{});
+        const auto ro = NetworkSolve::solveWithTree(outer, guess, params, NetworkSolve::FullStep{});
+        const auto rr = NetworkSolve::solveReduced(reduced, guess, params, true);
+        std::string sets;
+        for (const auto& s : ro.sets) { sets += " " + s; }
+        BOOST_TEST_MESSAGE(fmt::format("{}: outer {} passes / {} it{}{} [{}]; reduced {} it, {} stalls;"
+                                       " fb {}",
+                                       tag, ro.passes, ro.inner_iterations,
+                                       ro.consistent ? "" : " NOT CONSISTENT", ro.cycled ? " CYCLED" : "",
+                                       sets, rr.iterations, rr.stalls,
+                                       rf.converged ? std::to_string(rf.iterations) + " it" : "FAILED"));
+        std::string line = "  outer" + rateList(outer, ro.result.well_rate) + "  nodes";
+        for (std::size_t n = 1; n < dt.node_order.size(); ++n) {
+            line += fmt::format(" {}={:.1f}", dt.node_order[n], convert::to(ro.result.node_pressure[n], bars));
+        }
+        BOOST_TEST_MESSAGE(line);
+        if (rf.converged) {
+            std::string f = "  fb   " + rateList(fb, rf.well_rate) + "  nodes";
+            for (std::size_t n = 1; n < dt.node_order.size(); ++n) {
+                f += fmt::format(" {}={:.1f}", dt.node_order[n], convert::to(rf.node_pressure[n], bars));
+            }
+            f += "  bhp";
+            for (int w = 0; w < fb.numWells(); ++w) {
+                f += fmt::format(" {:.1f}", convert::to(rf.well_bhp[w], bars));
+            }
+            f += "  outer bhp";
+            for (int w = 0; w < outer.numWells(); ++w) {
+                f += fmt::format(" {:.1f}", convert::to(ro.result.well_bhp[w], bars));
+            }
+            BOOST_TEST_MESSAGE(f);
+        }
+        BOOST_CHECK(ro.result.converged);
+        BOOST_CHECK(ro.consistent);
+        BOOST_CHECK(rr.converged);
+        BOOST_CHECK(rf.converged);
+        if (passes_out) { *passes_out = ro.passes; }
+        if (!ro.result.converged) { return; }
+        // Fischer-Burmeister is only warned on: MODEL5's well table has a
+        // loading hump, and the continuous well row converges onto its
+        // unstable branch -- bhp 199 bar whatever the inflow, three of four
+        // configurations -- where the crossing routine takes the stable one.
+        for (int w = 0; w < outer.numWells(); ++w) {
+            if (rr.converged) { BOOST_CHECK_CLOSE(ro.result.well_rate[w], rr.well_rate[w], 0.5); }
+            if (rf.converged) { BOOST_WARN_CLOSE(ro.result.well_rate[w], rf.well_rate[w], 0.5); }
+        }
+        const auto stein = steinAllocation(outer, ro.result.state, *dt.schedule, step);
+        BOOST_CHECK(!stein.empty());
+        if (stein.empty()) { return; }
+        std::string both;
+        double worst = 0.0;
+        for (int w = 0; w < outer.numWells(); ++w) {
+            const double mine = ro.result.well_rate[w] * 86400.0;
+            both += fmt::format(" {}={:.1f}/{:.1f}", outer.wells()[w].name, mine, stein[w]);
+            worst = std::max(worst, std::abs(mine - stein[w]) / std::max(std::abs(stein[w]), 1.0));
+        }
+        BOOST_TEST_MESSAGE("  newton/stein:" << both);
+        BOOST_CHECK_LT(worst, 0.005);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(model5_both_trees_from_the_deck)
+{
+    const std::string path = kNetworkDecks + "NETWORK_MODEL5_STDW_AUTOCHK.DATA";
+    if (!std::filesystem::exists(path)) {
+        BOOST_TEST_MESSAGE("opm-tests not present, skipping");
+        return;
+    }
+    DeckTrees dt(path);
+    const int step = 1;                         // after WELOPEN: B-1H, B-2H, B-3H, C-1H
+    auto sys = dt.build(step, {});
+    BOOST_TEST_MESSAGE("MODEL5:" << dt.description);
+    // The two trees differ: C1's group parent M5N is not a node.
+    BOOST_CHECK(dt.gidx.count("M5N"));
+    BOOST_CHECK(std::find(dt.node_order.begin(), dt.node_order.end(), "M5N") == dt.node_order.end());
+    BOOST_CHECK_EQUAL(sys.numWells(), 4);
+    for (const double g : {21.0, 30.0}) {
+        threeRoutesAndOracle(dt, {}, step, g, fmt::format("model5, deck as is, guess {}", g).c_str());
+    }
+    // Stiffer and softer wells, and a tighter B1.
+    for (const double j : {1.0, 4.0}) {
+        DeckTrees::Ipr ipr; ipr.j_scale = j;
+        threeRoutesAndOracle(dt, ipr, step, 21.0, fmt::format("model5, j_scale {}", j).c_str());
+    }
+}
+
+BOOST_AUTO_TEST_CASE(network01_both_trees_from_the_deck)
+{
+    const std::string path = kNetworkDecks + "NETWORK-01.DATA";
+    if (!std::filesystem::exists(path)) {
+        BOOST_TEST_MESSAGE("opm-tests not present, skipping");
+        return;
+    }
+    DeckTrees dt(path);
+    const int step = 1;
+    auto sys = dt.build(step, {});
+    BOOST_TEST_MESSAGE("NETWORK-01:" << dt.description);
+    BOOST_CHECK_EQUAL(sys.numWells(), 2);
+    for (const double g : {80.0, 90.0}) {
+        threeRoutesAndOracle(dt, {}, step, g, fmt::format("network-01, deck as is, guess {}", g).c_str());
+    }
+    DeckTrees::Ipr ipr; ipr.j_scale = 4.0;
+    threeRoutesAndOracle(dt, ipr, step, 80.0, "network-01, j_scale 4");
+}
+
+// The same sweep as on the hand-built network, on MODEL5: the B1 target
+// from below what one well makes to above what three make, three well
+// stiffnesses, two starting pressures.
+BOOST_AUTO_TEST_CASE(model5_sweep)
+{
+    const std::string path = kNetworkDecks + "NETWORK_MODEL5_STDW_AUTOCHK.DATA";
+    if (!std::filesystem::exists(path)) {
+        BOOST_TEST_MESSAGE("opm-tests not present, skipping");
+        return;
+    }
+    DeckTrees dt(path);
+    const int step = 1;
+    const NetworkSolve::Parameters<double> params{1e-2, 80};
+    int runs = 0, failed = 0, cycled = 0, inconsistent = 0, disagree = 0, r_failed = 0, r_stalls = 0;
+    long it_outer = 0, it_reduced = 0;
+    std::map<int, int> passes;
+    std::string worst;
+    for (const double j : {1.0, 2.0, 4.0}) {
+        for (double target = 1000.0; target <= 9000.0; target += 500.0) {
+            for (const double g : {21.0, 30.0}) {
+                DeckTrees::Ipr ipr; ipr.j_scale = j;
+                auto outer = dt.build(step, ipr);
+                auto reduced = dt.build(step, ipr);
+                const int b1 = dt.gidx.at("B1");
+                outer.setGroupLimit(b1, DeckTrees::Sys::Mode::Oil, target / 86400.0);
+                reduced.setGroupLimit(b1, DeckTrees::Sys::Mode::Oil, target / 86400.0);
+                const auto ro = NetworkSolve::solveWithTree(outer, dt.guess(g), params, NetworkSolve::FullStep{});
+                const auto rr = NetworkSolve::solveReduced(reduced, dt.guess(g), params, true);
+                ++runs;
+                failed += ro.result.converged ? 0 : 1;
+                cycled += ro.cycled ? 1 : 0;
+                inconsistent += (ro.result.converged && !ro.consistent) ? 1 : 0;
+                r_failed += rr.converged ? 0 : 1;
+                r_stalls += rr.stalls;
+                it_outer += ro.inner_iterations; it_reduced += rr.iterations;
+                ++passes[ro.passes];
+                bool off = false;
+                if (ro.result.converged && rr.converged) {
+                    for (int w = 0; w < outer.numWells(); ++w) {
+                        if (std::abs(ro.result.well_rate[w] - rr.well_rate[w])
+                            > 0.005 * std::max(std::abs(rr.well_rate[w]), 1.0 / 86400.0)) { off = true; }
+                    }
+                }
+                disagree += off ? 1 : 0;
+                if (!ro.result.converged || ro.cycled || off || !rr.converged || rr.stalls) {
+                    std::string sets;
+                    for (const auto& s : ro.sets) { sets += " " + s; }
+                    worst = fmt::format("j {} target {} guess {}: outer {} passes{}{}{}, reduced {} it {} stalls{}"
+                                        " [{}] outer{} reduced{}", j, target, g, ro.passes,
+                                        ro.result.converged ? "" : " FAILED", ro.cycled ? " CYCLED" : "",
+                                        off ? " DISAGREES" : "", rr.iterations, rr.stalls,
+                                        rr.converged ? "" : " FAILED", sets,
+                                        rateList(outer, ro.result.well_rate), rateList(reduced, rr.well_rate));
+                }
+            }
+        }
+    }
+    std::string hist;
+    for (const auto& [n, k] : passes) { hist += fmt::format(" {}:{}", n, k); }
+    BOOST_TEST_MESSAGE(fmt::format("MODEL5, {} runs: outer {} failed, {} cycled, {} inconsistent, passes{}, {} it;"
+                                   " reduced {} failed, {} stalls, {} it; {} disagree",
+                                   runs, failed, cycled, inconsistent, hist, it_outer,
+                                   r_failed, r_stalls, it_reduced, disagree));
+    if (!worst.empty()) { BOOST_TEST_MESSAGE("worst: " << worst); }
+    BOOST_CHECK_EQUAL(failed, 0);
+    BOOST_CHECK_EQUAL(cycled, 0);
+    BOOST_CHECK_EQUAL(inconsistent, 0);
     BOOST_CHECK_EQUAL(disagree, 0);
 }
 
