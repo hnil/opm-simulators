@@ -77,6 +77,23 @@ reducedJacobianByElimination(const Sys& system)
     return S;
 }
 
+/// The same step without forming the Schur complement: with every row but
+/// the node rows satisfied at the reduced state, J dz = -[r; 0] has the
+/// reduced Newton step as its node-pressure part. One factorisation instead
+/// of N.
+template<class Sys>
+std::vector<typename Sys::ScalarType>
+reducedStepByElimination(const Sys& system, const std::vector<typename Sys::ScalarType>& r)
+{
+    using Scalar = typename Sys::ScalarType;
+    const auto J = system.jacobian(system.reducedState());
+    const int n = system.numNodes(), nf = system.size();
+    std::vector<Scalar> rhs(nf, Scalar{0}), dz;
+    for (int i = 0; i < n; ++i) { rhs[i] = -r[i]; }
+    if (!J.solve(rhs, dz)) { return {}; }
+    return std::vector<Scalar>(dz.begin(), dz.begin() + n);
+}
+
 /// Newton on the node pressures alone, with the tree walk as the well model:
 /// r(p) = p - branch(p_up, q(c(p))), c the wells' capacities at p, q what the
 /// walk makes of them. Continuous and piecewise smooth; the Jacobian is that
@@ -114,10 +131,12 @@ solveReduced(Sys& system,
             out.converged = true;
             break;
         }
-        DenseMatrix<Scalar> J(n);
+        std::vector<Scalar> dx;
         if (eliminate) {
-            J = reducedJacobianByElimination(system);
+            dx = reducedStepByElimination(system, r);
+            if (dx.empty()) { break; }
         } else {
+            DenseMatrix<Scalar> J(n);
             const Scalar h = Scalar{1e-3} * unit::barsa;
             for (int j = 0; j < n; ++j) {
                 auto pj = p;
@@ -126,10 +145,10 @@ solveReduced(Sys& system,
                 ++out.evaluations;
                 for (int i = 0; i < n; ++i) { J(i, j) = (rj[i] - r[i]) / h; }
             }
+            std::vector<Scalar> negative(n);
+            for (int i = 0; i < n; ++i) { negative[i] = -r[i]; }
+            if (!J.solve(negative, dx)) { break; }
         }
-        std::vector<Scalar> negative(n), dx;
-        for (int i = 0; i < n; ++i) { negative[i] = -r[i]; }
-        if (!J.solve(negative, dx)) { break; }
         Scalar alpha = 1;
         for (int i = 0; i < n; ++i) {
             if (std::abs(dx[i]) > max_step) { alpha = std::min(alpha, max_step / std::abs(dx[i])); }

@@ -1177,31 +1177,41 @@ public:
         if (!usesGroupActiveSet()) { return false; }
         bool changed = false;
         for (int g = 0; g < numGroups(); ++g) {
-            if (groups_[g].parent < 0) { resolveGroup(x, g, kNoLimit, changed); }
+            if (groups_[g].parent < 0) { resolveGroup(x, g, kNoLimit, nullptr, changed); }
         }
         return changed;
     }
 
-    void resolveGroup(const State& x, const int g, const Scalar share_on_own_mode,
-                      bool& changed)
+    /// `share` is on the parent's mode, `share_mode` its weights (null at the
+    /// root). Each of the two limits is weighed against the capacity measured
+    /// on its own mode, since an oil share and a liquid target cannot be
+    /// compared directly; the tighter one, by its ratio to that capacity,
+    /// holds, and the split below is on that limit's mode.
+    void resolveGroup(const State& x, const int g, const Scalar share,
+                      const std::array<Scalar, NP>* share_mode, bool& changed)
     {
         const auto& grp = groups_[g];
-        const auto cg = modeWeights(grp.mode, grp.resv_coeff);
+        const auto c_own = modeWeights(grp.mode, grp.resv_coeff);
         const Scalar own = (grp.target > Scalar{0}) ? grp.target : kNoLimit;
-        const Scalar bound = std::min(own, share_on_own_mode);
-
-        auto bind = GroupBind::Free;
-        if (bound < kNoLimit) {
+        constexpr Scalar loose = std::numeric_limits<Scalar>::infinity();
+        Scalar r_own = loose, r_share = loose;
+        if (own < kNoLimit) {
             // A limit the subtree cannot reach is not a limit.
-            const Scalar cap = childrenCapacity(x, g, cg);
-            if (bound < cap * (Scalar{1} - Scalar{1e-9})) {
-                bind = (own <= share_on_own_mode) ? GroupBind::Own : GroupBind::Share;
-            }
+            const Scalar cap = childrenCapacity(x, g, c_own);
+            if (own < cap * (Scalar{1} - Scalar{1e-9})) { r_own = own / cap; }
         }
+        if (share_mode && share < kNoLimit) {
+            const Scalar cap = childrenCapacity(x, g, *share_mode);
+            if (share < cap * (Scalar{1} - Scalar{1e-9})) { r_share = share / cap; }
+        }
+        auto bind = GroupBind::Free;
+        if (r_own < loose && r_own <= r_share) { bind = GroupBind::Own; }
+        else if (r_share < loose) { bind = GroupBind::Share; }
+        const auto& cg = (bind == GroupBind::Share) ? *share_mode : c_own;
+        const Scalar bound = (bind == GroupBind::Own) ? own : (bind == GroupBind::Share) ? share : Scalar{0};
         if (std::getenv("OPM_TREE_DBG")) {
-            std::fprintf(stderr, "[tree] g=%s own=%g share=%g bound=%g cap=%g -> %d\n",
-                         grp.name.c_str(), own * 86400.0, share_on_own_mode * 86400.0,
-                         bound * 86400.0, childrenCapacity(x, g, cg) * 86400.0,
+            std::fprintf(stderr, "[tree] g=%s own=%g (r %g) share=%g (r %g) -> %d\n",
+                         grp.name.c_str(), own * 86400.0, r_own, share * 86400.0, r_share,
                          static_cast<int>(bind));
         }
         changed |= (bind != group_bind_[g]);
@@ -1224,19 +1234,18 @@ public:
             guide[nk + i] = w.guide;
             cap[nk + i] = w.efficiency * wellCapOnMode(x, mine[i], own_allowance_[mine[i]], cg);
         }
-        const auto share = shareByGuide<Scalar>(guide, pooled,
-                                                cap, bind == GroupBind::Free ? Scalar{0} : bound);
+        const auto split = shareByGuide<Scalar>(guide, pooled, cap, bound);
 
         for (int i = 0; i < nk; ++i) {
             const Scalar eff = groups_[kids[i]].efficiency;
-            const Scalar down = (share[i] < kNoLimit && eff > Scalar{0}) ? share[i] / eff : kNoLimit;
-            resolveGroup(x, kids[i], down, changed);
+            const Scalar down = (split[i] < kNoLimit && eff > Scalar{0}) ? split[i] / eff : kNoLimit;
+            resolveGroup(x, kids[i], down, bind == GroupBind::Free ? nullptr : &cg, changed);
         }
         for (int i = 0; i < nw; ++i) {
             const int w = mine[i];
             if (controls_[w] == Control::Shut) { continue; }
-            const bool held = share[nk + i] < cap[nk + i];
-            tree_rate_[w] = held ? oilForShare(w, share[nk + i], cg) : own_allowance_[w];
+            const bool held = split[nk + i] < cap[nk + i];
+            tree_rate_[w] = held ? oilForShare(w, split[nk + i], cg) : own_allowance_[w];
             const auto wanted = held ? Control::Tree : own_control_[w];
             changed |= (wanted != controls_[w]);
             controls_[w] = wanted;
@@ -1604,6 +1613,16 @@ public:
                     q += nodes_[c].efficiency * x[qIdx(c, ph)];
                 }
                 x[qIdx(n, ph)] = q;
+            }
+        }
+        // Group rates from the wells beneath, parents after children, so a
+        // mode conversion on the first pass reads a composition, not zeros.
+        for (int g = numGroups() - 1; g >= 0; --g) {
+            for (int ph = 0; ph < NP; ++ph) {
+                Scalar q = 0;
+                for (const int c : group_children_[g]) { q += groups_[c].efficiency * x[gqIdx(c, ph)]; }
+                for (const int w : group_wells_[g]) { q += wells_[w].efficiency * x[qwIdx(w, ph)]; }
+                x[gqIdx(g, ph)] = q;
             }
         }
         x[lambdaIdx()] = lambda0();

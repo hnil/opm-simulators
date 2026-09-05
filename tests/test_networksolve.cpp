@@ -100,6 +100,8 @@
 #include <memory>
 #include <iomanip>
 #include <cmath>
+#include <random>
+#include <chrono>
 #include <functional>
 #include <string>
 #include <vector>
@@ -4128,6 +4130,13 @@ BOOST_AUTO_TEST_CASE(the_group_jacobian_matches_differences)
             x[sys.wellRateIndex(w, 1)] *= 0.83;
             x[sys.wellBhpIndex(w)] += convert::from(4.0, bars);
         }
+        // The group unknowns too: start() seeds the group rates from the
+        // wells and parks every multiplier at the ceiling, which is a kink of
+        // the ceiling's phi.
+        for (int g = 0; g < sys.numGroups(); ++g) {
+            for (int ph = 0; ph < TreeCase::Sys::NP; ++ph) { x[sys.gqIdx(g, ph)] *= 0.91; }
+            x[sys.glIdx(g)] *= 0.7;
+        }
         const auto J = sys.jacobian(x);
         const auto r0 = sys.residual(x);
         const int n = sys.size();
@@ -4147,7 +4156,9 @@ BOOST_AUTO_TEST_CASE(the_group_jacobian_matches_differences)
         }
         BOOST_TEST_MESSAGE(sh.what << ": " << n << " unknowns, worst entry mismatch "
                            << 100 * worst << " % at (" << worst_i << "," << worst_j << ")");
-        BOOST_CHECK_LT(worst, 1e-4);
+        // A one-sided difference of phi carries its curvature; a wrong
+        // derivative shows as tens of percent, not tenths of a permille.
+        BOOST_CHECK_LT(worst, 1e-3);
     }
 }
 
@@ -4257,8 +4268,29 @@ namespace {
         sys.updateControls(x);      // the capacities at this state's pressures
         GuideRate guide_rate{schedule};
         DeferredLogger logger;
+        // Potentials for every well and, summed beneath, every group: a
+        // guide rate on a mode other than oil -- a liquid target over oil
+        // children -- is read off the potentials, and a group with none is
+        // a lookup failure inside the balancer.
+        const auto& groups = sys.groups();
+        std::vector<std::array<double, 3>> gpot(sys.numGroups(), {0.0, 0.0, 0.0});   // oil, gas, water
         for (int w = 0; w < sys.numWells(); ++w) {
-            guide_rate.compute(sys.wells()[w].name, step, 0.0, sys.wells()[w].guide, 0.0, 0.0);
+            // The well's guide as its oil potential, the other phases in the
+            // well's proportions at its bhp limit, so a group's guide on any
+            // mode is the sum of its wells' -- the system's own rule.
+            const auto& well = sys.wells()[w];
+            const double bhp = well.bhp_limit;
+            const double oil = std::max(well.ipr_a[1] + well.ipr_b[1] * bhp, 1e-30);
+            const std::array<double, 3> pot{well.guide,
+                                            well.guide * std::max(well.ipr_a[2] + well.ipr_b[2] * bhp, 0.0) / oil,
+                                            well.guide * std::max(well.ipr_a[0] + well.ipr_b[0] * bhp, 0.0) / oil};
+            guide_rate.compute(well.name, step, 0.0, pot[0], pot[1], pot[2]);
+            for (int g = well.group; g >= 0; g = groups[g].parent) {
+                for (int i = 0; i < 3; ++i) { gpot[g][i] += well.efficiency * pot[i]; }
+            }
+        }
+        for (int g = 0; g < sys.numGroups(); ++g) {
+            guide_rate.compute(groups[g].name, step, 0.0, gpot[g][0], gpot[g][1], gpot[g][2]);
         }
         auto wmode = [](const Sys::Mode m) {
             switch (m) {
@@ -4277,7 +4309,6 @@ namespace {
             }
         };
         ProdGroupTreeBalancer::Tree<double> tree;
-        const auto& groups = sys.groups();
         for (int g = 0; g < sys.numGroups(); ++g) {
             ProdGroupTreeNode<double> n;
             n.name = groups[g].name;
@@ -4285,6 +4316,9 @@ namespace {
             n.parent = groups[g].parent >= 0 ? groups[groups[g].parent].name : std::string{};
             n.availableForGroupControl = true;
             n.efficiencyFactor = groups[g].efficiency;
+            // As populateGroupNode(): a group has a guide rate only if the
+            // deck defines one (GCONPROD item 9); none of these do.
+            n.hasGuideRate = false;
             const bool has_target = groups[g].target > 0.0;
             n.modeCategory = has_target ? ProdNodeModeCategory::Individual
                                         : ProdNodeModeCategory::Group;
@@ -4733,9 +4767,16 @@ namespace {
         std::map<std::string, int> gidx;
         std::string description;
 
+        struct FromText {};
         explicit DeckTrees(const std::string& path)
+            : DeckTrees(Parser{}.parseFile(path))
+        {}
+        DeckTrees(const std::string& text, FromText)
+            : DeckTrees(Parser{}.parseString(text))
+        {}
+        explicit DeckTrees(Deck parsed)
         {
-            deck = std::make_unique<Deck>(Parser{}.parseFile(path));
+            deck = std::make_unique<Deck>(std::move(parsed));
             es = std::make_unique<EclipseState>(*deck);
             schedule = std::make_unique<Schedule>(*deck, *es);
             for (const auto& kw : deck->getKeywordList("VFPPROD")) {
@@ -5071,6 +5112,496 @@ BOOST_AUTO_TEST_CASE(model5_sweep)
     BOOST_CHECK_EQUAL(cycled, 0);
     BOOST_CHECK_EQUAL(inconsistent, 0);
     BOOST_CHECK_EQUAL(disagree, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Generated two-tree cases.
+//
+// Random instances at three sizes, as deck text, so the reader above and
+// Stein's oracle apply unchanged. Groups form one tree (GRUPTREE); a subset
+// of them are nodes and form another (BRANPROP) with its own parents, so the
+// two structures share names and wells and nothing else. Wells sit in random
+// groups; targets on about a third of the groups, mostly oil, some liquid,
+// set between what the subtree could make and well above it.
+// ---------------------------------------------------------------------------
+namespace {
+    struct GenSpec { int wells, nodes, groups; unsigned seed; };
+
+    std::string vfpprodTable(const int number, const std::vector<double>& flo,
+                             const std::vector<double>& thp,
+                             const std::function<double(double, double)>& bhp)
+    {
+        std::string t = fmt::format("VFPPROD\n {} 2000 'LIQ' 'WCT' 'GOR' 'THP' 'GRAT' 'METRIC' 'BHP' /\n", number);
+        for (const double f : flo) { t += fmt::format(" {}", f); }
+        t += " /\n";
+        for (const double p : thp) { t += fmt::format(" {}", p); }
+        t += " /\n 0.0 0.5 /\n 50 500 /\n 0 /\n";
+        for (std::size_t i = 0; i < thp.size(); ++i) {
+            for (int wfr = 1; wfr <= 2; ++wfr) {
+                for (int gfr = 1; gfr <= 2; ++gfr) {
+                    t += fmt::format(" {} {} {} 1", i + 1, wfr, gfr);
+                    for (const double f : flo) { t += fmt::format(" {:.3f}", bhp(thp[i], f)); }
+                    t += " /\n";
+                }
+            }
+        }
+        return t;
+    }
+
+    /// Everything before SCHEDULE: a grid with a cell per well, and the
+    /// dimensions the tree and the network need.
+    std::string deckPreamble(const int W, const int G, const int N)
+    {
+        const int nx = 20, ny = (W + nx - 1) / nx, cells = nx * ny * 2;
+        std::string d;
+        d += "RUNSPEC\nTITLE\nGENERATED_TWO_TREES\nDIMENS\n";
+        d += fmt::format(" {} {} 2 /\nOIL\nWATER\nGAS\nDISGAS\nMETRIC\nSTART\n 1 'JAN' 2020 /\n", nx, ny);
+        d += fmt::format("WELLDIMS\n {} 2 {} {} /\n", W, G + 2, W);
+        d += "EQLDIMS\n 1 1* 25 1* 1 /\nTABDIMS\n 1 1 50 60 1 60 1 1 /\nVFPPDIMS\n 10 8 2 2 1 2 /\n";
+        d += fmt::format("NETWORK\n {} {} /\nUNIFOUT\n", N + 1, N + 1);
+        d += "GRID\nINIT\nDXV\n" + fmt::format("{}*1000 /\nDYV\n{}*1000 /\nDZV\n50 50 /\nTOPS\n{}*7000 /\n", nx, ny, nx * ny);
+        d += fmt::format("PORO\n{0}*0.2 /\nPERMX\n{0}*200 /\nPERMY\n{0}*200 /\nPERMZ\n{0}*20 /\n", cells);
+        d += "PROPS\nSWOF\n 0.2 0 1 0\n 0.3 0.07 0.8 0\n 1.0 1 0 0 /\nSGOF\n 0 0 1 0\n 0.05 0 0.8 0\n 0.79 1 0 0 /\n";
+        d += "DENSITY\n 800 1000 1 /\nPVTW\n 1 1.0 4.0E-5 0.5 0.0 /\nPVDG\n 1 1.0 0.01\n 100 0.1 0.015\n 300 0.033 0.02 /\n";
+        d += "PVTO\n 1 50 1.2 1.0\n 150 1.15 1.1\n 300 1.10 1.2 /\n 10 150 1.25 0.9\n 250 1.20 1.0\n 350 1.15 1.1 /\n/\n";
+        d += fmt::format("REGIONS\nEQLNUM\n{}*1 /\nSOLUTION\nEQUIL\n 7000 270 7050 0 7000 0 1* 0 0 /\nSUMMARY\nFOPR\nSCHEDULE\n", cells);
+        return d;
+    }
+
+    std::string generateDeck(const GenSpec& spec, std::string* summary)
+    {
+        std::mt19937 rng(spec.seed);
+        auto uniform = [&](const double a, const double b) {
+            return std::uniform_real_distribution<double>(a, b)(rng);
+        };
+        auto pick = [&](const int n) { return std::uniform_int_distribution<int>(0, n - 1)(rng); };
+
+        const int W = spec.wells, G = spec.groups, N = spec.nodes;
+        const int nx = 20;
+        std::string d = deckPreamble(W, G, N);
+
+        // Tables: a well curve with a loading hump, a branch with a linear drop.
+        d += vfpprodTable(1, {10, 200, 500, 1000, 1500, 2000, 3000, 4500, 6000, 8000},
+                          {5, 10, 20, 40, 60, 80, 100, 130},
+                          [](const double thp, const double q) {
+                              const double u = (q - 1500.0) / 1500.0;
+                              return thp + 90.0 + 30.0 * u * u;
+                          });
+        d += vfpprodTable(2, {10, 500, 1000, 2000, 4000, 8000, 12000, 20000, 30000, 50000},
+                          {2, 5, 10, 20, 40, 60, 80, 100},
+                          [](const double thp, const double q) { return thp + 1.0 + 4.0 * q / 5000.0; });
+
+        // The group tree: PLAT under FIELD, every other group under PLAT or a
+        // group before it, depth at most 4.
+        std::vector<std::string> gname{"PLAT"};
+        std::vector<int> gparent{-1}, gdepth{1};
+        for (int g = 1; g < G; ++g) {
+            gname.push_back(fmt::format("G{}", g));
+            int par;
+            do { par = pick(g); } while (gdepth[par] >= 4);
+            gparent.push_back(par);
+            gdepth.push_back(gdepth[par] + 1);
+        }
+        d += "GRUPTREE\n 'PLAT' 'FIELD' /\n";
+        for (int g = 1; g < G; ++g) { d += fmt::format(" '{}' '{}' /\n", gname[g], gname[gparent[g]]); }
+        d += "/\n";
+
+        // The flow network: PLAT is the terminal; N-1 other groups are nodes,
+        // each hung under an earlier node -- not its group parent.
+        std::vector<int> node_of_group(G, -1);
+        std::vector<int> nodes{0};
+        node_of_group[0] = 0;
+        {
+            std::vector<int> candidates;
+            for (int g = 1; g < G; ++g) { candidates.push_back(g); }
+            std::shuffle(candidates.begin(), candidates.end(), rng);
+            for (int i = 0; i < std::min(N - 1, G - 1); ++i) {
+                node_of_group[candidates[i]] = static_cast<int>(nodes.size());
+                nodes.push_back(candidates[i]);
+            }
+        }
+        std::vector<int> ndepth(nodes.size(), 0);
+        d += "BRANPROP\n";
+        for (std::size_t n = 1; n < nodes.size(); ++n) {
+            int up;
+            do { up = pick(static_cast<int>(n)); } while (ndepth[up] >= 3);
+            ndepth[n] = ndepth[up] + 1;
+            d += fmt::format(" '{}' '{}' 2 1* /\n", gname[nodes[n]], gname[nodes[up]]);
+        }
+        d += "/\nNODEPROP\n 'PLAT' 20.0 NO NO 1* /\n";
+        for (std::size_t n = 1; n < nodes.size(); ++n) { d += fmt::format(" '{}' 1* NO NO 1* /\n", gname[nodes[n]]); }
+        d += "/\n";
+
+        // Wells: a random leaf group -- a group holds wells or groups, not
+        // both -- own ORAT limit, bhp limit 100, the well table.
+        std::vector<int> leaves;
+        for (int g = 0; g < G; ++g) {
+            if (std::find(gparent.begin(), gparent.end(), g) == gparent.end()) { leaves.push_back(g); }
+        }
+        std::vector<int> wgroup(W);
+        std::vector<double> worat(W);
+        std::string ws = "WELSPECS\n", cd = "COMPDAT\n", wc = "WCONPROD\n";
+        for (int w = 0; w < W; ++w) {
+            // Every leaf gets a well before any gets a second: an empty group
+            // has no guide rate, and the oracle's tree cannot hold one.
+            wgroup[w] = (w < static_cast<int>(leaves.size()))
+                ? leaves[w] : leaves[pick(static_cast<int>(leaves.size()))];
+            worat[w] = std::round(uniform(800.0, 3000.0));
+            const int i = w % nx + 1, j = w / nx + 1;
+            ws += fmt::format(" 'W{}' '{}' {} {} 7000 'OIL' /\n", w + 1, gname[wgroup[w]], i, j);
+            cd += fmt::format(" 'W{}' {} {} 1 2 'OPEN' 1* 1* 0.2 /\n", w + 1, i, j);
+            wc += fmt::format(" 'W{}' 'OPEN' 'GRUP' {} 4* 100 1* 1 /\n", w + 1, worat[w]);
+        }
+        d += ws + "/\n" + cd + "/\n" + wc + "/\n";
+
+        // Targets on about a third of the groups: between 40 % and 90 % of
+        // the ORAT limits beneath, or well above them, mostly oil, some liquid.
+        std::vector<double> beneath(G, 0.0);
+        for (int w = 0; w < W; ++w) {
+            for (int g = wgroup[w]; g >= 0; g = gparent[g]) { beneath[g] += worat[w]; }
+        }
+        std::string gc = "GCONPROD\n";
+        int targets = 0, liquid = 0;
+        for (int g = 0; g < G; ++g) {
+            if (beneath[g] <= 0.0 || uniform(0.0, 1.0) > 0.35) { continue; }
+            const double frac = uniform(0.0, 1.0) < 0.8 ? uniform(0.4, 0.9) : uniform(1.5, 3.0);
+            const bool lrat = uniform(0.0, 1.0) < 0.25;
+            const double value = std::round(frac * beneath[g] * (lrat ? 1.25 : 1.0));
+            gc += lrat ? fmt::format(" '{}' 'LRAT' 1* 1* 1* {} 'RATE' /\n", gname[g], value)
+                       : fmt::format(" '{}' 'ORAT' {} 3* 'RATE' /\n", gname[g], value);
+            ++targets;
+            liquid += lrat ? 1 : 0;
+        }
+        d += gc + "/\nTSTEP\n1 /\nEND\n";
+        if (summary) {
+            *summary = fmt::format("{} wells, {} groups ({} with a target, {} of them liquid), {} nodes",
+                                   W, G, targets, liquid, nodes.size());
+        }
+        return d;
+    }
+}
+
+BOOST_AUTO_TEST_CASE(generated_two_tree_cases)
+{
+    const NetworkSolve::Parameters<double> params{1e-2, 80};
+    struct Size { int wells, nodes, groups, seeds; };
+    const std::vector<Size> sizes{{10, 4, 4, 6}, {50, 15, 12, 4}, {200, 40, 30, 2}};
+    for (const auto& sz : sizes) {
+        int runs = 0, failed = 0, cycled = 0, inconsistent = 0, r_failed = 0, r_stalls = 0,
+            disagree = 0, two_solutions = 0, oracle_off = 0, oracle_violates = 0, oracle_rejected = 0,
+            max_passes = 0, off_branch_total = 0;
+        long it_outer = 0, it_reduced = 0, look_outer = 0, look_reduced = 0;
+        double ms_outer = 0.0, ms_reduced = 0.0, ms_oracle = 0.0;
+        for (int seed = 1; seed <= sz.seeds; ++seed) {
+            std::string what;
+            const auto text = generateDeck({sz.wells, sz.nodes, sz.groups, static_cast<unsigned>(seed)}, &what);
+            DeckTrees dt(text, DeckTrees::FromText{});
+            for (const double j : {1.0, 2.5}) {
+                DeckTrees::Ipr ipr; ipr.j_scale = j;
+                auto outer = dt.build(0, ipr);
+                auto reduced = dt.build(0, ipr);
+                outer.resetLookups(); reduced.resetLookups();
+                const auto guess = dt.guess(20.0);
+                using clock = std::chrono::steady_clock;
+                auto t0 = clock::now();
+                const auto ro = NetworkSolve::solveWithTree(outer, guess, params, NetworkSolve::FullStep{});
+                auto t1 = clock::now();
+                const auto rr = NetworkSolve::solveReduced(reduced, guess, params, true);
+                auto t2 = clock::now();
+                ms_outer += std::chrono::duration<double, std::milli>(t1 - t0).count();
+                ms_reduced += std::chrono::duration<double, std::milli>(t2 - t1).count();
+                ++runs;
+                failed += ro.result.converged ? 0 : 1;
+                cycled += ro.cycled ? 1 : 0;
+                inconsistent += (ro.result.converged && !ro.consistent) ? 1 : 0;
+                r_failed += rr.converged ? 0 : 1;
+                r_stalls += rr.stalls;
+                it_outer += ro.inner_iterations; it_reduced += rr.iterations;
+                look_outer += outer.lookups(); look_reduced += reduced.lookups();
+                max_passes = std::max(max_passes, ro.passes);
+                bool off = false;
+                if (ro.result.converged && rr.converged) {
+                    for (int w = 0; w < outer.numWells(); ++w) {
+                        if (std::abs(ro.result.well_rate[w] - rr.well_rate[w])
+                            > 0.005 * std::max(std::abs(rr.well_rate[w]), 1.0 / 86400.0)) { off = true; }
+                    }
+                }
+                // Two different answers, each self-consistent by the walk, are
+                // two fixed points, not a fault of either route.
+                if (off && ro.consistent) { ++two_solutions; off = false; }
+                disagree += off ? 1 : 0;
+                // The oracle against the reduced answer, whose wells are on the
+                // stable crossing by construction; and how many of the outer
+                // loop's thp wells are not -- its Newton can land on the hump.
+                double worst_gap = 0.0, worst_gap_outer = 0.0;
+                bool rejected = false;
+                int off_branch = 0;
+                if (rr.converged) {
+                    auto t3 = clock::now();
+                    const auto stein = steinAllocation(reduced, reduced.reducedState(), *dt.schedule, 0);
+                    ms_oracle += std::chrono::duration<double, std::milli>(clock::now() - t3).count();
+                    if (stein.empty()) { rejected = true; ++oracle_rejected; }
+                    else {
+                        for (int w = 0; w < reduced.numWells(); ++w) {
+                            const double mine = rr.well_rate[w] * 86400.0;
+                            worst_gap = std::max(worst_gap, std::abs(mine - stein[w]) / std::max(std::abs(stein[w]), 1.0));
+                        }
+                        // An oracle allocation above some group's own limit is
+                        // the balancer walking through a transparent group
+                        // (a_nested_target_under_a_transparent_group), not a
+                        // disagreement about the answer.
+                        bool violates = false;
+                        const auto& groups = reduced.groups();
+                        for (int g = 0; g < reduced.numGroups() && !violates; ++g) {
+                            if (!(groups[g].target > 0.0)) { continue; }
+                            const auto c = DeckTrees::Sys::modeWeights(groups[g].mode, {});
+                            double on = 0.0;
+                            for (int w = 0; w < reduced.numWells(); ++w) {
+                                bool under = false;
+                                for (int a = reduced.wells()[w].group; a >= 0; a = groups[a].parent) { if (a == g) { under = true; break; } }
+                                if (!under) { continue; }
+                                const auto& well = reduced.wells()[w];
+                                const double q_oil = stein[w] / 86400.0;
+                                const double bhp = (q_oil - well.ipr_a[1]) / well.ipr_b[1];
+                                for (int ph = 0; ph < DeckTrees::Sys::NP; ++ph) { on += c[ph] * std::max(well.ipr_a[ph] + well.ipr_b[ph] * bhp, 0.0); }
+                            }
+                            if (on > groups[g].target * 1.005) { violates = true; }
+                        }
+                        if (worst_gap > 0.005) { (violates ? oracle_violates : oracle_off) += 1; }
+                    }
+                }
+                if (ro.result.converged) {
+                    const auto stein = steinAllocation(outer, ro.result.state, *dt.schedule, 0);
+                    for (int w = 0; w < outer.numWells() && !stein.empty(); ++w) {
+                        const double mine = ro.result.well_rate[w] * 86400.0;
+                        worst_gap_outer = std::max(worst_gap_outer, std::abs(mine - stein[w]) / std::max(std::abs(stein[w]), 1.0));
+                    }
+                    for (int w = 0; w < outer.numWells(); ++w) {
+                        if (outer.control(w) != DeckTrees::Sys::Control::Thp) { continue; }
+                        const auto& well = outer.wells()[w];
+                        const double p_node = ro.result.node_pressure[well.node];
+                        const double q_cross = outer.thpPotential(well, p_node);
+                        if (q_cross > 0.0 && q_cross < std::numeric_limits<double>::max()
+                            && std::abs(q_cross - ro.result.well_rate[w]) > 0.01 * q_cross) { ++off_branch; }
+                    }
+                    off_branch_total += off_branch;
+                }
+                if (!ro.result.converged || ro.cycled || !ro.consistent || off || !rr.converged
+                    || rr.stalls || rejected || worst_gap > 0.005 || off_branch) {
+                    std::string sets;
+                    for (const auto& s : ro.sets) { sets += " " + s; }
+                    BOOST_TEST_MESSAGE(fmt::format(
+                        "  seed {} j {}: {}; outer {} passes / {} it{}{}{}, {} thp wells off the stable crossing,"
+                        " oracle gap {:.3g} %; reduced {} it {} stalls{}, oracle {}{}",
+                        seed, j, what, ro.passes, ro.inner_iterations,
+                        ro.result.converged ? "" : " FAILED", ro.cycled ? " CYCLED" : "",
+                        ro.consistent ? "" : " INCONSISTENT", off_branch, 100 * worst_gap_outer,
+                        rr.iterations, rr.stalls, rr.converged ? "" : " FAILED",
+                        rejected ? "rejected" : fmt::format("gap {:.3g} %", 100 * worst_gap),
+                        off ? "; outer/reduced DISAGREE" : "")
+                        + (sz.wells <= 10 ? " sets" + sets : std::string{}));
+                }
+            }
+        }
+        BOOST_TEST_MESSAGE(fmt::format(
+            "{}/{}/{} wells/nodes/groups, {} runs: outer {} failed, {} cycled, {} inconsistent, max {} passes,"
+            " {} it, {} lookups, {:.1f} ms/run; reduced {} failed, {} stalls, {} it, {} lookups, {:.1f} ms/run;"
+            " {} disagree, {} two self-consistent answers; {} outer thp wells off the stable crossing;"
+            " oracle vs reduced {} rejected, {} off, {} above a group's own limit, {:.1f} ms/run",
+            sz.wells, sz.nodes, sz.groups, runs, failed, cycled, inconsistent, max_passes, it_outer,
+            look_outer, ms_outer / runs, r_failed, r_stalls, it_reduced, look_reduced, ms_reduced / runs,
+            disagree, two_solutions, off_branch_total, oracle_rejected, oracle_off, oracle_violates,
+            ms_oracle / std::max(runs, 1)));
+        BOOST_CHECK_EQUAL(failed, 0);
+        BOOST_CHECK_EQUAL(cycled, 0);
+        BOOST_CHECK_EQUAL(inconsistent, 0);
+        BOOST_CHECK_EQUAL(r_failed, 0);
+        BOOST_CHECK_EQUAL(disagree, 0);
+        BOOST_CHECK_EQUAL(oracle_rejected, 0);
+        BOOST_CHECK_EQUAL(oracle_off, 0);
+    }
+}
+
+// The smallest generated instance that goes wrong, in full: the two trees,
+// what each well may make, what each route and the oracle gave it, and --
+// for a singular first Jacobian -- which bound group has no held child.
+// A group's own target two levels under a bound parent, with a transparent
+// group between: seed 3 of the generator in three wells. PLAT wants 3000;
+// G5 may make 500 of it, W1 2000, so PLAT cannot be met and G5 must stay at
+// 500. The oracle is held to it as well.
+BOOST_AUTO_TEST_CASE(a_nested_target_under_a_transparent_group)
+{
+    std::string d = deckPreamble(3, 5, 2);
+    d += "BRANPROP\n 'G1' 'PLAT' 9999 1* /\n/\nNODEPROP\n 'PLAT' 20.0 NO NO 1* /\n 'G1' 1* NO NO 1* /\n/\n";
+    d += "GRUPTREE\n 'PLAT' 'FIELD' /\n 'G1' 'PLAT' /\n 'G3' 'PLAT' /\n 'G5' 'G3' /\n/\n";
+    d += "WELSPECS\n 'W1' 'G1' 1 1 7000 'OIL' /\n 'W2' 'G5' 2 1 7000 'OIL' /\n 'W3' 'G5' 3 1 7000 'OIL' /\n/\n";
+    d += "COMPDAT\n 'W1' 1 1 1 2 'OPEN' 1* 1* 0.2 /\n 'W2' 2 1 1 2 'OPEN' 1* 1* 0.2 /\n 'W3' 3 1 1 2 'OPEN' 1* 1* 0.2 /\n/\n";
+    d += "WCONPROD\n 'W1' 'OPEN' 'GRUP' 2000 4* 100 /\n 'W2' 'OPEN' 'GRUP' 2000 4* 100 /\n 'W3' 'OPEN' 'GRUP' 2000 4* 100 /\n/\n";
+    d += "GCONPROD\n 'PLAT' 'ORAT' 3000 3* 'RATE' /\n 'G5' 'ORAT' 500 3* 'RATE' /\n/\nTSTEP\n1 /\nEND\n";
+    DeckTrees dt(d, DeckTrees::FromText{});
+    auto sys = dt.build(0, {});
+    const NetworkSolve::Parameters<double> params{1e-2, 80};
+    const auto rr = NetworkSolve::solveReduced(sys, dt.guess(20.0), params, true);
+    BOOST_REQUIRE(rr.converged);
+    const auto stein = steinAllocation(sys, sys.reducedState(), *dt.schedule, 0);
+    BOOST_REQUIRE(!stein.empty());
+    std::string both;
+    double g5_mine = 0.0, g5_stein = 0.0;
+    for (int w = 0; w < sys.numWells(); ++w) {
+        both += fmt::format(" {}={:.1f}/{:.1f}", sys.wells()[w].name, rr.well_rate[w] * 86400.0, stein[w]);
+        if (w > 0) { g5_mine += rr.well_rate[w] * 86400.0; g5_stein += stein[w]; }
+    }
+    BOOST_TEST_MESSAGE("reduced/stein:" << both << fmt::format("  G5 total {:.1f} / {:.1f} against its 500",
+                                                                g5_mine, g5_stein));
+    BOOST_CHECK_CLOSE(g5_mine, 500.0, 0.5);
+    BOOST_CHECK_CLOSE(rr.well_rate[0] * 86400.0, 2000.0, 0.5);
+    // The balancer, as vendored, hands G5 2000: a group's own limit under a
+    // group without a guide rate is walked through. Recorded, not enforced.
+    BOOST_WARN_LE(g5_stein, 500.0 * 1.005);
+}
+
+// The 200-well instance where the two routes stop at different answers,
+// each self-consistent by its own walk: the groups of both, the totals under
+// every target, and whether the outer loop started from the reduced answer
+// stays there.
+BOOST_AUTO_TEST_CASE(generated_large_disagreement)
+{
+    using Sys = DeckTrees::Sys;
+    const NetworkSolve::Parameters<double> params{1e-2, 80};
+    std::string what;
+    const auto text = generateDeck({200, 40, 30, 2u}, &what);
+    DeckTrees dt(text, DeckTrees::FromText{});
+    for (const double j : {1.0, 2.5}) {
+        DeckTrees::Ipr ipr; ipr.j_scale = j;
+        auto reduced = dt.build(0, ipr);
+        auto outer = dt.build(0, ipr);
+        auto again = dt.build(0, ipr);
+        const auto rr = NetworkSolve::solveReduced(reduced, dt.guess(20.0), params, true);
+        const auto ro = NetworkSolve::solveWithTree(outer, dt.guess(20.0), params, NetworkSolve::FullStep{});
+        BOOST_REQUIRE(rr.converged && ro.result.converged);
+        const auto ra = NetworkSolve::solveWithTree(again, rr.node_pressure, params, NetworkSolve::FullStep{});
+        const auto stein_r = steinAllocation(reduced, reduced.reducedState(), *dt.schedule, 0);
+        const auto stein_o = steinAllocation(outer, ro.result.state, *dt.schedule, 0);
+        reduced.updateControls(reduced.reducedState());
+        outer.updateControls(ro.result.state);
+        int differ = 0, again_differ = 0;
+        double total_r = 0.0, total_o = 0.0;
+        for (int w = 0; w < reduced.numWells(); ++w) {
+            total_r += rr.well_rate[w]; total_o += ro.result.well_rate[w];
+            if (std::abs(rr.well_rate[w] - ro.result.well_rate[w]) > 0.005 * std::max(rr.well_rate[w], 1e-9)) { ++differ; }
+            if (ra.result.converged && std::abs(rr.well_rate[w] - ra.result.well_rate[w]) > 0.005 * std::max(rr.well_rate[w], 1e-9)) { ++again_differ; }
+        }
+        BOOST_TEST_MESSAGE(fmt::format(
+            "j {}: {}; reduced {} it, outer {} passes / {} it; {} of {} wells differ; totals {:.0f} / {:.0f};"
+            " outer from the reduced answer: {} passes / {} it{}, {} wells differ from reduced",
+            j, what, rr.iterations, ro.passes, ro.inner_iterations, differ, reduced.numWells(),
+            total_r * 86400.0, total_o * 86400.0, ra.passes, ra.inner_iterations,
+            ra.consistent ? "" : " INCONSISTENT", again_differ));
+        const auto& groups = reduced.groups();
+        auto under = [&](const Sys& sys, const std::vector<double>& q, const int g) {
+            double t = 0.0;
+            for (int w = 0; w < sys.numWells(); ++w) {
+                for (int a = sys.wells()[w].group; a >= 0; a = groups[a].parent) {
+                    if (a == g) { t += q[w]; break; }
+                }
+            }
+            return t;
+        };
+        std::vector<double> qs_r(stein_r.size()), qs_o(stein_o.size());
+        for (std::size_t w = 0; w < stein_r.size(); ++w) { qs_r[w] = stein_r[w] / 86400.0; }
+        for (std::size_t w = 0; w < stein_o.size(); ++w) { qs_o[w] = stein_o[w] / 86400.0; }
+        std::string gl;
+        for (int g = 0; g < reduced.numGroups(); ++g) {
+            if (!(groups[g].target > 0.0)) { continue; }
+            auto letter = [](const Sys::GroupBind b) { return b == Sys::GroupBind::Free ? 'F' : b == Sys::GroupBind::Own ? 'O' : 'S'; };
+            gl += fmt::format("\n    {:5} <- {:5} {} {:7.0f}: reduced {:7.0f} [{}] stein {:7.0f} | outer {:7.0f} [{}] stein {:7.0f}",
+                              groups[g].name, groups[g].parent >= 0 ? groups[groups[g].parent].name : "-",
+                              groups[g].mode == Sys::Mode::Liquid ? "LRAT" : "ORAT", groups[g].target * 86400.0,
+                              under(reduced, rr.well_rate, g) * 86400.0 * (groups[g].mode == Sys::Mode::Liquid ? 1.25 : 1.0),
+                              letter(reduced.groupBind(g)),
+                              stein_r.empty() ? 0.0 : under(reduced, qs_r, g) * 86400.0 * (groups[g].mode == Sys::Mode::Liquid ? 1.25 : 1.0),
+                              under(outer, ro.result.well_rate, g) * 86400.0 * (groups[g].mode == Sys::Mode::Liquid ? 1.25 : 1.0),
+                              letter(outer.groupBind(g)),
+                              stein_o.empty() ? 0.0 : under(outer, qs_o, g) * 86400.0 * (groups[g].mode == Sys::Mode::Liquid ? 1.25 : 1.0));
+        }
+        BOOST_TEST_MESSAGE("  targets (liquid totals for LRAT, oil otherwise):" << gl);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(generated_case_anatomy)
+{
+    using Sys = DeckTrees::Sys;
+    const NetworkSolve::Parameters<double> params{1e-2, 80};
+    int shown = 0;
+    for (int seed = 1; seed <= 60 && shown < 3; ++seed) {
+        std::string what;
+        const auto text = generateDeck({20, 6, 6, static_cast<unsigned>(seed)}, &what);
+        DeckTrees dt(text, DeckTrees::FromText{});
+        DeckTrees::Ipr ipr; ipr.j_scale = 2.5;
+        auto reduced = dt.build(0, ipr);
+        auto outer = dt.build(0, ipr);
+        const auto rr = NetworkSolve::solveReduced(reduced, dt.guess(20.0), params, true);
+        const auto ro = NetworkSolve::solveWithTree(outer, dt.guess(20.0), params, NetworkSolve::FullStep{});
+        std::vector<double> stein;
+        double gap = 0.0;
+        if (rr.converged) {
+            stein = steinAllocation(reduced, reduced.reducedState(), *dt.schedule, 0);
+            for (int w = 0; w < reduced.numWells() && !stein.empty(); ++w) {
+                gap = std::max(gap, std::abs(rr.well_rate[w] * 86400.0 - stein[w]) / std::max(std::abs(stein[w]), 1.0));
+            }
+        }
+        bool off = false;
+        if (rr.converged && ro.result.converged) {
+            for (int w = 0; w < reduced.numWells(); ++w) {
+                if (std::abs(ro.result.well_rate[w] - rr.well_rate[w]) > 0.005 * std::max(rr.well_rate[w], 1.0 / 86400.0)) { off = true; }
+            }
+        }
+        if (rr.converged && gap <= 0.005 && !off && ro.result.converged) { continue; }
+        ++shown;
+        BOOST_TEST_MESSAGE(fmt::format("seed {}: {}; reduced {}{} in {} it, oracle gap {:.3g} %; outer {} {} passes{}{}",
+                                       seed, what, rr.converged ? "converged" : "FAILED",
+                                       stein.empty() ? " (oracle rejected)" : "", rr.iterations, 100 * gap,
+                                       ro.result.converged ? "converged" : "FAILED", ro.passes,
+                                       ro.consistent ? "" : " inconsistent", off ? "; DISAGREE" : ""));
+        // The state the reduced form stopped at, with its set.
+        reduced.updateControls(reduced.reducedState());
+        const auto& groups = reduced.groups();
+        std::string gl;
+        for (int g = 0; g < reduced.numGroups(); ++g) {
+            int held = 0;
+            for (int c = 0; c < reduced.numGroups(); ++c) {
+                if (groups[c].parent == g && reduced.groupBind(c) == Sys::GroupBind::Share) { ++held; }
+            }
+            for (int w = 0; w < reduced.numWells(); ++w) {
+                if (reduced.wells()[w].group == g && reduced.control(w) == Sys::Control::Tree) { ++held; }
+            }
+            const char bind = reduced.groupBind(g) == Sys::GroupBind::Free ? 'F'
+                            : reduced.groupBind(g) == Sys::GroupBind::Own ? 'O' : 'S';
+            gl += fmt::format("\n    {:5} <- {:5} {} target {:.0f} guide {:.0f} bind {} held-children {}{}",
+                              groups[g].name, groups[g].parent >= 0 ? groups[groups[g].parent].name : "-",
+                              groups[g].mode == Sys::Mode::Liquid ? "LRAT" : "ORAT",
+                              groups[g].target * 86400.0, groups[g].guide * 86400.0, bind, held,
+                              (bind != 'F' && held == 0) ? "  <-- lambda without a column" : "");
+        }
+        BOOST_TEST_MESSAGE("  groups:" << gl);
+        std::string nl;
+        for (std::size_t n = 0; n < dt.node_order.size(); ++n) {
+            nl += fmt::format(" {}({:.1f})", dt.node_order[n], convert::to(rr.node_pressure[n], bars));
+        }
+        BOOST_TEST_MESSAGE("  nodes:" << nl);
+        std::string wl;
+        for (int w = 0; w < reduced.numWells(); ++w) {
+            const auto& well = reduced.wells()[w];
+            wl += fmt::format("\n    {:4} in {:5} at {:5} cap {:7.1f} ctl {} reduced {:7.1f} outer {:7.1f} stein {:7.1f}",
+                              well.name, groups[well.group].name, dt.node_order[well.node],
+                              reduced.ownAllowance(w) * 86400.0, reduced.controlLetter(w),
+                              rr.well_rate[w] * 86400.0,
+                              ro.result.converged ? ro.result.well_rate[w] * 86400.0 : 0.0,
+                              stein.empty() ? 0.0 : stein[w]);
+        }
+        BOOST_TEST_MESSAGE("  wells:" << wl);
+    }
+    BOOST_TEST_MESSAGE("shown " << shown << " of the first 60 seeds");
 }
 
 BOOST_AUTO_TEST_CASE(production_step_bounds)
