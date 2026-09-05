@@ -5187,9 +5187,16 @@ namespace {
                               const double u = (q - 1500.0) / 1500.0;
                               return thp + 90.0 + 30.0 * u * u;
                           });
-        d += vfpprodTable(2, {10, 500, 1000, 2000, 4000, 8000, 12000, 20000, 30000, 50000},
-                          {2, 5, 10, 20, 40, 60, 80, 100},
-                          [](const double thp, const double q) { return thp + 1.0 + 4.0 * q / 5000.0; });
+        // The branch drop scales with the flow the instance will carry, so a
+        // root branch under 200 wells stays inside the table's THP axis
+        // rather than in its extrapolation.
+        const double flow_scale = std::max(1.0, W / 10.0);
+        std::vector<double> branch_flo{10, 500, 1000, 2000, 4000, 8000, 12000, 20000, 30000, 50000};
+        for (double& f : branch_flo) { f *= flow_scale; }
+        d += vfpprodTable(2, branch_flo, {2, 5, 10, 20, 40, 60, 80, 100},
+                          [flow_scale](const double thp, const double q) {
+                              return thp + 1.0 + 4.0 * q / (5000.0 * flow_scale);
+                          });
 
         // The group tree: PLAT under FIELD, every other group under PLAT or a
         // group before it, depth at most 4.
@@ -5525,6 +5532,42 @@ BOOST_AUTO_TEST_CASE(generated_large_disagreement)
                               stein_o.empty() ? 0.0 : under(outer, qs_o, g) * 86400.0 * (groups[g].mode == Sys::Mode::Liquid ? 1.25 : 1.0));
         }
         BOOST_TEST_MESSAGE("  targets (liquid totals for LRAT, oil otherwise):" << gl);
+        // Where the two differ: the wells' capacities at each answer's
+        // pressures, and how many wells the tubing cannot lift at all there.
+        auto anatomy = [&](const Sys& sys, const std::vector<double>& p, const std::vector<double>& q) {
+            int dead = 0, held = 0, thp = 0, own = 0;
+            double cap_sum = 0.0, p_max = 0.0;
+            for (int w = 0; w < sys.numWells(); ++w) {
+                const auto c = sys.control(w);
+                held += c == Sys::Control::Tree ? 1 : 0;
+                thp += c == Sys::Control::Thp ? 1 : 0;
+                own += (c != Sys::Control::Tree && c != Sys::Control::Thp) ? 1 : 0;
+                const double allow = sys.ownAllowance(w);
+                cap_sum += allow < 1e30 ? allow : 0.0;
+                const auto& well = sys.wells()[w];
+                if (well.vfp_table > 0 && !(sys.thpPotential(well, p[well.node]) > 0.0)) { ++dead; }
+            }
+            for (std::size_t n = 1; n < p.size(); ++n) { p_max = std::max(p_max, convert::to(p[n], bars)); }
+            double total = 0.0;
+            for (const double x : q) { total += x; }
+            return fmt::format("total {:.0f}, capacity sum {:.0f}, {} held / {} thp / {} own, {} dead, node p max {:.1f} bar",
+                               total * 86400.0, cap_sum * 86400.0, held, thp, own, dead, p_max);
+        };
+        BOOST_TEST_MESSAGE("  reduced: " << anatomy(reduced, rr.node_pressure, rr.well_rate));
+        BOOST_TEST_MESSAGE("  outer:   " << anatomy(outer, ro.result.node_pressure, ro.result.well_rate));
+        // The same wells differ: which groups they sit under, and their capacities at both.
+        std::map<std::string, int> where;
+        int cap_bigger_at_reduced = 0, cap_bigger_at_outer = 0;
+        for (int w = 0; w < reduced.numWells(); ++w) {
+            if (std::abs(rr.well_rate[w] - ro.result.well_rate[w]) <= 0.005 * std::max(rr.well_rate[w], 1e-9)) { continue; }
+            ++where[groups[reduced.wells()[w].group].name];
+            const double cr = reduced.ownAllowance(w), co = outer.ownAllowance(w);
+            if (cr > co * 1.005) { ++cap_bigger_at_reduced; } else if (co > cr * 1.005) { ++cap_bigger_at_outer; }
+        }
+        std::string wl;
+        for (const auto& [g, k] : where) { wl += fmt::format(" {}:{}", g, k); }
+        BOOST_TEST_MESSAGE(fmt::format("  differing wells by group:{}; capacity larger at the reduced answer for {}, at the outer for {}",
+                                       wl, cap_bigger_at_reduced, cap_bigger_at_outer));
     }
 }
 
