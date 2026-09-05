@@ -691,6 +691,25 @@ public:
             // post-process on the Schedule; the well-model solve is untouched.
             // Done before the canary below: it legitimately reads refined cells'
             // geometry while building the trajectory connections.
+            //
+            // WELLREF put the LGRs around COMPDAT wells, which carry no
+            // trajectory; give them one from their connection cells so the
+            // replay below lands them in the refined cells.
+            if (this->eclState().hasWellRefinement()) {
+                if (this->grid_->comm().size() > 1) {
+                    OPM_THROW(std::invalid_argument,
+                              "WELLREF (refinement around wells) is supported in "
+                              "serial runs only for now: the well trajectories are "
+                              "synthesized from the input grid, which the I/O rank "
+                              "alone holds in parallel.");
+                }
+                const auto& inputGrid = this->eclState().getInputGrid();
+                this->schedule().synthesizeWellTrajectories(
+                    [&inputGrid](std::size_t globalIdx)
+                    { return inputGrid.getCellCenter(globalIdx); },
+                    [&inputGrid](std::size_t globalIdx)
+                    { return inputGrid.getCellDims(globalIdx); });
+            }
             this->recomputeWellTrajectoriesInLgr_();
 
             // Opt-in canary (OPM_LGR_POISON_REFINED=1): poison every refined leaf
