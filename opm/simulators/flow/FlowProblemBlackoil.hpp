@@ -349,8 +349,15 @@ public:
         // we try to avoid for the parallel running, has both global trans_ and transmissibilities_ allocated at the same time
         if (enableEclOutput_) {
             if (simulator.vanguard().grid().comm().size() > 1) {
-                if (simulator.vanguard().grid().comm().rank() == 0)
-                    eclWriter_->setTransmissibilities(&simulator.vanguard().globalTransmissibility());
+                if (simulator.vanguard().grid().comm().rank() == 0) {
+                    // A parallel LGR run writes from the I/O rank's refined
+                    // reference grid; the transmissibility must live there too.
+                    if constexpr (requires { simulator.vanguard().eclOutputTransmissibility(); }) {
+                        eclWriter_->setTransmissibilities(&simulator.vanguard().eclOutputTransmissibility());
+                    } else {
+                        eclWriter_->setTransmissibilities(&simulator.vanguard().globalTransmissibility());
+                    }
+                }
             } else {
                 finishTransmissibilities();
                 eclWriter_->setTransmissibilities(&simulator.problem().eclTransmissibilities());
