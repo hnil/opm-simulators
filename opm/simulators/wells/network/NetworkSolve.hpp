@@ -74,6 +74,9 @@ struct Result
     std::vector<Scalar> well_bhp;
     /// The iterate it stopped at, so a caller can continue from it.
     std::vector<Scalar> state;
+    /// Lookups the answer needed off a table axis; zero for an answer the
+    /// tables actually describe.
+    int off_axis = 0;
 };
 
 /// Dense square system, solved by Dune. The networks this solves have tens of
@@ -155,6 +158,11 @@ public:
     /// has a single rate per well and leaves these empty.
     virtual std::vector<std::array<Scalar, 3>> wellPhaseRates(const State&) const { return {}; }
     virtual State wellBhps(const State&) const { return {}; }
+
+    /// Table lookups the system had to clamp to an axis since the last
+    /// reset. An answer with any is outside the tables.
+    virtual int offAxisLookups() const { return 0; }
+    virtual void resetOffAxis() const {}
 };
 
 /// Divide a group target by guide rate, take out the wells whose own limits keep
@@ -348,6 +356,9 @@ solve(Sys& system,
             done.well_phase_rates = system.wellPhaseRates(x);
             done.well_bhp = system.wellBhps(x);
             done.state = x;
+            system.resetOffAxis();
+            (void)system.residual(x);
+            done.off_axis = system.offAxisLookups();
             return done;
         }
         last = {false, it, {}, {}, worst, controls_moved, false, joined(), switches};

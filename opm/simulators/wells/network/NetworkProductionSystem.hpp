@@ -25,6 +25,7 @@
 
 #include <opm/simulators/wells/VFPHelpers.hpp>
 #include <opm/simulators/wells/VFPProdProperties.hpp>
+#include <opm/input/eclipse/Schedule/VFPProdTable.hpp>
 #include <opm/material/densead/Evaluation.hpp>
 
 #include <algorithm>
@@ -371,6 +372,8 @@ public:
         return static_cast<int>(groups_.size()) - 1;
     }
     const std::vector<Group>& groups() const { return groups_; }
+    /// Put a well the adapter or a dump added into a group of the tree.
+    void setWellGroup(const int w, const int g) { wells_[w].group = g; }
     /// Change a group's own limit after the tree is built, for a sweep.
     void setGroupLimit(const int g, const Mode m, const Scalar target)
     {
@@ -490,9 +493,55 @@ public:
     Scalar tableBhp(const int table, const Scalar thp,
                     const std::array<Scalar, NP>& q, const Scalar alq) const
     {
+        // Off an axis the table is a linear extrapolation of its last
+        // interval, and an answer that settles there has settled on nothing.
+        // The lookup is left as it is -- the solve's transients and the
+        // step bounds rely on it -- but counted, so the caller can tell an
+        // answer inside the tables from one outside.
+        if (counting_off_axis_) { noteOffAxis(table, thp, q); }
         return props_->bhp(table, -q[0], -q[1], -q[2], thp, alq,
                            Scalar{0}, Scalar{0}, /*use_expvfp=*/false);
     }
+
+    /// Only the lookups an *answer* is made of are counted: the residual's,
+    /// and the crossing a well sits on. The probes the control rule makes
+    /// at the bhp limit are off the axes as a matter of course.
+    struct CountScope
+    {
+        const ProductionSystem& s;
+        bool was;
+        CountScope(const ProductionSystem& sys, const bool on) : s(sys), was(sys.counting_off_axis_)
+        { s.counting_off_axis_ = on; }
+        ~CountScope() { s.counting_off_axis_ = was; }
+    };
+
+    void noteOffAxis(const int table, const Scalar thp, const std::array<Scalar, NP>& q) const
+    {
+        const auto& t = props_->getTable(table);
+        auto check = [&](const Scalar v, const std::vector<double>& axis, const char* what) {
+            if (axis.empty() || (v >= axis.front() && v <= axis.back())) { return; }
+            ++off_axis_;
+            if (off_axis_note_.empty()) {
+                off_axis_note_ = std::string(what) + " off table " + std::to_string(table);
+            }
+        };
+        check(thp, t.getTHPAxis(), "thp");
+        // Below the first flow point is the no-flow end a table is meant to
+        // reach down to; beyond the last it is the compressor's problem.
+        const auto& flo_axis = t.getFloAxis();
+        const Scalar flo = std::abs(detail::getFlo(t, -q[0], -q[1], -q[2]));
+        if (!flo_axis.empty() && flo > flo_axis.back()) { check(flo, flo_axis, "flo"); }
+        // Fractions of nothing are not off any axis.
+        if (flo > Scalar{0}) {
+            check(detail::getWFR(t, -q[0], -q[1], -q[2]), t.getWFRAxis(), "wfr");
+            check(detail::getGFR(t, -q[0], -q[1], -q[2]), t.getGFRAxis(), "gfr");
+        }
+    }
+
+    /// Lookups off an axis since the last reset, and the first of them.
+    int offAxisLookups() const override { return off_axis_; }
+    void resetOffAxis() const override { off_axis_ = 0; off_axis_note_.clear(); }
+    const std::string& offAxisNote() const { return off_axis_note_; }
 
     /// Whether thp control is even available: a well the deck gives no VFPPROD
     /// table has no tubing curve, so its rate does not answer to the node
@@ -527,6 +576,9 @@ public:
     void resetLookups() const { lookups_ = 0; }
     /// Table lookups spent in thpPotential/thpPotentialExact, for the bench.
     mutable long lookups_ = 0;
+    mutable int off_axis_ = 0;
+    mutable bool counting_off_axis_ = false;
+    mutable std::string off_axis_note_;
 
     /// The oil rate thp control allows at this node pressure: the crossing of
     /// the well's IPR with its tubing curve. Zero means the tubing cannot lift
@@ -589,9 +641,12 @@ public:
         // than the limit. Kept from the scan -- it is a separate question from
         // where the crossing is.
         ++lookups_;
-        if (w.bhp_limit - (tableBhp(w.vfp_table, p_node, rates(w.bhp_limit), w.alq) - w.vfp_dp)
-                >= Scalar{0}) {
-            return std::numeric_limits<Scalar>::max();
+        {
+            const CountScope probe(*this, false);
+            if (w.bhp_limit - (tableBhp(w.vfp_table, p_node, rates(w.bhp_limit), w.alq) - w.vfp_dp)
+                    >= Scalar{0}) {
+                return std::numeric_limits<Scalar>::max();
+            }
         }
         // The water and gas fractions are taken where the well is now, not at
         // the crossing. The IPR is a linearisation about the current operating
@@ -641,6 +696,13 @@ public:
         const Scalar ipr_b_flo = -B;
         if (!(ipr_b_flo != Scalar{0})) { return Scalar{0}; }
         const Scalar dp = w.vfp_dp;
+        // The same count as tableBhp(): a node pressure off the THP axis.
+        const auto& thp_axis = t.getTHPAxis();
+        if (counting_off_axis_ && !thp_axis.empty()
+            && (p_node < thp_axis.front() || p_node > thp_axis.back())) {
+            ++off_axis_;
+            if (off_axis_note_.empty()) { off_axis_note_ = "thp off table " + std::to_string(w.vfp_table) + " (crossing)"; }
+        }
         ++lookups_;              // one axis walk
         const auto hit = VFPHelpers<Scalar>::intersectWithIPR(
             t, p_node, wfr, gfr, w.alq, ipr_a_flo, ipr_b_flo,
@@ -648,8 +710,42 @@ public:
         if (!hit.has_value()) {
             return Scalar{0};        // nowhere does the reservoir out-push the tubing
         }
-        const Scalar bhp = hit->second;
+        Scalar bhp = hit->second;
         if (!(bhp > Scalar{0})) { return Scalar{0}; }
+        if (exact_potential_) {
+            // The crossing above holds the fractions fixed; where the phase
+            // lines have different shut-ins that is a few percent off the
+            // table equation the full system solves. Polish the root of
+            // h(pi) = pi - V(p, q(pi)) from there: a secant on a smooth
+            // function within a few percent of its root, three lookups.
+            auto rates = [&](const Scalar b) {
+                std::array<Scalar, NP> q{};
+                for (int ph = 0; ph < NP; ++ph) { q[ph] = std::max(ipr(w, ph, b), Scalar{0}); }
+                return q;
+            };
+            auto h = [&](const Scalar b) {
+                ++lookups_;
+                return b - (tableBhp(w.vfp_table, p_node, rates(b), w.alq) - dp);
+            };
+            Scalar b0 = bhp, h0 = h(b0);
+            Scalar b1 = bhp * Scalar{1.01}, h1 = h(b1);
+            for (int it = 0; it < 8 && std::abs(h1) > Scalar{1e-4} * unit::barsa; ++it) {
+                if (!(std::abs(h1 - h0) > Scalar{0})) { break; }
+                const Scalar b2 = b1 - h1 * (b1 - b0) / (h1 - h0);
+                b0 = b1; h0 = h1;
+                b1 = b2; h1 = h(b1);
+            }
+            if (b1 > Scalar{0} && std::abs(h1) < std::abs(h0)) { bhp = b1; }
+        }
+        const auto& flo_axis = t.getFloAxis();
+        if (counting_off_axis_ && !flo_axis.empty()) {
+            std::array<Scalar, NP> q{};
+            for (int ph = 0; ph < NP; ++ph) { q[ph] = std::max(ipr(w, ph, bhp), Scalar{0}); }
+            if (std::abs(detail::getFlo(t, -q[0], -q[1], -q[2])) > flo_axis.back()) {
+                ++off_axis_;
+                if (off_axis_note_.empty()) { off_axis_note_ = "crossing beyond the flow axis of table " + std::to_string(w.vfp_table); }
+            }
+        }
         return std::max(ipr(w, 1, bhp), Scalar{0});
     }
 
@@ -763,6 +859,7 @@ public:
 
     State residual(const State& x) const override
     {
+        const CountScope counting(*this, true);
         const int nodes = numNodes();
         const int wells = numWells();
         State r(size(), 0.0);
@@ -1243,7 +1340,10 @@ public:
         }
         for (int i = 0; i < nw; ++i) {
             const int w = mine[i];
-            if (controls_[w] == Control::Shut) { continue; }
+            if (controls_[w] == Control::Shut || wells_[w].pinned) {
+                tree_rate_[w] = own_allowance_[w];
+                continue;
+            }
             const bool held = split[nk + i] < cap[nk + i];
             tree_rate_[w] = held ? oilForShare(w, split[nk + i], cg) : own_allowance_[w];
             const auto wanted = held ? Control::Tree : own_control_[w];
@@ -1329,6 +1429,7 @@ public:
     /// evaluated at is kept for the caller (reducedState()).
     State reducedResidual(const State& node_pressure)
     {
+        const CountScope counting(*this, true);
         State x = start(node_pressure);
         updateControls(x);
         for (int w = 0; w < numWells(); ++w) {
@@ -1454,8 +1555,11 @@ public:
         for (int w = 0; w < n; ++w) {
             const auto& well = wells_[w];
             if (well.pinned) {
+                // A source: the tree counts it and never holds it.
                 changed |= (controls_[w] != Control::OilRate);
                 controls_[w] = Control::OilRate;
+                own_allowance_[w] = well.oil_rate_limit;
+                own_control_[w] = Control::OilRate;
                 continue;
             }
             // A bhp limit at or above the shut-in pressure produces nothing;
@@ -1463,6 +1567,8 @@ public:
             if (!(ipr(well, 1, well.bhp_limit) > Scalar{0})) {
                 changed |= (controls_[w] != Control::Shut);
                 controls_[w] = Control::Shut;
+                own_allowance_[w] = Scalar{0};
+                own_control_[w] = Control::Shut;
                 continue;
             }
             auto wanted = (thp[w] < unbounded) ? Control::Thp : Control::Bhp;
