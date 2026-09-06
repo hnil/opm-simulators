@@ -4281,9 +4281,12 @@ namespace {
             const auto& well = sys.wells()[w];
             const double bhp = well.bhp_limit;
             const double oil = std::max(well.ipr_a[1] + well.ipr_b[1] * bhp, 1e-30);
-            const std::array<double, 3> pot{well.guide,
-                                            well.guide * std::max(well.ipr_a[2] + well.ipr_b[2] * bhp, 0.0) / oil,
-                                            well.guide * std::max(well.ipr_a[0] + well.ipr_b[0] * bhp, 0.0) / oil};
+            // A well the dump gave no guide (individually controlled) still
+            // needs one the balancer can divide by.
+            const double guide = std::max(well.guide, 1e-9 / 86400.0);
+            const std::array<double, 3> pot{guide,
+                                            guide * std::max(well.ipr_a[2] + well.ipr_b[2] * bhp, 0.0) / oil,
+                                            guide * std::max(well.ipr_a[0] + well.ipr_b[0] * bhp, 0.0) / oil};
             guide_rate.compute(well.name, step, 0.0, pot[0], pot[1], pot[2]);
             for (int g = well.group; g >= 0; g = groups[g].parent) {
                 for (int i = 0; i < 3; ++i) { gpot[g][i] += well.efficiency * pot[i]; }
@@ -4925,6 +4928,56 @@ namespace {
             std::vector<double> p(node_order.size(), convert::from(bar, bars));
             return p;
         }
+
+        /// The deck's group tree onto a system whose wells came from elsewhere
+        /// -- a simulator dump, with its own IPRs and guides. Wells not in the
+        /// schedule stay outside the tree.
+        void attachTree(Sys& sys, const int step)
+        {
+            const auto& sched = *schedule;
+            std::map<std::string, double> wguide;
+            for (int w = 0; w < sys.numWells(); ++w) { wguide[sys.wells()[w].name] = sys.wells()[w].guide; }
+            std::function<double(const std::string&)> subtreeGuide = [&](const std::string& name) {
+                const auto& grp = sched.getGroup(name, step);
+                double g = 0.0;
+                for (const auto& child : grp.groups()) { g += subtreeGuide(child); }
+                for (const auto& w : grp.wells()) { if (wguide.count(w)) { g += wguide.at(w); } }
+                return g;
+            };
+            gidx.clear();
+            description.clear();
+            std::function<void(const std::string&, int)> addTree = [&](const std::string& name, const int parent) {
+                const auto& grp = sched.getGroup(name, step);
+                typename Sys::Group g;
+                g.name = name;
+                g.parent = parent;
+                g.efficiency = grp.getGroupEfficiencyFactor();
+                g.guide = subtreeGuide(name);
+                if (grp.isProductionGroup()) {
+                    const auto ctl = grp.productionControls(st);
+                    using C = Opm::Group::ProductionCMode;
+                    if (ctl.cmode == C::ORAT)      { g.mode = Sys::Mode::Oil;    g.target = ctl.oil_target; }
+                    else if (ctl.cmode == C::LRAT) { g.mode = Sys::Mode::Liquid; g.target = ctl.liquid_target; }
+                    else if (ctl.cmode == C::GRAT) { g.mode = Sys::Mode::Gas;    g.target = ctl.gas_target; }
+                    else if (ctl.cmode == C::WRAT) { g.mode = Sys::Mode::Water;  g.target = ctl.water_target; }
+                }
+                const int me = sys.addGroup(std::move(g));
+                gidx[name] = me;
+                if (sys.groups()[me].target > 0.0) {
+                    description += fmt::format(" {}:{:.0f}", name, sys.groups()[me].target * 86400.0);
+                }
+                for (const auto& child : grp.groups()) { addTree(child, me); }
+            };
+            addTree("FIELD", -1);
+            for (int w = 0; w < sys.numWells(); ++w) {
+                const auto& name = sys.wells()[w].name;
+                if (!sched.hasWell(name, step)) { continue; }
+                const auto it = gidx.find(sched.getWell(name, step).groupName());
+                if (it != gidx.end()) { sys.setWellGroup(w, it->second); }
+            }
+            sys.setGroupTree(true);
+            sys.finishGroups();
+        }
     };
 
     const std::string kNetworkDecks = "/Users/hnil/Documents/OPM/opm_feature/opm-tests/network/";
@@ -4975,6 +5028,8 @@ namespace {
         BOOST_CHECK(ro.consistent);
         BOOST_CHECK(rr.converged);
         BOOST_CHECK(rf.converged);
+        BOOST_CHECK_EQUAL(ro.result.off_axis, 0);
+        BOOST_CHECK_EQUAL(rr.off_axis, 0);
         if (passes_out) { *passes_out = ro.passes; }
         if (!ro.result.converged) { return; }
         // Fischer-Burmeister is only warned on: MODEL5's well table has a
@@ -5125,7 +5180,7 @@ BOOST_AUTO_TEST_CASE(model5_sweep)
 // set between what the subtree could make and well above it.
 // ---------------------------------------------------------------------------
 namespace {
-    struct GenSpec { int wells, nodes, groups; unsigned seed; };
+    struct GenSpec { int wells, nodes, groups; unsigned seed; bool size_tables = true; };
 
     std::string vfpprodTable(const int number, const std::vector<double>& flo,
                              const std::vector<double>& thp,
@@ -5181,7 +5236,7 @@ namespace {
         std::string d = deckPreamble(W, G, N);
 
         // Tables: a well curve with a loading hump, a branch with a linear drop.
-        d += vfpprodTable(1, {10, 200, 500, 1000, 1500, 2000, 3000, 4500, 6000, 8000},
+        d += vfpprodTable(1, {10, 200, 500, 1000, 1500, 2000, 3000, 4500, 8000, 20000},
                           {5, 10, 20, 40, 60, 80, 100, 130},
                           [](const double thp, const double q) {
                               const double u = (q - 1500.0) / 1500.0;
@@ -5190,7 +5245,7 @@ namespace {
         // The branch drop scales with the flow the instance will carry, so a
         // root branch under 200 wells stays inside the table's THP axis
         // rather than in its extrapolation.
-        const double flow_scale = std::max(1.0, W / 10.0);
+        const double flow_scale = spec.size_tables ? std::max(1.0, W / 10.0) : 1.0;
         std::vector<double> branch_flo{10, 500, 1000, 2000, 4000, 8000, 12000, 20000, 30000, 50000};
         for (double& f : branch_flo) { f *= flow_scale; }
         d += vfpprodTable(2, branch_flo, {2, 5, 10, 20, 40, 60, 80, 100},
@@ -5296,7 +5351,7 @@ BOOST_AUTO_TEST_CASE(generated_two_tree_cases)
     for (const auto& sz : sizes) {
         int runs = 0, failed = 0, cycled = 0, inconsistent = 0, r_failed = 0, r_stalls = 0,
             disagree = 0, two_solutions = 0, oracle_off = 0, oracle_violates = 0, oracle_rejected = 0,
-            max_passes = 0, off_branch_total = 0;
+            max_passes = 0, off_branch_total = 0, off_axis = 0;
         long it_outer = 0, it_reduced = 0, look_outer = 0, look_reduced = 0;
         double ms_outer = 0.0, ms_reduced = 0.0, ms_oracle = 0.0;
         for (int seed = 1; seed <= sz.seeds; ++seed) {
@@ -5323,6 +5378,7 @@ BOOST_AUTO_TEST_CASE(generated_two_tree_cases)
                 inconsistent += (ro.result.converged && !ro.consistent) ? 1 : 0;
                 r_failed += rr.converged ? 0 : 1;
                 r_stalls += rr.stalls;
+                off_axis += (ro.result.off_axis > 0 ? 1 : 0) + (rr.off_axis > 0 ? 1 : 0);
                 it_outer += ro.inner_iterations; it_reduced += rr.iterations;
                 look_outer += outer.lookups(); look_reduced += reduced.lookups();
                 max_passes = std::max(max_passes, ro.passes);
@@ -5393,6 +5449,11 @@ BOOST_AUTO_TEST_CASE(generated_two_tree_cases)
                     }
                     off_branch_total += off_branch;
                 }
+                if (ro.result.off_axis || rr.off_axis) {
+                    BOOST_TEST_MESSAGE(fmt::format("  seed {} j {}: off the tables -- outer {} ({}), reduced {} ({})",
+                                                   seed, j, ro.result.off_axis, outer.offAxisNote(),
+                                                   rr.off_axis, reduced.offAxisNote()));
+                }
                 if (!ro.result.converged || ro.cycled || !ro.consistent || off || !rr.converged
                     || rr.stalls || rejected || worst_gap > 0.005 || off_branch) {
                     std::string sets;
@@ -5413,11 +5474,11 @@ BOOST_AUTO_TEST_CASE(generated_two_tree_cases)
         BOOST_TEST_MESSAGE(fmt::format(
             "{}/{}/{} wells/nodes/groups, {} runs: outer {} failed, {} cycled, {} inconsistent, max {} passes,"
             " {} it, {} lookups, {:.1f} ms/run; reduced {} failed, {} stalls, {} it, {} lookups, {:.1f} ms/run;"
-            " {} disagree, {} two self-consistent answers; {} outer thp wells off the stable crossing;"
-            " oracle vs reduced {} rejected, {} off, {} above a group's own limit, {:.1f} ms/run",
+            " {} disagree, {} two self-consistent answers, {} answers off the tables; {} outer thp wells off"
+            " the stable crossing; oracle vs reduced {} rejected, {} off, {} above a group's own limit, {:.1f} ms/run",
             sz.wells, sz.nodes, sz.groups, runs, failed, cycled, inconsistent, max_passes, it_outer,
             look_outer, ms_outer / runs, r_failed, r_stalls, it_reduced, look_reduced, ms_reduced / runs,
-            disagree, two_solutions, off_branch_total, oracle_rejected, oracle_off, oracle_violates,
+            disagree, two_solutions, off_axis, off_branch_total, oracle_rejected, oracle_off, oracle_violates,
             ms_oracle / std::max(runs, 1)));
         BOOST_CHECK_EQUAL(failed, 0);
         BOOST_CHECK_EQUAL(cycled, 0);
@@ -5426,7 +5487,31 @@ BOOST_AUTO_TEST_CASE(generated_two_tree_cases)
         BOOST_CHECK_EQUAL(disagree, 0);
         BOOST_CHECK_EQUAL(oracle_rejected, 0);
         BOOST_CHECK_EQUAL(oracle_off, 0);
+        BOOST_CHECK_EQUAL(off_axis, 0);
     }
+}
+
+// The guard itself: the instance whose tables were sized for ten wells, at
+// two hundred. Both routes converge, and both say so -- the answer needed
+// lookups off the tables' axes, so it is an answer to nothing.
+BOOST_AUTO_TEST_CASE(an_answer_off_the_tables_says_so)
+{
+    const NetworkSolve::Parameters<double> params{1e-2, 80};
+    std::string what;
+    const auto text = generateDeck({200, 40, 30, 2u, /*size_tables=*/false}, &what);
+    DeckTrees dt(text, DeckTrees::FromText{});
+    DeckTrees::Ipr ipr; ipr.j_scale = 2.5;
+    auto reduced = dt.build(0, ipr);
+    auto outer = dt.build(0, ipr);
+    const auto rr = NetworkSolve::solveReduced(reduced, dt.guess(20.0), params, true);
+    const auto ro = NetworkSolve::solveWithTree(outer, dt.guess(20.0), params, NetworkSolve::FullStep{});
+    BOOST_TEST_MESSAGE(fmt::format("{}: reduced {} with {} lookups off the tables ({}); outer {} with {} ({})",
+                                   what, rr.converged ? "converged" : "FAILED", rr.off_axis, reduced.offAxisNote(),
+                                   ro.result.converged ? "converged" : "FAILED", ro.result.off_axis, outer.offAxisNote()));
+    BOOST_CHECK(rr.converged);
+    BOOST_CHECK_GT(rr.off_axis, 0);
+    BOOST_CHECK(ro.result.converged);
+    BOOST_CHECK_GT(ro.result.off_axis, 0);
 }
 
 // The smallest generated instance that goes wrong, in full: the two trees,
@@ -5568,6 +5653,144 @@ BOOST_AUTO_TEST_CASE(generated_large_disagreement)
         for (const auto& [g, k] : where) { wl += fmt::format(" {}:{}", g, k); }
         BOOST_TEST_MESSAGE(fmt::format("  differing wells by group:{}; capacity larger at the reduced answer for {}, at the outer for {}",
                                        wl, cap_bigger_at_reduced, cap_bigger_at_outer));
+    }
+}
+
+// Step 4: real inflow performance. The dumps in tests/network_dumps are
+// MODEL5 production systems the simulator wrote out -- every well's IPR,
+// guide, limits and tubing datum as the well model had them, the choke on
+// B1 holding 6000. Here the choke is turned off and the deck's group tree
+// put on instead, so B1's 6000 is held by allocation. Two mechanisms for
+// one target: the choke raises B1's pressure until the wells self-limit on
+// their tubing; the tree assigns the rates and lets B1's pressure be what
+// the branch says. Both are answers; they need not be the same one.
+BOOST_AUTO_TEST_CASE(model5_dumps_with_the_tree)
+{
+    using Sys = DeckTrees::Sys;
+    const std::string model5 = kNetworkDecks + "NETWORK_MODEL5_STDW_AUTOCHK.DATA";
+    const auto dumps = std::filesystem::path(__FILE__).parent_path() / "network_dumps";
+    if (!std::filesystem::exists(model5) || !std::filesystem::is_directory(dumps)) {
+        BOOST_TEST_MESSAGE("opm-tests or the dumps not present, skipping");
+        return;
+    }
+    // The tables the dumps refer to, with lift gas active as the dumps assume.
+    std::deque<VFPProdTable> tables;
+    VFPProdProperties<double> props;
+    const UnitSystem units{};
+    for (const char* name : {"well_vfp.ecl", "flowl_b_vfp.ecl", "flowl_c_vfp.ecl"}) {
+        const auto path = std::filesystem::path(kNetworkDecks) / "include" / name;
+        if (!std::filesystem::exists(path)) { continue; }
+        const auto deck = Parser{}.parseFile(path.string());
+        for (const auto& kw : deck.getKeywordList("VFPPROD")) {
+            tables.emplace_back(*kw, /*gaslift_opt_active=*/true, units);
+            props.addTable(tables.back());
+        }
+    }
+    DeckTrees dt(model5);
+    const int step = 1;
+    const NetworkSolve::Parameters<double> params{1e-2, 80};
+    std::vector<std::filesystem::path> files;
+    for (const auto& e : std::filesystem::directory_iterator(dumps)) {
+        if (e.path().extension() == ".txt") { files.push_back(e.path()); }
+    }
+    std::sort(files.begin(), files.end());
+    for (const auto& file : files) {
+        std::ifstream in(file);
+        std::string head; std::getline(in, head);
+        if (head != "production") { continue; }
+        auto [dumped, guess] = NetworkSolve::readProduction<double>(in, props, units);
+        dumped.setAnalyticJacobian(true);
+        dumped.setComplementarity(true);
+        int b1 = -1;
+        for (int n = 0; n <= dumped.numNodes(); ++n) { if (dumped.nodes()[n].name == "B1") { b1 = n; } }
+        // As dumped: the choke holds B1.
+        auto choke = dumped;
+        const auto rc = NetworkSolve::solve(choke, guess, params, NetworkSolve::FullStep{});
+        // The tree instead.
+        auto tree = dumped;
+        if (b1 >= 0) { tree.setChokeTarget(b1, 0.0); }
+        dt.attachTree(tree, step);
+        auto outer = tree, reduced = tree, fb = tree;
+        const auto ro = NetworkSolve::solveWithTree(outer, guess, params, NetworkSolve::FullStep{});
+        const auto rr = NetworkSolve::solveReduced(reduced, guess, params, true);
+        const auto rf = NetworkSolve::solve(fb, guess, params, NetworkSolve::FullStep{});
+        std::string sets;
+        for (const auto& s : ro.sets) { sets += " " + s; }
+        // What the walk says at the outer answer, when it disagrees with the set solved.
+        std::string at_answer;
+        if (ro.result.converged && !ro.consistent) {
+            outer.updateControls(ro.result.state);
+            outer.resolveTree(ro.result.state);
+            at_answer = " -> at the answer " + outer.treeSignature();
+        }
+        BOOST_TEST_MESSAGE(fmt::format(
+            "{}: {} wells, tree{}; choke-only {} in {} it; tree: outer {} passes / {} it{} [{}]{}, reduced {} it,"
+            " fb {}; off the tables: {}/{} ({}/{})",
+            file.filename().string(), dumped.numWells(), dt.description,
+            rc.converged ? "converged" : "FAILED", rc.iterations, ro.passes, ro.inner_iterations,
+            ro.consistent ? "" : " NOT CONSISTENT", sets, at_answer, rr.iterations,
+            rf.converged ? std::to_string(rf.iterations) + " it" : "FAILED", ro.result.off_axis, rr.off_axis,
+            outer.offAxisNote(), reduced.offAxisNote()));
+        auto line = [&](const char* tag, const Sys& sys, const std::vector<double>& q,
+                        const std::vector<double>& p, const std::vector<double>& bhp) {
+            std::string l = fmt::format("  {:9}", tag);
+            double under_b1 = 0.0;
+            for (int w = 0; w < sys.numWells(); ++w) {
+                l += fmt::format(" {}={:.0f}({}{:.0f})", sys.wells()[w].name, q[w] * 86400.0,
+                                 sys.controlLetter(w), bhp.empty() ? 0.0 : convert::to(bhp[w], bars));
+                if (sys.wells()[w].node == b1) { under_b1 += q[w]; }
+            }
+            l += "  nodes";
+            for (int n = 1; n <= sys.numNodes(); ++n) {
+                l += fmt::format(" {}={:.1f}", sys.nodes()[n].name, convert::to(p[n], bars));
+            }
+            l += fmt::format("  at B1 {:.0f}", under_b1 * 86400.0);
+            BOOST_TEST_MESSAGE(l);
+            return under_b1 * 86400.0;
+        };
+        const double at_b1_choke = rc.converged ? line("choke", choke, rc.well_rate, rc.node_pressure, rc.well_bhp) : 0.0;
+        const double at_b1_tree = ro.result.converged ? line("tree", outer, ro.result.well_rate, ro.result.node_pressure, ro.result.well_bhp) : 0.0;
+        if (ro.result.converged) {
+            // A thp well's rate in the outer answer against the crossing the
+            // reduced form would put it on at the same node pressure.
+            std::string gaps;
+            for (int w = 0; w < outer.numWells(); ++w) {
+                if (outer.control(w) != Sys::Control::Thp) { continue; }
+                const auto& well = outer.wells()[w];
+                const double cross = outer.thpPotential(well, ro.result.node_pressure[well.node]);
+                gaps += fmt::format(" {} newton {:.0f} crossing {:.0f}", well.name,
+                                    ro.result.well_rate[w] * 86400.0, cross * 86400.0);
+            }
+            if (!gaps.empty()) { BOOST_TEST_MESSAGE("  thp wells:" << gaps); }
+        }
+        BOOST_CHECK(rc.converged);
+        BOOST_CHECK(ro.result.converged);
+        BOOST_CHECK(ro.consistent);
+        BOOST_CHECK(rr.converged);
+        if (!ro.result.converged || !rr.converged) { continue; }
+        // An answer off the tables is reported, not compared: nothing says
+        // what the tables mean there.
+        if (ro.result.off_axis == 0 && rr.off_axis == 0) {
+            for (int w = 0; w < outer.numWells(); ++w) {
+                BOOST_CHECK_CLOSE(ro.result.well_rate[w], rr.well_rate[w], 0.5);
+                if (rf.converged) { BOOST_WARN_CLOSE(ro.result.well_rate[w], rf.well_rate[w], 0.5); }
+            }
+        }
+        const auto stein = steinAllocation(reduced, reduced.reducedState(), *dt.schedule, step);
+        BOOST_CHECK(!stein.empty());
+        if (!stein.empty()) {
+            std::string both;
+            double worst = 0.0;
+            for (int w = 0; w < reduced.numWells(); ++w) {
+                const double mine = rr.well_rate[w] * 86400.0;
+                both += fmt::format(" {}={:.0f}/{:.0f}", reduced.wells()[w].name, mine, stein[w]);
+                worst = std::max(worst, std::abs(mine - stein[w]) / std::max(std::abs(stein[w]), 1.0));
+            }
+            BOOST_TEST_MESSAGE("  reduced/stein:" << both);
+            BOOST_CHECK_LT(worst, 0.005);
+        }
+        // Both mechanisms hold B1 at 6000 when the wells can make it.
+        if (rc.converged && at_b1_choke > 5990.0) { BOOST_CHECK_CLOSE(at_b1_tree, 6000.0, 0.5); }
     }
 }
 

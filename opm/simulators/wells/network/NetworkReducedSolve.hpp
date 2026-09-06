@@ -39,6 +39,7 @@ struct ReducedResult
     int stalls = 0;           // steps the line search could not improve on
     int set_changes = 0;      // iterations after which the tree walk chose differently
     Scalar residual = 0;
+    int off_axis = 0;         // lookups the answer needed off a table axis
     std::vector<Scalar> node_pressure;
     std::vector<Scalar> well_rate;
     std::string sets;
@@ -186,6 +187,9 @@ solveReduced(Sys& system,
     }
     out.node_pressure = p;
     out.well_rate = system.wellRates(system.reducedState());
+    system.resetOffAxis();
+    (void)system.reducedResidual(p);
+    out.off_axis = system.offAxisLookups();
     return out;
 }
 
