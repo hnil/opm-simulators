@@ -1593,28 +1593,6 @@ applyHostTransToRefinedFaces_()
             return;
         }
 
-        // A nested LGR's cells in a distributed grid come out wrong on this
-        // path (SPE1CASE1_CARFIN1_NESTED_CONTAINED fails to converge at np=2,
-        // and a WELLREF ring pair's well rate differs from serial); serial
-        // nested and parallel single-level are fine. Refuse rather than
-        // diverge until the nested host lookup is done for the distributed
-        // grid.
-        if (gridView_.comm().size() > 1) {
-            bool nested = false;
-            for (const auto& elem : elements(gridView_)) {
-                if (elem.hasFather() && elem.father().hasFather()) {
-                    nested = true;
-                    break;
-                }
-            }
-            if (gridView_.comm().max(nested ? 1 : 0) > 0) {
-                OPM_THROW(std::invalid_argument,
-                          "Taking a refined transmissibility from its host cell is not "
-                          "supported for a nested LGR in a parallel run. Run in serial, "
-                          "or pass --lgr-trans-from-host=false.");
-            }
-        }
-
         using LevelView = std::remove_const_t<decltype(grid_.levelGridView(0))>;
         const LevelView level0 = grid_.levelGridView(0);
         const auto levelMapper = Dune::MultipleCodimMultipleGeomTypeMapper<LevelView>
@@ -1704,7 +1682,11 @@ applyHostTransToRefinedFaces_()
 
             const auto inIdx = elemMapper.index(elem);
             const auto inCentre = elem.geometry().center();
-            const auto hIn = levelMapper.index(elem.father());
+            // The host is the level-zero ancestor: father() of a nested cell
+            // is a level-1 cell, and its index means nothing on level zero.
+            // The scaling is multiplicative, so going straight to the
+            // ancestor equals chaining through the intermediate level.
+            const auto hIn = levelMapper.index(elem.getOrigin());
 
             for (const auto& is : intersections(gridView_, elem)) {
                 if (!is.neighbor() || (is.outside().level() != elem.level())) {
@@ -1736,7 +1718,7 @@ applyHostTransToRefinedFaces_()
 
                 const auto dIn = distance(inCentre);
                 const auto dOut = distance(is.outside().geometry().center());
-                const auto hOut = levelMapper.index(is.outside().father());
+                const auto hOut = levelMapper.index(is.outside().getOrigin());
 
                 // Lateral faces only.  A host's vertical transmissibility on a
                 // corner-point grid is largely PINCH and MINPV processing, and the
