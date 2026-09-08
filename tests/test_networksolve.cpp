@@ -82,6 +82,7 @@
 #include <opm/simulators/wells/network/NetworkNodePressureUpdater.hpp>
 #include <opm/simulators/wells/network/NetworkInjectionSystem.hpp>
 #include <opm/simulators/wells/network/NetworkProductionSystem.hpp>
+#include <opm/simulators/wells/network/NetworkLegacySolve.hpp>
 #include <opm/simulators/wells/network/NetworkReducedSolve.hpp>
 #include <opm/simulators/wells/network/NetworkTreeSolve.hpp>
 
@@ -5791,6 +5792,123 @@ BOOST_AUTO_TEST_CASE(model5_dumps_with_the_tree)
         }
         // Both mechanisms hold B1 at 6000 when the wells can make it.
         if (rc.converged && at_b1_choke > 5990.0) { BOOST_CHECK_CLOSE(at_b1_tree, 6000.0, 0.5); }
+    }
+}
+
+// The simulator's rules as a fourth route, on the dumps the simulator
+// itself wrote when those rules failed, and on the two decks.
+BOOST_AUTO_TEST_CASE(the_legacy_rules_on_the_dumps)
+{
+    using Sys = DeckTrees::Sys;
+    const std::string model5 = kNetworkDecks + "NETWORK_MODEL5_STDW_AUTOCHK.DATA";
+    const auto dumps = std::filesystem::path(__FILE__).parent_path() / "network_dumps";
+    if (!std::filesystem::exists(model5) || !std::filesystem::is_directory(dumps)) {
+        BOOST_TEST_MESSAGE("opm-tests or the dumps not present, skipping");
+        return;
+    }
+    std::deque<VFPProdTable> tables;
+    VFPProdProperties<double> props;
+    const UnitSystem units{};
+    for (const char* name : {"well_vfp.ecl", "flowl_b_vfp.ecl", "flowl_c_vfp.ecl"}) {
+        const auto path = std::filesystem::path(kNetworkDecks) / "include" / name;
+        if (!std::filesystem::exists(path)) { continue; }
+        const auto deck = Parser{}.parseFile(path.string());
+        for (const auto& kw : deck.getKeywordList("VFPPROD")) {
+            tables.emplace_back(*kw, /*gaslift_opt_active=*/true, units);
+            props.addTable(tables.back());
+        }
+    }
+    DeckTrees dt(model5);
+    const int step = 1;
+    const NetworkSolve::Parameters<double> params{1e-2, 80};
+    auto report = [&](const std::string& what, Sys& legacy, const std::vector<double>& guess,
+                      Sys* tree_sys, const NetworkSolve::TreeResult<double>* tree) {
+        const auto rl = NetworkSolve::solveLegacy(legacy, guess);
+        std::string l = fmt::format("{}: legacy {} in {} it, imbalance {:.3f} bar, {} lookups off the tables", what,
+                                    rl.converged ? "converged" : "NOT converged", rl.iterations,
+                                    convert::to(rl.imbalance, bars), rl.off_axis);
+        if (rl.choke_thp) {
+            l += fmt::format("; choke thp {:.2f} bar ({}), mismatch {:+.1f} %, {} evaluations",
+                             convert::to(*rl.choke_thp, bars), rl.choke_bracketed ? "bracketed" : "kept",
+                             100 * rl.choke_mismatch, rl.choke_evaluations);
+        } else if (rl.choke_evaluations > 0) {
+            l += fmt::format("; choke open (no bracket in {} evaluations)", rl.choke_evaluations);
+        }
+        BOOST_TEST_MESSAGE(l);
+        std::string w = "  legacy   ";
+        double total = 0.0;
+        for (int i = 0; i < legacy.numWells(); ++i) {
+            w += fmt::format(" {}={:.0f}({})", legacy.wells()[i].name, rl.well_rate[i] * 86400.0, rl.controls[i]);
+            total += rl.well_rate[i];
+        }
+        w += "  nodes";
+        for (int n = 1; n <= legacy.numNodes(); ++n) {
+            w += fmt::format(" {}={:.1f}", legacy.nodes()[n].name, convert::to(rl.node_pressure[n], bars));
+        }
+        w += fmt::format("  total {:.0f}", total * 86400.0);
+        BOOST_TEST_MESSAGE(w);
+        if (tree && tree->result.converged) {
+            std::string t = "  tree     ";
+            double tt = 0.0;
+            for (int i = 0; i < tree_sys->numWells(); ++i) {
+                t += fmt::format(" {}={:.0f}({})", tree_sys->wells()[i].name, tree->result.well_rate[i] * 86400.0,
+                                 tree_sys->controlLetter(i));
+                tt += tree->result.well_rate[i];
+            }
+            t += "  nodes";
+            for (int n = 1; n <= tree_sys->numNodes(); ++n) {
+                t += fmt::format(" {}={:.1f}", tree_sys->nodes()[n].name, convert::to(tree->result.node_pressure[n], bars));
+            }
+            t += fmt::format("  total {:.0f}", tt * 86400.0);
+            BOOST_TEST_MESSAGE(t);
+        }
+        return rl;
+    };
+
+    std::vector<std::filesystem::path> files;
+    for (const auto& e : std::filesystem::directory_iterator(dumps)) {
+        if (e.path().extension() == ".txt") { files.push_back(e.path()); }
+    }
+    std::sort(files.begin(), files.end());
+    for (const auto& file : files) {
+        std::ifstream in(file);
+        std::string head; std::getline(in, head);
+        if (head != "production") { continue; }
+        auto [dumped, guess] = NetworkSolve::readProduction<double>(in, props, units);
+        auto legacy = dumped;
+        auto tree = dumped;
+        tree.setAnalyticJacobian(true);
+        tree.setComplementarity(true);
+        for (int n = 0; n <= tree.numNodes(); ++n) { if (tree.nodes()[n].name == "B1") { tree.setChokeTarget(n, 0.0); } }
+        dt.attachTree(tree, step);
+        const auto ro = NetworkSolve::solveWithTree(tree, guess, params, NetworkSolve::FullStep{});
+        report(file.filename().string(), legacy, guess, &tree, &ro);
+    }
+
+    // The decks: MODEL5 with its choke on, NETWORK-01 with nothing binding.
+    {
+        auto sys = dt.build(step, {});
+        for (int n = 0; n <= sys.numNodes(); ++n) { if (sys.nodes()[n].name == "B1") { sys.setChokeTarget(n, 6000.0 / 86400.0); } }
+        auto tree = dt.build(step, {});
+        const auto ro = NetworkSolve::solveWithTree(tree, dt.guess(21.0), params, NetworkSolve::FullStep{});
+        const auto rl = report("MODEL5 deck, choke on", sys, dt.guess(21.0), &tree, &ro);
+        BOOST_CHECK(rl.converged);
+    }
+    const std::string n01 = kNetworkDecks + "NETWORK-01.DATA";
+    if (std::filesystem::exists(n01)) {
+        DeckTrees d1(n01);
+        auto sys = d1.build(step, {});
+        auto tree = d1.build(step, {});
+        const auto ro = NetworkSolve::solveWithTree(tree, d1.guess(80.0), params, NetworkSolve::FullStep{});
+        const auto rl = report("NETWORK-01 deck", sys, d1.guess(80.0), &tree, &ro);
+        BOOST_CHECK(rl.converged);
+        BOOST_REQUIRE(ro.result.converged);
+        for (int w = 0; w < sys.numWells(); ++w) {
+            BOOST_CHECK_CLOSE(rl.well_rate[w], ro.result.well_rate[w], 1.0);
+        }
+        for (int n = 1; n <= sys.numNodes(); ++n) {
+            BOOST_CHECK_CLOSE(rl.node_pressure[n], ro.result.node_pressure[n], 0.5);
+        }
     }
 }
 
