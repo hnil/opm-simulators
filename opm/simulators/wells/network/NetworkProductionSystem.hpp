@@ -340,6 +340,24 @@ public:
     /// 0.25 bar grid: the reduced form differences it, and its answer should
     /// not carry the grid's interpolation error.
     void setExactPotential(const bool on) { exact_potential_ = on; }
+    /// A well whose tubing cannot lift at its node pressure is dead: rate
+    /// zero, no capacity for the tree. The full system says "thp is not a
+    /// control" instead and leaves the case to its complementarity row; the
+    /// reduced form has no such row and takes the well model's own rule.
+    void setDeadWhenCannotLift(const bool on) { dead_when_cannot_lift_ = on; }
+    /// A well found dead at an *accepted* iterate stays dead for the rest of
+    /// the solve: reviving it with the pressure its death lowers is a map
+    /// with no fixed point. Deaths at a line search's trial points are not
+    /// committed; a trial that overshoots must not kill a well for good.
+    void resetDead() { reduced_dead_.assign(numWells(), 0); dead_now_.assign(numWells(), 0); }
+    void commitDead()
+    {
+        for (std::size_t w = 0; w < dead_now_.size() && w < reduced_dead_.size(); ++w) {
+            reduced_dead_[w] |= dead_now_[w];
+        }
+    }
+    /// The wells the last evaluation found unable to lift, committed or not.
+    const std::vector<char>& deadNow() const { return dead_now_; }
     Control ownControl(const int w) const { return own_control_[w]; }
     GroupBind groupBind(const int g) const { return group_bind_[g]; }
 
@@ -1520,6 +1538,8 @@ public:
         }
 
         std::vector<Scalar> own(n), thp(n, unbounded);
+        std::vector<char> dead_now(n, 0);
+        dead_now_.assign(n, 0);
         for (int w = 0; w < n; ++w) {
             const auto& well = wells_[w];
             const Scalar p_node = (well.node == 0) ? terminal_pressure_
@@ -1539,8 +1559,11 @@ public:
                                                       : cachedThpPotential(well, p_node);
                 if (found > Scalar{0}) {
                     thp[w] = found;
+                } else if (dead_when_cannot_lift_) {
+                    dead_now[w] = 1;
                 }
             }
+            if (reduced_dead_.size() == static_cast<std::size_t>(n) && reduced_dead_[w]) { dead_now[w] = 1; }
             own[w] = std::min(thp[w], ipr(well, 1, well.bhp_limit));
             if (well.oil_rate_limit > Scalar{0}) {
                 own[w] = std::min(own[w], well.oil_rate_limit);
@@ -1550,6 +1573,7 @@ public:
             }
         }
 
+        dead_now_ = dead_now;
         const auto share = shareByGuide(guides(), inGroup(), own, group_target_);
 
         for (int w = 0; w < n; ++w) {
@@ -1564,7 +1588,8 @@ public:
             }
             // A bhp limit at or above the shut-in pressure produces nothing;
             // the Bhp row would sit the well there and report injection.
-            if (!(ipr(well, 1, well.bhp_limit) > Scalar{0})) {
+            // Under the well model's rule, so does a tubing that cannot lift.
+            if (!(ipr(well, 1, well.bhp_limit) > Scalar{0}) || dead_now[w]) {
                 changed |= (controls_[w] != Control::Shut);
                 controls_[w] = Control::Shut;
                 own_allowance_[w] = Scalar{0};
@@ -2252,6 +2277,9 @@ private:
     std::vector<Control> own_control_;
     std::vector<Scalar> tree_rate_;
     bool exact_potential_ = false;
+    bool dead_when_cannot_lift_ = false;
+    std::vector<char> reduced_dead_;
+    mutable std::vector<char> dead_now_;
     State reduced_state_;
     std::vector<Group> groups_;
     std::vector<std::vector<int>> group_children_;

@@ -286,9 +286,11 @@ void BlackoilModelParameters<Scalar>::registerParameters()
     Parameters::Register<Parameters::NetworkMaxPressureUpdateInBars<Scalar>>
         ("Maximum pressure update in the inner network pressure update iterations");
     Parameters::Register<Parameters::NetworkSolver>
-        ("How the injection networks are solved: fixedpoint relaxes the node pressures against "
+        ("How the networks are solved: fixedpoint relaxes the node pressures against "
          "the wells, newton solves pressures and rates simultaneously and falls back to the "
-         "fixed point when it does not converge");
+         "fixed point when it does not converge, reduced is newton on the node pressures alone "
+         "with the wells solved exactly at each (production networks without chokes; others "
+         "as newton)");
     Parameters::Register<Parameters::NetworkAnalyticJacobian>
         ("Assemble the network Jacobian from the VFP table derivatives instead of differencing "
          "the residual (--network-solver=newton only)");
