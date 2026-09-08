@@ -5912,6 +5912,96 @@ BOOST_AUTO_TEST_CASE(the_legacy_rules_on_the_dumps)
     }
 }
 
+// Every network system a simulator run wrote out (OPM_NETWORK_DUMP_ALL), by
+// three routes: the full system's active set, the reduced form, the legacy
+// rules. Where they disagree on whether a well flows, the disagreement is
+// printed with the well's crossing at each answer's pressure -- the
+// dead-or-alive multiplicity, if that is what it is.
+BOOST_AUTO_TEST_CASE(replay_dumps_by_three_routes)
+{
+    const char* dir = std::getenv("OPM_NETWORK_DUMP_PROD");
+    const char* inc = std::getenv("OPM_VFP_INCLUDE");
+    if (dir == nullptr || inc == nullptr || !std::filesystem::is_directory(dir)) {
+        BOOST_TEST_MESSAGE("OPM_NETWORK_DUMP_PROD / OPM_VFP_INCLUDE not set, nothing to replay");
+        return;
+    }
+    std::deque<VFPProdTable> tables;
+    VFPProdProperties<double> props;
+    const UnitSystem units{};
+    for (const char* name : {"well_vfp.ecl", "flowl_b_vfp.ecl", "flowl_c_vfp.ecl"}) {
+        const auto path = std::filesystem::path(inc) / name;
+        if (!std::filesystem::exists(path)) { continue; }
+        const auto deck = Parser{}.parseFile(path.string());
+        for (const auto& kw : deck.getKeywordList("VFPPROD")) {
+            tables.emplace_back(*kw, /*gaslift_opt_active=*/true, units);
+            props.addTable(tables.back());
+        }
+    }
+    std::vector<std::filesystem::path> files;
+    for (const auto& e : std::filesystem::directory_iterator(dir)) {
+        if (e.path().extension() == ".txt") { files.push_back(e.path()); }
+    }
+    auto number = [](const std::filesystem::path& p) {
+        const auto s = p.stem().string();
+        return std::atoi(s.substr(s.rfind('_') + 1).c_str());
+    };
+    std::sort(files.begin(), files.end(), [&](const auto& a, const auto& b) { return number(a) < number(b); });
+    const NetworkSolve::Parameters<double> params{1e-2, 80};
+    int n = 0, full_ok = 0, red_ok = 0, leg_ok = 0, dead_disagree = 0, shown = 0, shown_failed = 0;
+    std::map<std::string, int> dead_full, dead_red, dead_leg;
+    for (const auto& file : files) {
+        std::ifstream in(file);
+        std::string head; std::getline(in, head);
+        if (head != "production") { continue; }
+        auto [dumped, guess] = NetworkSolve::readProduction<double>(in, props, units);
+        dumped.setAnalyticJacobian(true);
+        dumped.setComplementarity(true);
+        auto full = dumped, red = dumped, leg = dumped;
+        const auto rf = NetworkSolve::solve(full, guess, params, NetworkSolve::FullStep{});
+        const auto rr = NetworkSolve::solveReduced(red, guess, params, true);
+        const auto rl = NetworkSolve::solveLegacy(leg, guess);
+        ++n; full_ok += rf.converged; red_ok += rr.converged; leg_ok += rl.converged;
+        if (!rr.converged && shown_failed++ < 5) {
+            std::string dead;
+            for (int w = 0; w < dumped.numWells(); ++w) { dead += red.controlLetter(w); }
+            BOOST_TEST_MESSAGE(fmt::format("  {} reduced NOT converged: {} it, {} stalls, {} cliffs, residual {:.3g}, set {} [{}]",
+                                           file.filename().string(), rr.iterations, rr.stalls, rr.cliffs, rr.residual,
+                                           dead, rr.sets.substr(0, 60)));
+        }
+        bool disagree = false;
+        std::string detail;
+        for (int w = 0; w < dumped.numWells(); ++w) {
+            const auto& well = dumped.wells()[w];
+            if (well.shut) { continue; }
+            const bool df = rf.converged && !(rf.well_rate[w] > 1e-9);
+            const bool dr = rr.converged && !(rr.well_rate[w] > 1e-9);
+            const bool dl = rl.converged && !(rl.well_rate[w] > 1e-9);
+            dead_full[well.name] += df; dead_red[well.name] += dr; dead_leg[well.name] += dl;
+            if (rf.converged && rr.converged && rl.converged && (df != dr || df != dl)) {
+                disagree = true;
+                const double pf = rf.node_pressure[well.node], pr = rr.node_pressure[well.node], pl = rl.node_pressure[well.node];
+                detail += fmt::format("\n    {}: full {:.0f} at {:.2f} bar [{}], reduced {:.0f} at {:.2f} [{}], legacy {:.0f} at {:.2f} [{}];"
+                                      " crossing at those pressures {:.0f} / {:.0f} / {:.0f}; dead_above {:.2f}, q_start {:.0f}",
+                                      well.name, rf.well_rate[w] * 86400.0, convert::to(pf, bars), full.controlLetter(w),
+                                      rr.well_rate[w] * 86400.0, convert::to(pr, bars), red.controlLetter(w),
+                                      rl.well_rate[w] * 86400.0, convert::to(pl, bars), rl.controls[w],
+                                      dumped.thpPotential(well, pf) * 86400.0, dumped.thpPotential(well, pr) * 86400.0,
+                                      dumped.thpPotential(well, pl) * 86400.0,
+                                      convert::to(well.dead_above, bars), well.q_start * 86400.0);
+            }
+        }
+        if (disagree) {
+            ++dead_disagree;
+            if (shown++ < 6) { BOOST_TEST_MESSAGE(file.filename().string() << ":" << detail); }
+        }
+    }
+    BOOST_TEST_MESSAGE(fmt::format("{} dumps: converged full {} / reduced {} / legacy {}; {} with a dead-or-alive disagreement",
+                                   n, full_ok, red_ok, leg_ok, dead_disagree));
+    for (const auto& [w, k] : dead_full) {
+        BOOST_TEST_MESSAGE(fmt::format("  {} dead in full {} / reduced {} / legacy {} of {}", w, k, dead_red[w], dead_leg[w], n));
+    }
+}
+
 BOOST_AUTO_TEST_CASE(generated_case_anatomy)
 {
     using Sys = DeckTrees::Sys;

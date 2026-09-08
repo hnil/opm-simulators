@@ -37,6 +37,11 @@ struct ReducedResult
     int iterations = 0;
     int evaluations = 0;      // residual evaluations, differences included
     int stalls = 0;           // steps the line search could not improve on
+    int cliffs = 0;           // steps cut back to keep a well alive
+    /// Settled on the alive side of a cliff the residual could not resolve:
+    /// a well that dies when the pressure rises and revives when it falls
+    /// has no fixed point, and the answer taken is the one with it flowing.
+    bool on_cliff = false;
     int set_changes = 0;      // iterations after which the tree walk chose differently
     Scalar residual = 0;
     int off_axis = 0;         // lookups the answer needed off a table axis
@@ -113,6 +118,8 @@ solveReduced(Sys& system,
     system.setGroupActiveSet(true);
     system.setTreeFrozen(false);
     system.setExactPotential(true);
+    system.setDeadWhenCannotLift(true);
+    system.resetDead();
     const int n = system.numNodes();
     auto p = node_pressure_guess;
     auto norm = [](const std::vector<Scalar>& r) {
@@ -122,15 +129,45 @@ solveReduced(Sys& system,
     };
     auto r = system.reducedResidual(p);
     ++out.evaluations;
+    bool at_cliff = false;
+    auto alive_p = p;
+    std::string alive_set;
     std::string last_set = system.treeSignature();
     out.sets = last_set;
     const Scalar max_step = Scalar{50} * unit::barsa, floor = unit::barsa;
+    std::vector<std::pair<std::string, Scalar>> recent;   // set and residual, last few iterates
     for (int it = 1; it <= params.max_iterations; ++it) {
         out.iterations = it;
         out.residual = norm(r);
         if (out.residual < params.tolerance) {
             out.converged = true;
             break;
+        }
+        // Only two sets seen over the last eight iterates, differing in which
+        // wells can lift, every residual nearly converged: a cliff with no
+        // fixed point. Take the side with the wells flowing and stop.
+        const auto sig = system.treeSignature();
+        const auto dead = [](const std::string& x) { return std::count(x.begin(), x.end(), 'S'); };
+        recent.emplace_back(sig, out.residual);
+        if (recent.size() > 8) { recent.erase(recent.begin()); }
+        if (alive_set.empty() || dead(sig) <= dead(alive_set)) { alive_set = sig; alive_p = p; }
+        if (recent.size() == 8) {
+            std::string a = recent[0].first, b;
+            bool two = true;
+            Scalar worst = 0;
+            for (const auto& [set, res] : recent) {
+                worst = std::max(worst, res);
+                if (set == a) { continue; }
+                if (b.empty()) { b = set; } else if (set != b) { two = false; }
+            }
+            if (two && !b.empty() && dead(a) != dead(b) && worst < Scalar{50} * params.tolerance) {
+                p = alive_p;
+                r = system.reducedResidual(p); ++out.evaluations;
+                out.residual = norm(r);
+                out.converged = true;
+                out.on_cliff = true;
+                break;
+            }
         }
         std::vector<Scalar> dx;
         if (eliminate) {
@@ -160,13 +197,51 @@ solveReduced(Sys& system,
             for (int i = 0; i < n; ++i) { q[i + 1] += step * dx[i]; }
             return q;
         };
+        // A cliff -- a well the full step would leave unable to lift -- is
+        // crossed only when the residual asks for it twice: the first step
+        // that would cross is cut back to the alive side, and if the next
+        // step from there still points across, the death is committed and
+        // the step taken. A well that dies at a trial point the line search
+        // then discards must not die for good.
+        const auto dead_here = system.deadNow();
+        auto newDeath = [&](const std::vector<char>& d) {
+            for (std::size_t w = 0; w < d.size(); ++w) { if (d[w] && !dead_here[w]) { return true; } }
+            return false;
+        };
+        {
+            const auto pt = trial(alpha);
+            (void)system.reducedResidual(pt);
+            ++out.evaluations;
+            if (newDeath(system.deadNow())) {
+                if (!at_cliff) {
+                    // Cut back to the alive side: the largest step with no new death.
+                    Scalar lo = 0, hi = alpha;
+                    for (int k = 0; k < 10; ++k) {
+                        const Scalar mid = Scalar{0.5} * (lo + hi);
+                        (void)system.reducedResidual(trial(mid));
+                        ++out.evaluations;
+                        (newDeath(system.deadNow()) ? hi : lo) = mid;
+                    }
+                    alpha = lo;
+                    at_cliff = true;
+                    ++out.cliffs;
+                } else {
+                    // Asked twice: cross, and the death holds.
+                    (void)system.reducedResidual(pt);
+                    system.commitDead();
+                    at_cliff = false;
+                }
+            } else {
+                at_cliff = false;
+            }
+        }
         bool accepted = false;
         Scalar step = alpha;
-        for (int k = 0; k < 12; ++k) {
+        for (int k = 0; k < 12 && step > Scalar{0}; ++k) {
             const auto pt = trial(step);
             const auto rt = system.reducedResidual(pt);
             ++out.evaluations;
-            if (norm(rt) < out.residual) {
+            if (norm(rt) < out.residual || (at_cliff && k == 0)) {
                 p = pt; r = rt; accepted = true;
                 break;
             }

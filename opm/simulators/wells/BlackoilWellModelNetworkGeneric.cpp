@@ -28,6 +28,7 @@
 #include <opm/input/eclipse/Schedule/VFPProdTable.hpp>
 #include <opm/simulators/wells/network/NetworkInjectionSystem.hpp>
 #include <opm/simulators/wells/network/NetworkProductionSystem.hpp>
+#include <opm/simulators/wells/network/NetworkReducedSolve.hpp>
 
 #include <fstream>
 #include <opm/simulators/wells/WellInterfaceGeneric.hpp>
@@ -883,7 +884,9 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
                                   root.name(), reportStepIdx, system.numWells(), modes));
         return std::optional<std::map<std::string, Scalar>>{};
     }
-    system.setAnalyticJacobian(analytic_jacobian_);
+    // The reduced form eliminates the well and group unknowns from the
+    // assembled Jacobian, so it needs the assembled one.
+    system.setAnalyticJacobian(analytic_jacobian_ || reduced_solver_);
     system.setComplementarity(network_complementarity_);
     system.finish();
 
@@ -915,7 +918,31 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
         }
     }
 
-    const auto result = NetworkSolve::solve(system, guess, kNetworkSolveParams<Scalar>, NetworkSolve::FullStep{});
+    // The reduced form only where it is defined: a tree without a choke. A
+    // choke is a row of the full system and has no place in a residual on
+    // the node pressures alone.
+    const bool any_choke = std::any_of(system.nodes().begin(), system.nodes().end(),
+                                       [&](const auto& n) { return system.isChoke(static_cast<int>(&n - system.nodes().data())); });
+    const auto result = [&]() -> NetworkSolve::Result<Scalar> {
+        if (!reduced_solver_ || any_choke) {
+            return NetworkSolve::solve(system, guess, kNetworkSolveParams<Scalar>, NetworkSolve::FullStep{});
+        }
+        const auto rr = NetworkSolve::solveReduced(system, guess, kNetworkSolveParams<Scalar>, /*eliminate=*/true);
+        NetworkSolve::Result<Scalar> r;
+        r.converged = rr.converged;
+        r.iterations = rr.iterations;
+        r.node_pressure = rr.node_pressure;
+        r.well_rate = rr.well_rate;
+        r.residual = rr.residual;
+        r.off_axis = rr.off_axis;
+        r.control_trace = rr.sets;
+        if (rr.stalls > 0 || rr.off_axis > 0) {
+            OpmLog::debug(fmt::format("Network: reduced solve under {} at report step {}: {} stalls, "
+                                      "{} lookups off the tables", root.name(), reportStepIdx,
+                                      rr.stalls, rr.off_axis));
+        }
+        return r;
+    }();
     // OPM_NETWORK_DUMP_ALL=N writes the first N solved systems too, not only
     // the failures: a converged answer can still be the wrong root, and that
     // is only visible by replaying the same system both ways in the bench.

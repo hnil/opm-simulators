@@ -209,6 +209,9 @@ public:
     /// to have been refreshed, which the templated caller does.
     void useNewtonSolver(const bool on) { newton_solver_ = on; }
     bool usesNewtonSolver() const { return newton_solver_; }
+    /// The reduced form for production trees without a choke: Newton on the
+    /// node pressures, the wells solved exactly at each. Same write-back.
+    void useReducedSolver(const bool on) { reduced_solver_ = on; }
 
     /// Assemble the network Jacobian from the VFP table derivatives instead of
     /// differencing the residual.
@@ -340,6 +343,7 @@ protected:
                                   const Network::Node& root) const;
 
     bool newton_solver_ = false;
+    bool reduced_solver_ = false;
     bool analytic_jacobian_ = false;
     bool network_group_control_ = false;
     bool network_autochoke_ = false;

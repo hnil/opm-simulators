@@ -139,19 +139,20 @@ update(const bool mandatory_network_balance,
         const bool refresh_group_data_between =
             has_domain(/*production=*/true) && has_domain(/*production=*/false);
         const auto& solver_mode = well_model_.param().network_solver_;
-        if (solver_mode != "fixedpoint" && solver_mode != "newton") {
+        if (solver_mode != "fixedpoint" && solver_mode != "newton" && solver_mode != "reduced") {
             OPM_DEFLOG_THROW(std::runtime_error,
                              "Invalid value '" + solver_mode + "' for --network-solver; "
-                             "expected fixedpoint or newton", deferred_logger);
+                             "expected fixedpoint, newton or reduced", deferred_logger);
         }
-        this->useNewtonSolver(solver_mode == "newton");
+        this->useNewtonSolver(solver_mode == "newton" || solver_mode == "reduced");
+        this->useReducedSolver(solver_mode == "reduced");
         this->useAnalyticJacobian(well_model_.param().network_analytic_jacobian_);
         this->useNetworkGroupControl(well_model_.param().network_group_control_);
         this->useNetworkAutochoke(well_model_.param().network_autochoke_);
         this->useNetworkComplementarity(well_model_.param().network_complementarity_);
         this->useGasLiftNetworkResponse(well_model_.param().gaslift_network_response_);
         this->dumpNetworkFailuresTo(well_model_.param().network_dump_failures_);
-        if (solver_mode == "newton") {
+        if (solver_mode == "newton" || solver_mode == "reduced") {
             // The simultaneous solve needs every well's rate response to its own
             // bhp. That is the implicit IPR, which the well solve maintains only
             // where its own control logic happens to need it -- never for
@@ -268,7 +269,7 @@ computeWellGroupThp(const double dt, DeferredLogger& local_deferredLogger)
     // the parameters, not the flags: this runs before the flags are set on
     // the first pass of a step, and one pass of the search is enough to
     // register the group with a pressure nothing else will overwrite.
-    if (well_model_.param().network_solver_ == "newton"
+    if ((well_model_.param().network_solver_ == "newton" || well_model_.param().network_solver_ == "reduced")
         && well_model_.param().network_autochoke_) {
         return false;
     }
