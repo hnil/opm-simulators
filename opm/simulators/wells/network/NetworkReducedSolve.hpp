@@ -23,7 +23,11 @@
 
 #include <opm/input/eclipse/Units/Units.hpp>
 
+#include <fmt/format.h>
+
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <cmath>
 #include <string>
 #include <vector>
@@ -122,6 +126,7 @@ solveReduced(Sys& system,
 {
     using Scalar = typename Sys::ScalarType;
     ReducedResult<Scalar> out;
+    system.flatTargetAsTree();
     system.setGroupActiveSet(true);
     system.setTreeFrozen(false);
     system.setExactPotential(true);
@@ -137,7 +142,13 @@ solveReduced(Sys& system,
     };
     auto r = system.reducedResidual(p);
     ++out.evaluations;
+    // A well that cannot lift at the starting pressures and that the well
+    // model already has at zero stays dead; one the well model has flowing
+    // is given its chance. Without this a well revives on the first step
+    // down and dies on the next one up, forever.
+    system.commitDeadNotFlowing();
     bool at_cliff = false;
+    static const bool trace = std::getenv("OPM_REDUCED_TRACE") != nullptr;
     auto alive_p = p;
     std::string alive_set;
     std::string last_set = system.treeSignature();
@@ -147,6 +158,12 @@ solveReduced(Sys& system,
     for (int it = 1; it <= params.max_iterations; ++it) {
         out.iterations = it;
         out.residual = norm(r);
+        if (trace) {
+            std::string ps;
+            for (int i = 1; i <= n; ++i) { ps += fmt::format(" {:.3f}", p[i] / unit::barsa); }
+            std::fprintf(stderr, "[reduced] it %d residual %.4g set %s p%s\n", it, out.residual,
+                         system.treeSignature().c_str(), ps.c_str());
+        }
         if (out.residual < params.tolerance) {
             out.converged = true;
             break;

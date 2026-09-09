@@ -356,6 +356,13 @@ public:
             reduced_dead_[w] |= dead_now_[w];
         }
     }
+    /// At the start: only the wells the well model already has at zero.
+    void commitDeadNotFlowing()
+    {
+        for (std::size_t w = 0; w < dead_now_.size() && w < reduced_dead_.size(); ++w) {
+            if (!(wells_[w].q_start > Scalar{0})) { reduced_dead_[w] |= dead_now_[w]; }
+        }
+    }
     /// The wells the last evaluation found unable to lift, committed or not.
     const std::vector<char>& deadNow() const { return dead_now_; }
     /// The other answer to a cliff: instead of dying, the well holds the
@@ -396,6 +403,24 @@ public:
         return static_cast<int>(groups_.size()) - 1;
     }
     const std::vector<Group>& groups() const { return groups_; }
+    /// A flattened group target as a one-group tree: the share rows then carry
+    /// the multiplier the reduced Jacobian needs, where the flat split is
+    /// recomputed from capacities and has no row.
+    void flatTargetAsTree()
+    {
+        if (!(group_target_ > Scalar{0}) || !groups_.empty()) { return; }
+        Group g;
+        g.name = "FLAT";
+        g.parent = -1;
+        g.mode = Mode::Oil;
+        g.target = group_target_;
+        const int me = addGroup(std::move(g));
+        for (auto& w : wells_) { if (w.in_group) { w.group = me; w.in_group = false; } }
+        group_target_ = Scalar{0};
+        group_tree_ = true;
+        group_active_set_ = true;
+        finishGroups();
+    }
     /// Set a well's control from outside, to evaluate the rows at a given set.
     void setControl(const int w, const Control c) { controls_[w] = c; }
     /// Put a well the adapter or a dump added into a group of the tree.
