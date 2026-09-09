@@ -358,6 +358,12 @@ public:
     }
     /// The wells the last evaluation found unable to lift, committed or not.
     const std::vector<char>& deadNow() const { return dead_now_; }
+    /// The other answer to a cliff: instead of dying, the well holds the
+    /// rate its crossing had just before the crossing vanished -- a wellhead
+    /// choke taking the difference between the node and the pressure it can
+    /// still lift at. Its response to the node pressure is then continuous.
+    void setCliffRate(const int w, const Scalar q) { cliff_q_[w] = q; }
+    void resetCliffRates() { cliff_q_.assign(numWells(), Scalar{0}); }
     Control ownControl(const int w) const { return own_control_[w]; }
     GroupBind groupBind(const int g) const { return group_bind_[g]; }
 
@@ -1570,6 +1576,10 @@ public:
                 }
             }
             if (reduced_dead_.size() == static_cast<std::size_t>(n) && reduced_dead_[w]) { dead_now[w] = 1; }
+            if (dead_now[w] && cliff_q_.size() == static_cast<std::size_t>(n) && cliff_q_[w] > Scalar{0}) {
+                dead_now[w] = 0;
+                thp[w] = cliff_q_[w];        // held at the cliff, not dead
+            }
             own[w] = std::min(thp[w], ipr(well, 1, well.bhp_limit));
             if (well.oil_rate_limit > Scalar{0}) {
                 own[w] = std::min(own[w], well.oil_rate_limit);
@@ -2286,6 +2296,7 @@ private:
     bool exact_potential_ = false;
     bool dead_when_cannot_lift_ = false;
     std::vector<char> reduced_dead_;
+    std::vector<Scalar> cliff_q_;
     mutable std::vector<char> dead_now_;
     State reduced_state_;
     std::vector<Group> groups_;

@@ -42,6 +42,7 @@ struct ReducedResult
     /// a well that dies when the pressure rises and revives when it falls
     /// has no fixed point, and the answer taken is the one with it flowing.
     bool on_cliff = false;
+    int held_at_cliff = 0;    // wells given their cliff rate instead of dying
     int set_changes = 0;      // iterations after which the tree walk chose differently
     Scalar residual = 0;
     int off_axis = 0;         // lookups the answer needed off a table axis
@@ -106,12 +107,18 @@ reducedStepByElimination(const Sys& system, const std::vector<typename Sys::Scal
 /// of the piece the iterate is on -- by differences, or by elimination from
 /// the full system's -- and a backtracking line search takes the steps that
 /// cross into another.
+/// What a well does at a cliff the residual asks to cross: die (the well
+/// model's rule, sticky for the solve) or hold the rate it had just before
+/// (a wellhead choke).
+enum class CliffRule { Die, Hold };
+
 template<class Sys>
 ReducedResult<typename Sys::ScalarType>
 solveReduced(Sys& system,
              const std::vector<typename Sys::ScalarType>& node_pressure_guess,
              const Parameters<typename Sys::ScalarType> params,
-             const bool eliminate = false)
+             const bool eliminate = false,
+             const CliffRule cliff_rule = CliffRule::Die)
 {
     using Scalar = typename Sys::ScalarType;
     ReducedResult<Scalar> out;
@@ -120,6 +127,7 @@ solveReduced(Sys& system,
     system.setExactPotential(true);
     system.setDeadWhenCannotLift(true);
     system.resetDead();
+    system.resetCliffRates();
     const int n = system.numNodes();
     auto p = node_pressure_guess;
     auto norm = [](const std::vector<Scalar>& r) {
@@ -225,6 +233,25 @@ solveReduced(Sys& system,
                     alpha = lo;
                     at_cliff = true;
                     ++out.cliffs;
+                } else if (cliff_rule == CliffRule::Hold) {
+                    // Asked twice: the wells that would die hold the rate they
+                    // have on the alive side, and the step is taken.
+                    (void)system.reducedResidual(p);
+                    ++out.evaluations;
+                    const auto dying = [&] {
+                        (void)system.reducedResidual(pt);
+                        ++out.evaluations;
+                        return system.deadNow();
+                    }();
+                    (void)system.reducedResidual(p);
+                    ++out.evaluations;
+                    for (std::size_t w = 0; w < dying.size(); ++w) {
+                        if (dying[w] && !dead_here[w]) {
+                            system.setCliffRate(static_cast<int>(w), system.ownAllowance(static_cast<int>(w)));
+                            ++out.held_at_cliff;
+                        }
+                    }
+                    at_cliff = false;
                 } else {
                     // Asked twice: cross, and the death holds.
                     (void)system.reducedResidual(pt);
