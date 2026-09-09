@@ -6002,6 +6002,125 @@ BOOST_AUTO_TEST_CASE(replay_dumps_by_three_routes)
     }
 }
 
+// The statement the whole design rests on, checked the other way round: an
+// answer of the legacy rules, with the set it ended on, satisfies the full
+// system's rows for that set. Node pressures, rates and bhps from the legacy
+// answer go into the state; the controls it ended on go into the system;
+// the residual must be at the legacy's own tolerance. The flattened group
+// target is left out -- the legacy route has no group share.
+BOOST_AUTO_TEST_CASE(legacy_answers_satisfy_the_equations)
+{
+    using Sys = DeckTrees::Sys;
+    const char* dir = std::getenv("OPM_NETWORK_DUMP_PROD");
+    const char* inc = std::getenv("OPM_VFP_INCLUDE");
+    if (dir == nullptr || inc == nullptr || !std::filesystem::is_directory(dir)) {
+        BOOST_TEST_MESSAGE("OPM_NETWORK_DUMP_PROD / OPM_VFP_INCLUDE not set, nothing to check");
+        return;
+    }
+    std::deque<VFPProdTable> tables;
+    VFPProdProperties<double> props;
+    const UnitSystem units{};
+    for (const char* name : {"well_vfp.ecl", "flowl_b_vfp.ecl", "flowl_c_vfp.ecl"}) {
+        const auto path = std::filesystem::path(inc) / name;
+        if (!std::filesystem::exists(path)) { continue; }
+        const auto deck = Parser{}.parseFile(path.string());
+        for (const auto& kw : deck.getKeywordList("VFPPROD")) {
+            tables.emplace_back(*kw, /*gaslift_opt_active=*/true, units);
+            props.addTable(tables.back());
+        }
+    }
+    int n = 0, converged = 0, satisfied = 0, dead_ipr_rows = 0;
+    double worst = 0.0;
+    std::string worst_file;
+    for (const auto& e : std::filesystem::directory_iterator(dir)) {
+        if (e.path().extension() != ".txt") { continue; }
+        std::ifstream in(e.path());
+        std::string head; std::getline(in, head);
+        if (head != "production") { continue; }
+        auto [sys, guess] = NetworkSolve::readProduction<double>(in, props, units);
+        sys.setGroupTarget(0.0);
+        sys.setAnalyticJacobian(true);
+        sys.setComplementarity(false);
+        ++n;
+        const auto rl = NetworkSolve::solveLegacy(sys, guess);
+        if (!rl.converged) { continue; }
+        ++converged;
+        // The legacy answer as a state of the full system, its set as the controls.
+        auto x = sys.start(rl.node_pressure);
+        for (int w = 0; w < sys.numWells(); ++w) {
+            const auto& well = sys.wells()[w];
+            const double q = rl.well_rate[w];
+            const double bhp = (q > 0.0 && well.ipr_b[1] < 0.0) ? (q - well.ipr_a[1]) / well.ipr_b[1] : well.bhp_limit;
+            x[sys.wellBhpIndex(w)] = bhp;
+            for (int ph = 0; ph < Sys::NP; ++ph) {
+                x[sys.wellRateIndex(w, ph)] = (q > 0.0) ? std::max(sys.ipr(well, ph, bhp), 0.0) : 0.0;
+            }
+            const char c = rl.controls[w];
+            sys.setControl(w, c == 'T' ? Sys::Control::Thp : c == 'B' ? Sys::Control::Bhp
+                              : c == 'O' ? Sys::Control::OilRate : Sys::Control::Shut);
+        }
+        for (int nd = sys.numNodes(); nd >= 1; --nd) {
+            for (int ph = 0; ph < Sys::NP; ++ph) {
+                double sum = sys.nodeSource(nd)[ph];
+                for (int w = 0; w < sys.numWells(); ++w) {
+                    if (sys.wells()[w].node != nd) { continue; }
+                    sum += sys.wells()[w].efficiency * (x[sys.wellRateIndex(w, ph)] + (ph == 2 ? sys.wells()[w].lift_gas : 0.0));
+                }
+                for (int c = 1; c <= sys.numNodes(); ++c) {
+                    if (sys.nodes()[c].parent == nd) { sum += sys.nodes()[c].efficiency * x[sys.qIdx(c, ph)]; }
+                }
+                x[sys.qIdx(nd, ph)] = sum;
+            }
+        }
+        auto r = sys.residual(x);
+        // A dead well is q = 0 on every phase; the linear IPR rows cannot say
+        // that (at zero oil the other lines are not at zero), so the full
+        // system has no state for a dead well that satisfies them. Those
+        // rows are the full system's defect, not the answer's; left out and
+        // counted.
+        for (int w = 0; w < sys.numWells(); ++w) {
+            if (rl.controls[w] == 'D' || rl.controls[w] == 'S') {
+                for (int ph = 0; ph < Sys::NP; ++ph) {
+                    if (std::abs(r[sys.wellRateIndex(w, ph)]) > 0.02) { ++dead_ipr_rows; }
+                    r[sys.wellRateIndex(w, ph)] = 0.0;
+                }
+            }
+        }
+        double m = 0.0;
+        int at = -1;
+        for (int i = 0; i < static_cast<int>(r.size()); ++i) {
+            if (std::abs(r[i]) > m) { m = std::abs(r[i]); at = i; }
+        }
+        if (m < 0.02) { ++satisfied; }
+        if (m > worst) {
+            worst = m;
+            std::string rows;
+            std::vector<int> idx(r.size());
+            std::iota(idx.begin(), idx.end(), 0);
+            std::partial_sort(idx.begin(), idx.begin() + 4, idx.end(), [&](int a, int b) { return std::abs(r[a]) > std::abs(r[b]); });
+            for (int k = 0; k < 4; ++k) {
+                const int i = idx[k];
+                std::string what = "?";
+                if (i < sys.numNodes()) { what = "node " + sys.nodes()[i + 1].name; }
+                else if (i < 4 * sys.numNodes()) { what = fmt::format("branch {} ph {}", sys.nodes()[(i - sys.numNodes()) / 3 + 1].name, (i - sys.numNodes()) % 3); }
+                else {
+                    for (int w = 0; w < sys.numWells(); ++w) {
+                        for (int ph = 0; ph < 3; ++ph) { if (i == sys.wellRateIndex(w, ph)) { what = fmt::format("well {} ipr ph {} [{}]", sys.wells()[w].name, ph, rl.controls[w]); } }
+                        if (i == sys.wellBhpIndex(w)) { what = fmt::format("well {} control [{}]", sys.wells()[w].name, rl.controls[w]); }
+                    }
+                }
+                rows += fmt::format(" {}={:.3g} ({})", i, r[i], what);
+            }
+            worst_file = e.path().filename().string() + ":" + rows;
+        }
+    }
+    BOOST_TEST_MESSAGE(fmt::format("{} dumps, legacy converged on {}: {} satisfy the full system's rows at its set"
+                                   " (max scaled residual < 0.02, dead wells' IPR rows aside: {} of those violated);"
+                                   " worst {:.3g} in {}",
+                                   n, converged, satisfied, dead_ipr_rows, worst, worst_file));
+    BOOST_CHECK_EQUAL(satisfied, converged);
+}
+
 BOOST_AUTO_TEST_CASE(generated_case_anatomy)
 {
     using Sys = DeckTrees::Sys;
