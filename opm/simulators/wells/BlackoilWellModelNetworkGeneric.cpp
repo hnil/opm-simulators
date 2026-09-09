@@ -994,7 +994,9 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
         if (!reduced_solver_ || any_choke) {
             return NetworkSolve::solve(system, guess, kNetworkSolveParams<Scalar>, NetworkSolve::FullStep{});
         }
-        const auto rr = NetworkSolve::solveReduced(system, guess, kNetworkSolveParams<Scalar>, /*eliminate=*/true);
+        static const bool hold = std::getenv("OPM_NETWORK_CLIFF_HOLD") != nullptr;
+        const auto rr = NetworkSolve::solveReduced(system, guess, kNetworkSolveParams<Scalar>, /*eliminate=*/true,
+                                                   hold ? NetworkSolve::CliffRule::Hold : NetworkSolve::CliffRule::Die);
         NetworkSolve::Result<Scalar> r;
         r.converged = rr.converged;
         r.iterations = rr.iterations;
@@ -1003,10 +1005,10 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
         r.residual = rr.residual;
         r.off_axis = rr.off_axis;
         r.control_trace = rr.sets;
-        if (rr.stalls > 0 || rr.off_axis > 0) {
+        if (rr.stalls > 0 || rr.off_axis > 0 || rr.held_at_cliff > 0) {
             OpmLog::debug(fmt::format("Network: reduced solve under {} at report step {}: {} stalls, "
-                                      "{} lookups off the tables", root.name(), reportStepIdx,
-                                      rr.stalls, rr.off_axis));
+                                      "{} lookups off the tables, {} wells held at a cliff", root.name(), reportStepIdx,
+                                      rr.stalls, rr.off_axis, rr.held_at_cliff));
         }
         return r;
     }();

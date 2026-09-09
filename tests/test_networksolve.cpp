@@ -5947,8 +5947,8 @@ BOOST_AUTO_TEST_CASE(replay_dumps_by_three_routes)
     };
     std::sort(files.begin(), files.end(), [&](const auto& a, const auto& b) { return number(a) < number(b); });
     const NetworkSolve::Parameters<double> params{1e-2, 80};
-    int n = 0, full_ok = 0, red_ok = 0, leg_ok = 0, dead_disagree = 0, shown = 0, shown_failed = 0;
-    std::map<std::string, int> dead_full, dead_red, dead_leg;
+    int n = 0, full_ok = 0, red_ok = 0, leg_ok = 0, hold_ok = 0, held_wells = 0, dead_disagree = 0, shown = 0, shown_failed = 0;
+    std::map<std::string, int> dead_full, dead_red, dead_leg, dead_hold;
     for (const auto& file : files) {
         std::ifstream in(file);
         std::string head; std::getline(in, head);
@@ -5956,11 +5956,16 @@ BOOST_AUTO_TEST_CASE(replay_dumps_by_three_routes)
         auto [dumped, guess] = NetworkSolve::readProduction<double>(in, props, units);
         dumped.setAnalyticJacobian(true);
         dumped.setComplementarity(true);
-        auto full = dumped, red = dumped, leg = dumped;
+        auto full = dumped, red = dumped, leg = dumped, hold = dumped;
         const auto rf = NetworkSolve::solve(full, guess, params, NetworkSolve::FullStep{});
         const auto rr = NetworkSolve::solveReduced(red, guess, params, true);
         const auto rl = NetworkSolve::solveLegacy(leg, guess);
+        const auto rh = NetworkSolve::solveReduced(hold, guess, params, true, NetworkSolve::CliffRule::Hold);
         ++n; full_ok += rf.converged; red_ok += rr.converged; leg_ok += rl.converged;
+        hold_ok += rh.converged; held_wells += rh.held_at_cliff;
+        for (int w = 0; w < dumped.numWells(); ++w) {
+            if (rh.converged && !(rh.well_rate[w] > 1e-9) && !dumped.wells()[w].shut) { dead_hold[dumped.wells()[w].name] += 1; }
+        }
         if (!rr.converged && shown_failed++ < 5) {
             std::string dead;
             for (int w = 0; w < dumped.numWells(); ++w) { dead += red.controlLetter(w); }
@@ -5995,10 +6000,11 @@ BOOST_AUTO_TEST_CASE(replay_dumps_by_three_routes)
             if (shown++ < 6) { BOOST_TEST_MESSAGE(file.filename().string() << ":" << detail); }
         }
     }
-    BOOST_TEST_MESSAGE(fmt::format("{} dumps: converged full {} / reduced {} / legacy {}; {} with a dead-or-alive disagreement",
-                                   n, full_ok, red_ok, leg_ok, dead_disagree));
+    BOOST_TEST_MESSAGE(fmt::format("{} dumps: converged full {} / reduced {} / legacy {} / reduced-hold {} ({} wells held at a cliff);"
+                                   " {} with a dead-or-alive disagreement",
+                                   n, full_ok, red_ok, leg_ok, hold_ok, held_wells, dead_disagree));
     for (const auto& [w, k] : dead_full) {
-        BOOST_TEST_MESSAGE(fmt::format("  {} dead in full {} / reduced {} / legacy {} of {}", w, k, dead_red[w], dead_leg[w], n));
+        BOOST_TEST_MESSAGE(fmt::format("  {} dead in full {} / reduced {} / legacy {} / reduced-hold {} of {}", w, k, dead_red[w], dead_leg[w], dead_hold[w], n));
     }
 }
 
