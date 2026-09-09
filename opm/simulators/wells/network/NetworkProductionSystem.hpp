@@ -936,9 +936,14 @@ public:
             const auto& well = wells_[w];
             const Scalar bhp = x[bhpIdx(w)];
             std::array<Scalar, NP> q{};
+            // A shut well is zero on every phase, which the linear IPR rows
+            // cannot say (at zero oil the other lines are not at zero); they
+            // give way to q = 0, and the control row pins the bhp instead.
+            const bool shut = controls_[w] == Control::Shut;
             for (int ph = 0; ph < NP; ++ph) {
                 q[ph] = x[qwIdx(w, ph)];
-                r[4 * nodes + NP * w + ph] = (q[ph] - ipr(well, ph, bhp)) / rate_scale_;
+                r[4 * nodes + NP * w + ph] = shut ? q[ph] / rate_scale_
+                                                  : (q[ph] - ipr(well, ph, bhp)) / rate_scale_;
             }
             // Every well the group allocated counts against the target, on
             // whatever control it ended on.
@@ -1011,8 +1016,7 @@ public:
                 break;
             }
             case Control::Shut:
-                control = (well.ipr_b[1] < Scalar{0}) ? q[1] / rate_scale_
-                                                      : (bhp - well.bhp_limit) / pressure_scale_;
+                control = (bhp - well.bhp_limit) / pressure_scale_;
                 break;
             case Control::Tied: {
                 // The well is at its rate limit with the tubing only just
@@ -2098,7 +2102,9 @@ public:
             for (int ph = 0; ph < NP; ++ph) {
                 const int ipr_row = 4 * nodes + NP * w + ph;
                 add(ipr_row, qwIdx(w, ph), 1.0, rate_scale_);
-                add(ipr_row, bhpIdx(w), -well.ipr_b[ph], rate_scale_);
+                if (controls_[w] != Control::Shut) {
+                    add(ipr_row, bhpIdx(w), -well.ipr_b[ph], rate_scale_);
+                }
             }
             const int row = 4 * nodes + NP * wells + w;
             switch (controls_[w]) {
@@ -2189,8 +2195,7 @@ public:
                 break;
             }
             case Control::Shut:
-                if (well.ipr_b[1] < Scalar{0}) { add(row, qwIdx(w, 1), 1.0, rate_scale_); }
-                else { add(row, bhpIdx(w), 1.0, pressure_scale_); }
+                add(row, bhpIdx(w), 1.0, pressure_scale_);
                 break;
             case Control::Tied: {
                 std::array<Scalar, NP> q{};
