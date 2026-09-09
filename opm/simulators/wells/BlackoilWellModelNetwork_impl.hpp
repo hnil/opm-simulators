@@ -148,6 +148,7 @@ update(const bool mandatory_network_balance,
         this->useReducedSolver(solver_mode == "reduced");
         this->useAnalyticJacobian(well_model_.param().network_analytic_jacobian_);
         this->useNetworkGroupControl(well_model_.param().network_group_control_);
+        this->useNetworkGroupTree(well_model_.param().network_group_tree_);
         this->useNetworkAutochoke(well_model_.param().network_autochoke_);
         this->useNetworkComplementarity(well_model_.param().network_complementarity_);
         this->useGasLiftNetworkResponse(well_model_.param().gaslift_network_response_);

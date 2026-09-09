@@ -31,6 +31,8 @@
 #include <opm/simulators/wells/network/NetworkReducedSolve.hpp>
 
 #include <fstream>
+#include <set>
+#include <functional>
 #include <opm/simulators/wells/WellInterfaceGeneric.hpp>
 
 #include <opm/common/TimingMacros.hpp>
@@ -754,6 +756,7 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
     const bool shut_rows = this->network_complementarity_ && this->analytic_jacobian_;
     const bool use_group_target = this->network_group_control_;
     std::map<int, int> pinned_cmode;   // why the pinned wells were pinned
+    std::vector<std::pair<int, std::string>> tree_wells;   // index in the system, name
     // Does anything already give the solve something to place? If not, the
     // tree would be declined, and a well on thp control is then worth freeing:
     // its thp is the node pressure, so the network can place it after all.
@@ -829,6 +832,11 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
             if (!(current > Scalar{0}) && e[13] > Scalar{0}) {
                 w.dead_above = e[13];
             }
+        } else if (on_group && this->network_group_tree_) {
+            // The tree decides its share; its own limits stay its own.
+            w.oil_rate_limit = candidate.oil_rate_limit;
+            w.guide = current;
+            tree_wells.emplace_back(static_cast<int>(system.numWells()), candidate.name);
         } else if (on_group && use_group_target) {
             // The group has set the total; hand the network that and let it
             // place the split, bounded by each well's own limit.
@@ -867,7 +875,64 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
     // relaxed evaluation with extra steps -- and a different path through the
     // sub-iterations, which a well test downstream can turn into a different
     // decision. Leave it to the evaluation it would only reproduce.
-    const bool anything_to_decide = system.grouped()
+    // The deck's group tree, parents first, each group with its own target
+    // and a guide that is the sum of its wells'. A group with producers this
+    // network does not see keeps no target: its share would fall on the
+    // wells here alone.
+    std::vector<Scalar> tree_inputs;
+    if (!tree_wells.empty()) {
+        std::map<std::string, int> gidx;
+        std::map<std::string, Scalar> wguide;
+        std::set<std::string> here;
+        for (const auto& w : system.wells()) { wguide[w.name] = w.guide; here.insert(w.name); }
+        std::function<Scalar(const std::string&)> subtreeGuide = [&](const std::string& g) {
+            const auto& grp = schedule.getGroup(g, reportStepIdx);
+            Scalar sum = 0;
+            for (const auto& child : grp.groups()) { sum += subtreeGuide(child); }
+            for (const auto& wn : grp.wells()) { if (const auto it = wguide.find(wn); it != wguide.end()) { sum += it->second; } }
+            return sum;
+        };
+        std::function<bool(const std::string&)> allHere = [&](const std::string& g) {
+            const auto& grp = schedule.getGroup(g, reportStepIdx);
+            for (const auto& child : grp.groups()) { if (!allHere(child)) { return false; } }
+            for (const auto& wn : grp.wells()) {
+                const auto& well = schedule.getWell(wn, reportStepIdx);
+                if (well.isProducer() && well.predictionMode() && well.getStatus() == Well::Status::OPEN
+                    && !here.count(wn)) { return false; }
+            }
+            return true;
+        };
+        std::function<void(const std::string&, int)> addTree = [&](const std::string& g, const int parent) {
+            const auto& grp = schedule.getGroup(g, reportStepIdx);
+            typename Sys::Group node;
+            node.name = g;
+            node.parent = parent;
+            node.efficiency = grp.getGroupEfficiencyFactor(/*network=*/true);
+            node.guide = subtreeGuide(g);
+            if (grp.isProductionGroup() && allHere(g)) {
+                const auto ctl = grp.productionControls(summary_state);
+                using C = Group::ProductionCMode;
+                if (ctl.cmode == C::ORAT)      { node.mode = Sys::Mode::Oil;    node.target = ctl.oil_target; }
+                else if (ctl.cmode == C::LRAT) { node.mode = Sys::Mode::Liquid; node.target = ctl.liquid_target; }
+                else if (ctl.cmode == C::GRAT) { node.mode = Sys::Mode::Gas;    node.target = ctl.gas_target; }
+                else if (ctl.cmode == C::WRAT) { node.mode = Sys::Mode::Water;  node.target = ctl.water_target; }
+            } else if (grp.isProductionGroup()) {
+                OpmLog::debug(fmt::format("Network: group {} has producers outside the tree under {}; "
+                                          "its target is not applied in the network solve", g, root.name()));
+            }
+            const int me = system.addGroup(std::move(node));
+            gidx[g] = me;
+            tree_inputs.insert(tree_inputs.end(), {system.groups()[me].target, static_cast<Scalar>(me)});
+            for (const auto& child : grp.groups()) { addTree(child, me); }
+        };
+        addTree("FIELD", -1);
+        for (const auto& [w, name] : tree_wells) {
+            system.setWellGroup(w, gidx.at(schedule.getWell(name, reportStepIdx).groupName()));
+        }
+        system.setGroupTree(true);
+        system.setGroupActiveSet(true);
+    }
+    const bool anything_to_decide = system.grouped() || system.usesGroupTree()
         || std::any_of(system.wells().begin(), system.wells().end(),
                        [](const auto& w) { return !w.pinned; });
     if (!anything_to_decide) {
@@ -886,14 +951,16 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
     }
     // The reduced form eliminates the well and group unknowns from the
     // assembled Jacobian, so it needs the assembled one.
-    system.setAnalyticJacobian(analytic_jacobian_ || reduced_solver_);
+    system.setAnalyticJacobian(analytic_jacobian_ || reduced_solver_ || !tree_wells.empty());
     system.setComplementarity(network_complementarity_);
     system.finish();
+    if (!tree_wells.empty()) { system.finishGroups(); }
 
     // Everything the solve depends on. Inside a sub-loop the wells are frozen
     // and this comes back unchanged, and re-solving it from a different guess
     // is at best a repeat and at worst a different root.
     std::vector<Scalar> inputs{terminal, group_target, static_cast<Scalar>(system.numWells())};
+    inputs.insert(inputs.end(), tree_inputs.begin(), tree_inputs.end());
     for (const auto& w : system.wells()) {
         inputs.insert(inputs.end(), {static_cast<Scalar>(w.node), static_cast<Scalar>(w.vfp_table),
                                      w.ipr_a[0], w.ipr_a[1], w.ipr_a[2], w.ipr_b[0], w.ipr_b[1], w.ipr_b[2],

@@ -220,6 +220,9 @@ public:
     /// Let the network hold the group's total and place the split itself, rather
     /// than taking each group-controlled well's rate as fixed.
     void useNetworkGroupControl(const bool on) { network_group_control_ = on; }
+    /// The deck's group tree in the production solve, instead of one
+    /// flattened target for the wells on group control.
+    void useNetworkGroupTree(const bool on) { network_group_tree_ = on; }
     void useNetworkAutochoke(const bool on) { network_autochoke_ = on; }
     void useNetworkComplementarity(const bool on) { network_complementarity_ = on; }
     /// Per local well, the hydrostatic correction its tubing table needs;
@@ -346,6 +349,7 @@ protected:
     bool reduced_solver_ = false;
     bool analytic_jacobian_ = false;
     bool network_group_control_ = false;
+    bool network_group_tree_ = false;
     bool network_autochoke_ = false;
     bool network_complementarity_ = false;
     std::map<std::string, Scalar> well_vfp_dp_;
