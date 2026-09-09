@@ -4759,6 +4759,8 @@ namespace {
             double j_scale = 2.0;
             double wct = 0.2;
             double gor = 100.0;
+            /// per-well multiplier on j_scale, for wells meant to be weak
+            std::map<std::string, double> j_of;
         };
         std::unique_ptr<Deck> deck;
         std::unique_ptr<EclipseState> es;
@@ -4845,7 +4847,8 @@ namespace {
                 const double bhp_lim = w.ctl.bhp_limit > 0.0 ? w.ctl.bhp_limit : unit::barsa;
                 const double orat = w.ctl.hasControl(WellProducerCMode::ORAT) && w.ctl.oil_rate > 0.0
                     ? w.ctl.oil_rate : 1000.0 / 86400.0;
-                const double j_oil = ipr.j_scale * orat / (p_res - bhp_lim);
+                const double jm = ipr.j_of.count(w.name) ? ipr.j_of.at(w.name) : 1.0;
+                const double j_oil = jm * ipr.j_scale * orat / (p_res - bhp_lim);
                 const double j_liq = j_oil / (1.0 - ipr.wct);
                 const double j[3] = {ipr.wct * j_liq, j_oil, ipr.gor * j_oil};   // water, oil, gas
                 for (int ph = 0; ph < Sys::NP; ++ph) { out.ipr_a[ph] = j[ph] * p_res; out.ipr_b[ph] = -j[ph]; }
@@ -5181,7 +5184,12 @@ BOOST_AUTO_TEST_CASE(model5_sweep)
 // set between what the subtree could make and well above it.
 // ---------------------------------------------------------------------------
 namespace {
-    struct GenSpec { int wells, nodes, groups; unsigned seed; bool size_tables = true; };
+    struct GenSpec {
+        int wells, nodes, groups; unsigned seed; bool size_tables = true;
+        int group_depth = 4, net_depth = 3;      // deepest allowed tree levels
+        double stiff = 0.0;                      // fraction of wells with a quarter of the inflow: thp-capped below their share
+        double target_fraction = 0.35;           // groups given a target
+    };
 
     std::string vfpprodTable(const int number, const std::vector<double>& flo,
                              const std::vector<double>& thp,
@@ -5261,7 +5269,7 @@ namespace {
         for (int g = 1; g < G; ++g) {
             gname.push_back(fmt::format("G{}", g));
             int par;
-            do { par = pick(g); } while (gdepth[par] >= 4);
+            do { par = pick(g); } while (gdepth[par] >= spec.group_depth);
             gparent.push_back(par);
             gdepth.push_back(gdepth[par] + 1);
         }
@@ -5287,7 +5295,7 @@ namespace {
         d += "BRANPROP\n";
         for (std::size_t n = 1; n < nodes.size(); ++n) {
             int up;
-            do { up = pick(static_cast<int>(n)); } while (ndepth[up] >= 3);
+            do { up = pick(static_cast<int>(n)); } while (ndepth[up] >= spec.net_depth);
             ndepth[n] = ndepth[up] + 1;
             d += fmt::format(" '{}' '{}' 2 1* /\n", gname[nodes[n]], gname[nodes[up]]);
         }
@@ -5326,7 +5334,7 @@ namespace {
         std::string gc = "GCONPROD\n";
         int targets = 0, liquid = 0;
         for (int g = 0; g < G; ++g) {
-            if (beneath[g] <= 0.0 || uniform(0.0, 1.0) > 0.35) { continue; }
+            if (beneath[g] <= 0.0 || uniform(0.0, 1.0) > spec.target_fraction) { continue; }
             const double frac = uniform(0.0, 1.0) < 0.8 ? uniform(0.4, 0.9) : uniform(1.5, 3.0);
             const bool lrat = uniform(0.0, 1.0) < 0.25;
             const double value = std::round(frac * beneath[g] * (lrat ? 1.25 : 1.0));
@@ -5337,10 +5345,23 @@ namespace {
         }
         d += gc + "/\nTSTEP\n1 /\nEND\n";
         if (summary) {
-            *summary = fmt::format("{} wells, {} groups ({} with a target, {} of them liquid), {} nodes",
-                                   W, G, targets, liquid, nodes.size());
+            int ndeep = 0, gdeep = 0;
+            for (const int x : ndepth) { ndeep = std::max(ndeep, x); }
+            for (const int x : gdepth) { gdeep = std::max(gdeep, x); }
+            *summary = fmt::format("{} wells, {} groups ({} with a target, {} of them liquid, depth {}), {} nodes (depth {})",
+                                   W, G, targets, liquid, gdeep, nodes.size(), ndeep);
         }
         return d;
+    }
+
+    /// The wells a spec means to be weak: every k-th, k from the stiff fraction.
+    std::map<std::string, double> weakWells(const GenSpec& spec)
+    {
+        std::map<std::string, double> j;
+        if (spec.stiff <= 0.0) { return j; }
+        const int every = std::max(1, static_cast<int>(std::round(1.0 / spec.stiff)));
+        for (int w = 0; w < spec.wells; w += every) { j["W" + std::to_string(w + 1)] = 0.25; }
+        return j;
     }
 }
 
@@ -5947,7 +5968,8 @@ BOOST_AUTO_TEST_CASE(replay_dumps_by_three_routes)
     };
     std::sort(files.begin(), files.end(), [&](const auto& a, const auto& b) { return number(a) < number(b); });
     const NetworkSolve::Parameters<double> params{1e-2, 80};
-    int n = 0, full_ok = 0, red_ok = 0, leg_ok = 0, hold_ok = 0, held_wells = 0, dead_disagree = 0, shown = 0, shown_failed = 0;
+    int n = 0, full_ok = 0, red_ok = 0, leg_ok = 0, hold_ok = 0, held_wells = 0, dead_disagree = 0, shown = 0, shown_failed = 0,
+        failed_grouped = 0, failed_plain = 0, shown_failed_grouped = 0;
     std::map<std::string, int> dead_full, dead_red, dead_leg, dead_hold;
     for (const auto& file : files) {
         std::ifstream in(file);
@@ -5966,12 +5988,15 @@ BOOST_AUTO_TEST_CASE(replay_dumps_by_three_routes)
         for (int w = 0; w < dumped.numWells(); ++w) {
             if (rh.converged && !(rh.well_rate[w] > 1e-9) && !dumped.wells()[w].shut) { dead_hold[dumped.wells()[w].name] += 1; }
         }
-        if (!rr.converged && shown_failed++ < 5) {
-            std::string dead;
-            for (int w = 0; w < dumped.numWells(); ++w) { dead += red.controlLetter(w); }
-            BOOST_TEST_MESSAGE(fmt::format("  {} reduced NOT converged: {} it, {} stalls, {} cliffs, residual {:.3g}, set {} [{}]",
-                                           file.filename().string(), rr.iterations, rr.stalls, rr.cliffs, rr.residual,
-                                           dead, rr.sets.substr(0, 60)));
+        if (!rr.converged) {
+            (dumped.groupTarget() > 0.0 ? failed_grouped : failed_plain) += 1;
+            if ((dumped.groupTarget() > 0.0 ? shown_failed_grouped : shown_failed)++ < 5) {
+                std::string dead;
+                for (int w = 0; w < dumped.numWells(); ++w) { dead += red.controlLetter(w); }
+                BOOST_TEST_MESSAGE(fmt::format("  {} reduced NOT converged{}: {} it, {} stalls, {} cliffs, residual {:.3g}, set {} [{}]",
+                                               file.filename().string(), dumped.groupTarget() > 0.0 ? " (flat target)" : "",
+                                               rr.iterations, rr.stalls, rr.cliffs, rr.residual, dead, rr.sets.substr(0, 90)));
+            }
         }
         bool disagree = false;
         std::string detail;
@@ -6001,8 +6026,8 @@ BOOST_AUTO_TEST_CASE(replay_dumps_by_three_routes)
         }
     }
     BOOST_TEST_MESSAGE(fmt::format("{} dumps: converged full {} / reduced {} / legacy {} / reduced-hold {} ({} wells held at a cliff);"
-                                   " {} with a dead-or-alive disagreement",
-                                   n, full_ok, red_ok, leg_ok, hold_ok, held_wells, dead_disagree));
+                                   " {} with a dead-or-alive disagreement; reduced failed on {} with a flat target, {} without",
+                                   n, full_ok, red_ok, leg_ok, hold_ok, held_wells, dead_disagree, failed_grouped, failed_plain));
     for (const auto& [w, k] : dead_full) {
         BOOST_TEST_MESSAGE(fmt::format("  {} dead in full {} / reduced {} / legacy {} / reduced-hold {} of {}", w, k, dead_red[w], dead_leg[w], dead_hold[w], n));
     }
@@ -6125,6 +6150,280 @@ BOOST_AUTO_TEST_CASE(legacy_answers_satisfy_the_equations)
                                    " worst {:.3g} in {}",
                                    n, converged, satisfied, dead_ipr_rows, worst, worst_file));
     BOOST_CHECK_EQUAL(satisfied, converged);
+}
+
+// A judge that owes nothing to any route: does an answer -- node pressures,
+// well rates, the controls it ended on -- satisfy the rows and the
+// inequalities that define a solution? Every route's answer on every dumped
+// system goes through it, so "best" is decided by the same yardstick.
+namespace {
+    /// hysteresis: wells shut although a crossing exists at the settled
+    /// pressure -- the cliff's answer, shut stays shut; not a violation of
+    /// the rows, but not a strict solution either, so counted apart.
+    struct Verdict { bool ok = true; int hysteresis = 0; std::map<std::string, int> violations; };
+
+    template<class Sys>
+    Verdict verifyAnswer(const Sys& sys, const std::vector<double>& p, const std::vector<double>& q_oil,
+                         const std::string& controls)
+    {
+        constexpr int NP = Sys::NP;
+        Verdict v;
+        auto fail = [&](const std::string& what) { v.ok = false; ++v.violations[what]; };
+        const double dp_tol = 0.05 * unit::barsa, r_tol = 0.005;
+        std::vector<std::array<double, NP>> q(sys.numWells());
+        std::vector<double> bhp(sys.numWells());
+        double in_group = 0.0;
+        bool any_held = false;
+        for (int w = 0; w < sys.numWells(); ++w) {
+            const auto& well = sys.wells()[w];
+            const char c = controls[w];
+            const double qo = q_oil[w];
+            bhp[w] = (qo > 0.0 && well.ipr_b[1] < 0.0) ? (qo - well.ipr_a[1]) / well.ipr_b[1] : well.bhp_limit;
+            for (int ph = 0; ph < NP; ++ph) { q[w][ph] = qo > 0.0 ? std::max(sys.ipr(well, ph, bhp[w]), 0.0) : 0.0; }
+            if (well.shut || c == 'S' || c == 'D') {
+                if (qo > 1e-9) { fail("shut well producing"); }
+                // The branch rule: shut only because nothing can lift it.
+                if (!well.shut && well.vfp_table > 0 && sys.thpPotential(well, p[well.node]) > 0.0
+                    && !(well.dead_above > 0.0 && p[well.node] >= well.dead_above)) { ++v.hysteresis; }
+                continue;
+            }
+            if (!(qo > 0.0)) { fail("open well at zero"); continue; }
+            if (well.pinned) {
+                if (std::abs(qo - well.oil_rate_limit) > r_tol * well.oil_rate_limit) { fail("pinned well off its rate"); }
+                continue;
+            }
+            if (well.oil_rate_limit > 0.0 && qo > well.oil_rate_limit * (1 + r_tol)) { fail("above own rate limit"); }
+            if (bhp[w] < well.bhp_limit - dp_tol) { fail("below bhp limit"); }
+            if (well.vfp_table > 0) {
+                const double need = sys.tableBhp(well.vfp_table, p[well.node], q[w], well.alq) - well.vfp_dp;
+                if (c == 'T') {
+                    if (std::abs(bhp[w] - need) > dp_tol) { fail("thp well off its tubing curve"); }
+                    if (sys.thpPotential(well, p[well.node]) > 0.0
+                        && std::abs(qo - sys.thpPotential(well, p[well.node])) > r_tol * qo) { fail("thp well not on the stable crossing"); }
+                } else if (need > bhp[w] + dp_tol) {
+                    fail("tubing cannot lift the rate");     // rate/bhp/group control needs the tubing to allow more
+                }
+            }
+            if (c == 'O' && well.oil_rate_limit > 0.0 && std::abs(qo - well.oil_rate_limit) > r_tol * well.oil_rate_limit) { fail("rate well off its limit"); }
+            if (c == 'B' && std::abs(bhp[w] - well.bhp_limit) > dp_tol) { fail("bhp well off its limit"); }
+            if (well.in_group) { in_group += well.efficiency * qo; any_held = any_held || c == 'G' || c == 'R'; }
+        }
+        if (sys.groupTarget() > 0.0) {
+            if (in_group > sys.groupTarget() * (1 + r_tol)) { fail("group total above target"); }
+            if (any_held && std::abs(in_group - sys.groupTarget()) > r_tol * sys.groupTarget()) { fail("held wells but target not met"); }
+        }
+        // The tree: no group above its target on its mode; a held well has a
+        // bound ancestor -- one at its target -- and produces no more than
+        // its own limits allow.
+        if (sys.usesGroupTree()) {
+            const auto& groups = sys.groups();
+            std::vector<double> on_mode(sys.numGroups(), 0.0);
+            for (int g = 0; g < sys.numGroups(); ++g) {
+                const auto c = Sys::modeWeights(groups[g].mode, groups[g].resv_coeff);
+                for (int w = 0; w < sys.numWells(); ++w) {
+                    bool under = false;
+                    for (int a = sys.wells()[w].group; a >= 0; a = groups[a].parent) { if (a == g) { under = true; break; } }
+                    if (!under) { continue; }
+                    for (int ph = 0; ph < NP; ++ph) { on_mode[g] += c[ph] * sys.wells()[w].efficiency * q[w][ph]; }
+                }
+                if (groups[g].target > 0.0 && on_mode[g] > groups[g].target * (1 + r_tol)) { fail("group above its target"); }
+            }
+            for (int w = 0; w < sys.numWells(); ++w) {
+                if (controls[w] != 'R') { continue; }
+                bool bound = false;
+                for (int a = sys.wells()[w].group; a >= 0; a = groups[a].parent) {
+                    if (groups[a].target > 0.0 && std::abs(on_mode[a] - groups[a].target) <= r_tol * groups[a].target) { bound = true; break; }
+                }
+                if (!bound) { fail("held well without a group at its target"); }
+                const auto& well = sys.wells()[w];
+                if (well.vfp_table > 0) {
+                    const double cap = sys.thpPotential(well, p[well.node]);
+                    if (cap > 0.0 && cap < 1e30 && q_oil[w] > cap * (1 + r_tol)) { fail("held well above its tubing capacity"); }
+                }
+            }
+        }
+        // The network: pressures from the rates, top down.
+        std::vector<std::array<double, NP>> Q(sys.numNodes() + 1);
+        for (int n = sys.numNodes(); n >= 1; --n) {
+            auto sum = sys.nodeSource(n);
+            for (int w = 0; w < sys.numWells(); ++w) {
+                if (sys.wells()[w].node != n) { continue; }
+                for (int ph = 0; ph < NP; ++ph) { sum[ph] += sys.wells()[w].efficiency * (q[w][ph] + (ph == 2 ? sys.wells()[w].lift_gas : 0.0)); }
+            }
+            for (int c = 1; c <= sys.numNodes(); ++c) {
+                if (sys.nodes()[c].parent != n) { continue; }
+                for (int ph = 0; ph < NP; ++ph) { sum[ph] += sys.nodes()[c].efficiency * Q[c][ph]; }
+            }
+            Q[n] = sum;
+        }
+        for (int n = 1; n <= sys.numNodes(); ++n) {
+            const auto& node = sys.nodes()[n];
+            const double up = node.parent == 0 ? sys.terminalPressure() : p[node.parent];
+            const double want = node.vfp_table != NetworkSolve::NoTable
+                ? sys.tableBhp(node.vfp_table, up, Q[n], sys.branchAlq(n)) : up;
+            if (std::abs(p[n] - want) > dp_tol) { fail("node pressure off its branch"); }
+        }
+        return v;
+    }
+}
+
+BOOST_AUTO_TEST_CASE(methods_on_the_dumps_scored)
+{
+    using Sys = DeckTrees::Sys;
+    const char* dir = std::getenv("OPM_NETWORK_DUMP_PROD");
+    const char* inc = std::getenv("OPM_VFP_INCLUDE");
+    if (dir == nullptr || inc == nullptr || !std::filesystem::is_directory(dir)) {
+        BOOST_TEST_MESSAGE("OPM_NETWORK_DUMP_PROD / OPM_VFP_INCLUDE not set, nothing to score");
+        return;
+    }
+    std::deque<VFPProdTable> tables;
+    VFPProdProperties<double> props;
+    const UnitSystem units{};
+    for (const char* name : {"well_vfp.ecl", "flowl_b_vfp.ecl", "flowl_c_vfp.ecl"}) {
+        const auto path = std::filesystem::path(inc) / name;
+        if (!std::filesystem::exists(path)) { continue; }
+        const auto deck = Parser{}.parseFile(path.string());
+        for (const auto& kw : deck.getKeywordList("VFPPROD")) {
+            tables.emplace_back(*kw, /*gaslift_opt_active=*/true, units);
+            props.addTable(tables.back());
+        }
+    }
+    struct Score { int n = 0, converged = 0, verified = 0, wrong = 0, hysteresis = 0; long lookups = 0; std::map<std::string, int> why; };
+    std::map<std::string, Score> scores;
+    std::map<std::string, Score> scores_grouped;     // the dumps with a flat target
+    auto record = [&](const std::string& method, const bool grouped, const bool converged, const Verdict& v, const long lookups) {
+        for (auto* sc : {&scores[method], grouped ? &scores_grouped[method] : nullptr}) {
+            if (!sc) { continue; }
+            ++sc->n; sc->lookups += lookups;
+            if (!converged) { continue; }
+            ++sc->converged;
+            if (v.hysteresis > 0) { ++sc->hysteresis; }
+            if (v.ok) { ++sc->verified; } else { ++sc->wrong; for (const auto& [k, c] : v.violations) { sc->why[k] += c; } }
+        }
+    };
+    const NetworkSolve::Parameters<double> params{1e-2, 80};
+    auto letters = [](const Sys& sys) {
+        std::string s;
+        for (int w = 0; w < sys.numWells(); ++w) { s += sys.controlLetter(w); }
+        return s;
+    };
+    for (const auto& e : std::filesystem::directory_iterator(dir)) {
+        if (e.path().extension() != ".txt") { continue; }
+        std::ifstream in(e.path());
+        std::string head; std::getline(in, head);
+        if (head != "production") { continue; }
+        auto [dumped, guess] = NetworkSolve::readProduction<double>(in, props, units);
+        const bool grouped = dumped.groupTarget() > 0.0;
+        dumped.setAnalyticJacobian(true);
+        {   // the legacy rules
+            auto sys = dumped; sys.resetLookups();
+            const auto r = NetworkSolve::solveLegacy(sys, guess);
+            const std::string c = r.controls;
+            record("legacy rules", grouped, r.converged, r.converged ? verifyAnswer(sys, r.node_pressure, r.well_rate, c) : Verdict{}, sys.lookups());
+        }
+        {   // the reduced form, die rule
+            auto sys = dumped; sys.resetLookups();
+            const auto r = NetworkSolve::solveReduced(sys, guess, params, true);
+            record("reduced", grouped, r.converged, r.converged ? verifyAnswer(sys, r.node_pressure, r.well_rate, letters(sys)) : Verdict{}, sys.lookups());
+        }
+        {   // the full system, active set (the simulator's newton with the assembled Jacobian)
+            auto sys = dumped; sys.resetLookups(); sys.setComplementarity(false);
+            const auto r = NetworkSolve::solve(sys, guess, params, NetworkSolve::FullStep{});
+            record("full active set", grouped, r.converged, r.converged ? verifyAnswer(sys, r.node_pressure, r.well_rate, letters(sys)) : Verdict{}, sys.lookups());
+        }
+        {   // the full system with the complementarity rows
+            auto sys = dumped; sys.resetLookups(); sys.setComplementarity(true);
+            const auto r = NetworkSolve::solve(sys, guess, params, NetworkSolve::FullStep{});
+            record("full complementarity", grouped, r.converged, r.converged ? verifyAnswer(sys, r.node_pressure, r.well_rate, letters(sys)) : Verdict{}, sys.lookups());
+        }
+    }
+    for (const auto* tab : {&scores, &scores_grouped}) {
+        const std::string heading = (tab == &scores) ? "all dumps:" : "dumps with a flat group target:";
+        BOOST_TEST_MESSAGE(heading);
+        for (const auto& [m, sc] : *tab) {
+            std::string why;
+            std::vector<std::pair<int, std::string>> top;
+            for (const auto& [k, c] : sc.why) { top.emplace_back(c, k); }
+            std::sort(top.rbegin(), top.rend());
+            for (std::size_t i = 0; i < top.size() && i < 3; ++i) { why += fmt::format(" {} x{}", top[i].second, top[i].first); }
+            BOOST_TEST_MESSAGE(fmt::format("  {:22} of {}: converged {:4}, verified {:4} ({:3} of them shut-stays-shut), wrong {:4}, lookups/solve {:6.0f};{}",
+                                           m, sc.n, sc.converged, sc.verified, sc.hysteresis, sc.wrong, double(sc.lookups) / std::max(sc.n, 1), why));
+        }
+    }
+}
+
+// The routes on layered instances: deeper networks and trees, targets on
+// several levels at once, and a quarter of the wells weak enough that the
+// tubing caps them below their share so the tree hands the difference to
+// the others. Every answer through the same judge.
+BOOST_AUTO_TEST_CASE(generated_layered_cases_scored)
+{
+    using Sys = DeckTrees::Sys;
+    const NetworkSolve::Parameters<double> params{1e-2, 80};
+    struct Score { int n = 0, converged = 0, verified = 0, wrong = 0; long it = 0; std::map<std::string, int> why; };
+    std::map<std::string, Score> scores;
+    auto record = [&](const std::string& m, const bool converged, const Verdict& v, const int it) {
+        auto& sc = scores[m];
+        ++sc.n; sc.it += it;
+        if (!converged) { return; }
+        ++sc.converged;
+        if (v.ok) { ++sc.verified; } else { ++sc.wrong; for (const auto& [k, c] : v.violations) { sc.why[k] += c; } }
+    };
+    auto letters = [](const Sys& sys) { std::string s; for (int w = 0; w < sys.numWells(); ++w) { s += sys.controlLetter(w); } return s; };
+    struct Shape { int wells, nodes, groups, gdepth, ndepth, seeds; };
+    const std::vector<Shape> shapes{{30, 12, 10, 5, 5, 4}, {80, 30, 20, 6, 5, 3}, {160, 50, 30, 6, 6, 2}};
+    int shown = 0;
+    const char* only = std::getenv("OPM_LAYERED_ONLY");     // "shape,seed" to run one instance
+    for (std::size_t si = 0; si < shapes.size(); ++si) {
+        const auto& sh = shapes[si];
+        for (int seed = 1; seed <= sh.seeds; ++seed) {
+            if (only && fmt::format("{},{}", si, seed) != only) { continue; }
+            GenSpec spec{sh.wells, sh.nodes, sh.groups, static_cast<unsigned>(seed)};
+            spec.group_depth = sh.gdepth; spec.net_depth = sh.ndepth; spec.stiff = 0.25; spec.target_fraction = 0.5;
+            std::string what;
+            const auto text = generateDeck(spec, &what);
+            DeckTrees dt(text, DeckTrees::FromText{});
+            DeckTrees::Ipr ipr; ipr.j_scale = 2.5; ipr.j_of = weakWells(spec);
+            // node_order, and so the guess, exist only after a build.
+            const auto guess = [&] { (void)dt.build(0, ipr); return dt.guess(20.0); }();
+            {   // B2, the set frozen between converged solves
+                auto sys = dt.build(0, ipr);
+                const auto r = NetworkSolve::solveWithTree(sys, guess, params, NetworkSolve::FullStep{});
+                const auto v = r.result.converged ? verifyAnswer(sys, r.result.node_pressure, r.result.well_rate, letters(sys)) : Verdict{};
+                record("B2 outer loop", r.result.converged && r.consistent, v, r.inner_iterations);
+                if (r.result.converged && !v.ok && shown++ < 4) {
+                    std::string why; for (const auto& [k, c] : v.violations) { why += fmt::format(" {} x{}", k, c); }
+                    BOOST_TEST_MESSAGE(fmt::format("  B2 on {} seed {}: {}", what, seed, why));
+                }
+            }
+            {   // C, the reduced form
+                auto sys = dt.build(0, ipr);
+                const auto r = NetworkSolve::solveReduced(sys, guess, params, true);
+                record("C reduced", r.converged, r.converged ? verifyAnswer(sys, r.node_pressure, r.well_rate, letters(sys)) : Verdict{}, r.iterations);
+            }
+            {   // B1, the set every iteration
+                auto sys = dt.build(0, ipr);
+                sys.setGroupActiveSet(true);
+                const auto r = NetworkSolve::solve(sys, guess, params, NetworkSolve::FullStep{});
+                record("B1 every iteration", r.converged, r.converged ? verifyAnswer(sys, r.node_pressure, r.well_rate, letters(sys)) : Verdict{}, r.iterations);
+            }
+            {   // A, Fischer-Burmeister
+                auto sys = dt.build(0, ipr);
+                const auto r = NetworkSolve::solve(sys, guess, params, NetworkSolve::FullStep{});
+                record("A complementarity", r.converged, r.converged ? verifyAnswer(sys, r.node_pressure, r.well_rate, letters(sys)) : Verdict{}, r.iterations);
+            }
+            BOOST_TEST_MESSAGE(fmt::format("seed {}: {}", seed, what));
+        }
+    }
+    for (const auto& [m, sc] : scores) {
+        std::string why;
+        std::vector<std::pair<int, std::string>> top;
+        for (const auto& [k, c] : sc.why) { top.emplace_back(c, k); }
+        std::sort(top.rbegin(), top.rend());
+        for (std::size_t i = 0; i < top.size() && i < 3; ++i) { why += fmt::format(" {} x{}", top[i].second, top[i].first); }
+        BOOST_TEST_MESSAGE(fmt::format("  {:20} of {}: converged {:2}, verified {:2}, wrong {:2}, Newton it/instance {:5.1f};{}",
+                                       m, sc.n, sc.converged, sc.verified, sc.wrong, double(sc.it) / std::max(sc.n, 1), why));
+    }
 }
 
 BOOST_AUTO_TEST_CASE(generated_case_anatomy)
