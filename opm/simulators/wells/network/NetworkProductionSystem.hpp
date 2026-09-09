@@ -390,6 +390,8 @@ public:
         return static_cast<int>(groups_.size()) - 1;
     }
     const std::vector<Group>& groups() const { return groups_; }
+    /// Set a well's control from outside, to evaluate the rows at a given set.
+    void setControl(const int w, const Control c) { controls_[w] = c; }
     /// Put a well the adapter or a dump added into a group of the tree.
     void setWellGroup(const int w, const int g) { wells_[w].group = g; }
     /// Change a group's own limit after the tree is built, for a sweep.
