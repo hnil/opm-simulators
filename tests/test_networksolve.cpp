@@ -6234,7 +6234,13 @@ namespace {
                 for (int a = sys.wells()[w].group; a >= 0; a = groups[a].parent) {
                     if (groups[a].target > 0.0 && std::abs(on_mode[a] - groups[a].target) <= r_tol * groups[a].target) { bound = true; break; }
                 }
-                if (!bound) { fail("held well without a group at its target"); }
+                if (!bound) {
+                    std::string near;
+                    for (int a = sys.wells()[w].group; a >= 0; a = groups[a].parent) {
+                        if (groups[a].target > 0.0) { near = fmt::format(" ({} at {:.2f} of target)", groups[a].name, on_mode[a] / groups[a].target); break; }
+                    }
+                    fail("held well without a group at its target" + near);
+                }
                 const auto& well = sys.wells()[w];
                 if (well.vfp_table > 0) {
                     const double cap = sys.thpPotential(well, p[well.node]);
@@ -6288,19 +6294,28 @@ BOOST_AUTO_TEST_CASE(methods_on_the_dumps_scored)
             props.addTable(tables.back());
         }
     }
-    struct Score { int n = 0, converged = 0, verified = 0, wrong = 0, hysteresis = 0; long lookups = 0; std::map<std::string, int> why; };
+    struct Score { int n = 0, converged = 0, verified = 0, wrong = 0, hysteresis = 0, shut_operable = 0, shut_checked = 0;
+                   long lookups = 0; double ms = 0.0; std::map<std::string, int> why; };
     std::map<std::string, Score> scores;
     std::map<std::string, Score> scores_grouped;     // the dumps with a flat target
-    auto record = [&](const std::string& method, const bool grouped, const bool converged, const Verdict& v, const long lookups) {
+    int shown_wrong = 0;
+    auto record = [&](const std::string& method, const bool grouped, const bool converged, const Verdict& v, const long lookups,
+                      const double ms, const std::string& file = {}) {
         for (auto* sc : {&scores[method], grouped ? &scores_grouped[method] : nullptr}) {
             if (!sc) { continue; }
-            ++sc->n; sc->lookups += lookups;
+            ++sc->n; sc->lookups += lookups; sc->ms += ms;
             if (!converged) { continue; }
             ++sc->converged;
             if (v.hysteresis > 0) { ++sc->hysteresis; }
             if (v.ok) { ++sc->verified; } else { ++sc->wrong; for (const auto& [k, c] : v.violations) { sc->why[k] += c; } }
         }
+        if (converged && !v.ok && method == "reduced" && shown_wrong++ < 6) {
+            std::string why; for (const auto& [k, c] : v.violations) { why += fmt::format(" {} x{}", k, c); }
+            BOOST_TEST_MESSAGE(fmt::format("  reduced wrong on {}:{}", file, why));
+        }
     };
+    using clock = std::chrono::steady_clock;
+    auto ms_since = [](const clock::time_point t) { return std::chrono::duration<double, std::milli>(clock::now() - t).count(); };
     const NetworkSolve::Parameters<double> params{1e-2, 80};
     auto letters = [](const Sys& sys) {
         std::string s;
@@ -6315,26 +6330,69 @@ BOOST_AUTO_TEST_CASE(methods_on_the_dumps_scored)
         auto [dumped, guess] = NetworkSolve::readProduction<double>(in, props, units);
         const bool grouped = dumped.groupTarget() > 0.0;
         dumped.setAnalyticJacobian(true);
+        const std::string fname = e.path().filename().string();
         {   // the legacy rules
             auto sys = dumped; sys.resetLookups();
+            const auto t0 = clock::now();
             const auto r = NetworkSolve::solveLegacy(sys, guess);
+            const double ms = ms_since(t0);
             const std::string c = r.controls;
-            record("legacy rules", grouped, r.converged, r.converged ? verifyAnswer(sys, r.node_pressure, r.well_rate, c) : Verdict{}, sys.lookups());
+            record("legacy rules", grouped, r.converged, r.converged ? verifyAnswer(sys, r.node_pressure, r.well_rate, c) : Verdict{}, sys.lookups(), ms);
         }
-        {   // the reduced form, die rule
+        {   // the reduced form, die rule -- and every shut well asked whether it could have flowed
             auto sys = dumped; sys.resetLookups();
+            const auto t0 = clock::now();
             const auto r = NetworkSolve::solveReduced(sys, guess, params, true);
-            record("reduced", grouped, r.converged, r.converged ? verifyAnswer(sys, r.node_pressure, r.well_rate, letters(sys)) : Verdict{}, sys.lookups());
+            const double ms = ms_since(t0);
+            const auto v = r.converged ? verifyAnswer(sys, r.node_pressure, r.well_rate, letters(sys)) : Verdict{};
+            record("reduced", grouped, r.converged, v, sys.lookups(), ms, fname);
+            scores["reduced"].shut_checked += r.revived;   // reopened inside the solve, counted with the checks below
+            if (r.converged && v.hysteresis > 0) {
+                for (int w = 0; w < sys.numWells(); ++w) {
+                    const auto& well = sys.wells()[w];
+                    if (well.shut || sys.control(w) != Sys::Control::Shut || well.vfp_table <= 0) { continue; }
+                    const double cross = sys.thpPotential(well, r.node_pressure[well.node]);
+                    if (!(cross > 0.0)) { continue; }
+                    // Give it its crossing as the flowing start and solve again
+                    // from the settled pressures: is there an answer with it open?
+                    auto again = dumped;
+                    auto wells = again.wells();
+                    Sys::Well opened = wells[w]; opened.q_start = cross;
+                    // rebuild with the one well's start changed
+                    Sys rebuilt(props, units);
+                    for (int nd = 0; nd <= again.numNodes(); ++nd) { rebuilt.addNode(again.nodes()[nd], again.branchAlq(nd)); }
+                    rebuilt.setTerminalPressure(again.terminalPressure());
+                    for (int i = 0; i < again.numWells(); ++i) { rebuilt.addWell(i == w ? opened : wells[i]); }
+                    rebuilt.setGroupTarget(again.groupTarget());
+                    rebuilt.setAnalyticJacobian(true);
+                    rebuilt.finish();
+                    ++scores["reduced"].shut_checked;
+                    const auto ra = NetworkSolve::solveReduced(rebuilt, r.node_pressure, params, true);
+                    if (ra.converged && ra.well_rate[w] > 1e-9) {
+                        const auto va = verifyAnswer(rebuilt, ra.node_pressure, ra.well_rate, letters(rebuilt));
+                        if (va.ok && va.hysteresis == 0) {
+                            ++scores["reduced"].shut_operable;
+                            if (scores["reduced"].shut_operable <= 4) {
+                                BOOST_TEST_MESSAGE(fmt::format("  {} shut but operable: {} flows at {:.0f} sm3/d, node {:.2f} -> {:.2f} bar",
+                                                               fname, well.name, ra.well_rate[w] * 86400.0,
+                                                               convert::to(r.node_pressure[well.node], bars),
+                                                               convert::to(ra.node_pressure[well.node], bars)));
+                            }
+                        }
+                    }
+                }
+            }
         }
-        {   // the full system, active set (the simulator's newton with the assembled Jacobian)
-            auto sys = dumped; sys.resetLookups(); sys.setComplementarity(false);
-            const auto r = NetworkSolve::solve(sys, guess, params, NetworkSolve::FullStep{});
-            record("full active set", grouped, r.converged, r.converged ? verifyAnswer(sys, r.node_pressure, r.well_rate, letters(sys)) : Verdict{}, sys.lookups());
-        }
-        {   // the full system with the complementarity rows
-            auto sys = dumped; sys.resetLookups(); sys.setComplementarity(true);
-            const auto r = NetworkSolve::solve(sys, guess, params, NetworkSolve::FullStep{});
-            record("full complementarity", grouped, r.converged, r.converged ? verifyAnswer(sys, r.node_pressure, r.well_rate, letters(sys)) : Verdict{}, sys.lookups());
+        for (const bool cmpl : {false, true}) {
+            for (const bool dead_rule : {false, true}) {
+                auto sys = dumped; sys.resetLookups(); sys.setComplementarity(cmpl); sys.setDeadWhenCannotLift(dead_rule);
+                if (dead_rule) { sys.resetDead(); }
+                const auto t0 = clock::now();
+                const auto r = NetworkSolve::solve(sys, guess, params, NetworkSolve::FullStep{});
+                const double ms = ms_since(t0);
+                const std::string name = std::string(cmpl ? "full complementarity" : "full active set") + (dead_rule ? " + dead rule" : "");
+                record(name, grouped, r.converged, r.converged ? verifyAnswer(sys, r.node_pressure, r.well_rate, letters(sys)) : Verdict{}, sys.lookups(), ms);
+            }
         }
     }
     for (const auto* tab : {&scores, &scores_grouped}) {
@@ -6346,8 +6404,10 @@ BOOST_AUTO_TEST_CASE(methods_on_the_dumps_scored)
             for (const auto& [k, c] : sc.why) { top.emplace_back(c, k); }
             std::sort(top.rbegin(), top.rend());
             for (std::size_t i = 0; i < top.size() && i < 3; ++i) { why += fmt::format(" {} x{}", top[i].second, top[i].first); }
-            BOOST_TEST_MESSAGE(fmt::format("  {:22} of {}: converged {:4}, verified {:4} ({:3} of them shut-stays-shut), wrong {:4}, lookups/solve {:6.0f};{}",
-                                           m, sc.n, sc.converged, sc.verified, sc.hysteresis, sc.wrong, double(sc.lookups) / std::max(sc.n, 1), why));
+            BOOST_TEST_MESSAGE(fmt::format("  {:34} of {}: converged {:4}, verified {:4} ({:3} shut-stays-shut{}), wrong {:4}, lookups/solve {:6.0f}, ms/solve {:5.2f};{}",
+                                           m, sc.n, sc.converged, sc.verified, sc.hysteresis,
+                                           sc.shut_checked ? fmt::format(", {} of {} shut wells operable", sc.shut_operable, sc.shut_checked) : std::string{},
+                                           sc.wrong, double(sc.lookups) / std::max(sc.n, 1), sc.ms / std::max(sc.n, 1), why));
         }
     }
 }
@@ -6360,18 +6420,51 @@ BOOST_AUTO_TEST_CASE(generated_layered_cases_scored)
 {
     using Sys = DeckTrees::Sys;
     const NetworkSolve::Parameters<double> params{1e-2, 80};
-    struct Score { int n = 0, converged = 0, verified = 0, wrong = 0; long it = 0; std::map<std::string, int> why; };
+    struct Score { int n = 0, converged = 0, verified = 0, wrong = 0, oracle_agrees = 0, oracle_off = 0, oracle_violates = 0; long it = 0, lookups = 0; double ms = 0.0; std::map<std::string, int> why; };
     std::map<std::string, Score> scores;
-    auto record = [&](const std::string& m, const bool converged, const Verdict& v, const int it) {
+    using clock = std::chrono::steady_clock;
+    auto record = [&](const std::string& m, const bool converged, const Verdict& v, const int it, const long lookups, const double ms) {
         auto& sc = scores[m];
-        ++sc.n; sc.it += it;
+        ++sc.n; sc.it += it; sc.lookups += lookups; sc.ms += ms;
         if (!converged) { return; }
         ++sc.converged;
         if (v.ok) { ++sc.verified; } else { ++sc.wrong; for (const auto& [k, c] : v.violations) { sc.why[k] += c; } }
     };
+    // Stein's balancer, fed the capacities at an answer's pressures, against
+    // that answer's rates.
+    auto oracle = [&](const std::string& m, Sys& sys, const std::vector<double>& state, const std::vector<double>& rates, const Schedule& sched) {
+        const auto stein = steinAllocation(sys, state, sched, 0);
+        if (stein.empty()) { return; }
+        double worst = 0.0;
+        for (int w = 0; w < sys.numWells(); ++w) {
+            worst = std::max(worst, std::abs(rates[w] * 86400.0 - stein[w]) / std::max(std::abs(stein[w]), 1.0));
+        }
+        if (worst < 0.005) { ++scores[m].oracle_agrees; return; }
+        // His allocation above some group's own limit is the transparent-group
+        // walk-through reported to him, not a disagreement about the answer.
+        const auto& groups = sys.groups();
+        bool violates = false;
+        for (int g = 0; g < sys.numGroups() && !violates; ++g) {
+            if (!(groups[g].target > 0.0)) { continue; }
+            const auto c = Sys::modeWeights(groups[g].mode, {});
+            double on = 0.0;
+            for (int w = 0; w < sys.numWells(); ++w) {
+                bool under = false;
+                for (int a = sys.wells()[w].group; a >= 0; a = groups[a].parent) { if (a == g) { under = true; break; } }
+                if (!under) { continue; }
+                const auto& well = sys.wells()[w];
+                const double q_oil = stein[w] / 86400.0;
+                const double bhp = (q_oil - well.ipr_a[1]) / well.ipr_b[1];
+                for (int ph = 0; ph < Sys::NP; ++ph) { on += c[ph] * std::max(well.ipr_a[ph] + well.ipr_b[ph] * bhp, 0.0); }
+            }
+            if (on > groups[g].target * 1.005) { violates = true; }
+        }
+        (violates ? scores[m].oracle_violates : scores[m].oracle_off) += 1;
+    };
     auto letters = [](const Sys& sys) { std::string s; for (int w = 0; w < sys.numWells(); ++w) { s += sys.controlLetter(w); } return s; };
     struct Shape { int wells, nodes, groups, gdepth, ndepth, seeds; };
-    const std::vector<Shape> shapes{{30, 12, 10, 5, 5, 4}, {80, 30, 20, 6, 5, 3}, {160, 50, 30, 6, 6, 2}};
+    const std::vector<Shape> shapes{{30, 12, 10, 5, 5, 4}, {80, 30, 20, 6, 5, 3}, {160, 50, 30, 6, 6, 2},
+                                    {120, 60, 60, 10, 8, 2}, {300, 80, 80, 12, 10, 1}};
     int shown = 0;
     const char* only = std::getenv("OPM_LAYERED_ONLY");     // "shape,seed" to run one instance
     for (std::size_t si = 0; si < shapes.size(); ++si) {
@@ -6387,30 +6480,49 @@ BOOST_AUTO_TEST_CASE(generated_layered_cases_scored)
             // node_order, and so the guess, exist only after a build.
             const auto guess = [&] { (void)dt.build(0, ipr); return dt.guess(20.0); }();
             {   // B2, the set frozen between converged solves
-                auto sys = dt.build(0, ipr);
+                auto sys = dt.build(0, ipr); sys.resetLookups();
+                const auto t0 = clock::now();
                 const auto r = NetworkSolve::solveWithTree(sys, guess, params, NetworkSolve::FullStep{});
+                const double ms = std::chrono::duration<double, std::milli>(clock::now() - t0).count();
                 const auto v = r.result.converged ? verifyAnswer(sys, r.result.node_pressure, r.result.well_rate, letters(sys)) : Verdict{};
-                record("B2 outer loop", r.result.converged && r.consistent, v, r.inner_iterations);
+                record("B2 outer loop", r.result.converged && r.consistent, v, r.inner_iterations, sys.lookups(), ms);
+                if (r.result.converged) { oracle("B2 outer loop", sys, r.result.state, r.result.well_rate, *dt.schedule); }
                 if (r.result.converged && !v.ok && shown++ < 4) {
                     std::string why; for (const auto& [k, c] : v.violations) { why += fmt::format(" {} x{}", k, c); }
                     BOOST_TEST_MESSAGE(fmt::format("  B2 on {} seed {}: {}", what, seed, why));
                 }
             }
             {   // C, the reduced form
-                auto sys = dt.build(0, ipr);
+                auto sys = dt.build(0, ipr); sys.resetLookups();
+                const auto t0 = clock::now();
                 const auto r = NetworkSolve::solveReduced(sys, guess, params, true);
-                record("C reduced", r.converged, r.converged ? verifyAnswer(sys, r.node_pressure, r.well_rate, letters(sys)) : Verdict{}, r.iterations);
+                const double ms = std::chrono::duration<double, std::milli>(clock::now() - t0).count();
+                record("C reduced", r.converged, r.converged ? verifyAnswer(sys, r.node_pressure, r.well_rate, letters(sys)) : Verdict{}, r.iterations, sys.lookups(), ms);
+                if (r.converged) { oracle("C reduced", sys, sys.reducedState(), r.well_rate, *dt.schedule); }
             }
             {   // B1, the set every iteration
-                auto sys = dt.build(0, ipr);
+                auto sys = dt.build(0, ipr); sys.resetLookups();
                 sys.setGroupActiveSet(true);
+                const auto t0 = clock::now();
                 const auto r = NetworkSolve::solve(sys, guess, params, NetworkSolve::FullStep{});
-                record("B1 every iteration", r.converged, r.converged ? verifyAnswer(sys, r.node_pressure, r.well_rate, letters(sys)) : Verdict{}, r.iterations);
+                const double ms = std::chrono::duration<double, std::milli>(clock::now() - t0).count();
+                record("B1 every iteration", r.converged, r.converged ? verifyAnswer(sys, r.node_pressure, r.well_rate, letters(sys)) : Verdict{}, r.iterations, sys.lookups(), ms);
             }
             {   // A, Fischer-Burmeister
-                auto sys = dt.build(0, ipr);
+                auto sys = dt.build(0, ipr); sys.resetLookups();
+                const auto t0 = clock::now();
                 const auto r = NetworkSolve::solve(sys, guess, params, NetworkSolve::FullStep{});
-                record("A complementarity", r.converged, r.converged ? verifyAnswer(sys, r.node_pressure, r.well_rate, letters(sys)) : Verdict{}, r.iterations);
+                const double ms = std::chrono::duration<double, std::milli>(clock::now() - t0).count();
+                record("A complementarity", r.converged, r.converged ? verifyAnswer(sys, r.node_pressure, r.well_rate, letters(sys)) : Verdict{}, r.iterations, sys.lookups(), ms);
+            }
+            {   // the legacy fixed point, with the walk as its well model: the
+                // simulator's damped, capped pressure update on the reduced residual
+                auto sys = dt.build(0, ipr); sys.resetLookups();
+                const auto t0 = clock::now();
+                NetworkSolve::LegacyParameters<double> lp; lp.max_iterations = 3000;
+                const auto r = NetworkSolve::solveLegacyOnWalk(sys, guess, lp);
+                const double ms = std::chrono::duration<double, std::milli>(clock::now() - t0).count();
+                record("legacy fixed point on the walk", r.converged, r.converged ? verifyAnswer(sys, r.node_pressure, r.well_rate, letters(sys)) : Verdict{}, r.iterations, sys.lookups(), ms);
             }
             BOOST_TEST_MESSAGE(fmt::format("seed {}: {}", seed, what));
         }
@@ -6421,8 +6533,9 @@ BOOST_AUTO_TEST_CASE(generated_layered_cases_scored)
         for (const auto& [k, c] : sc.why) { top.emplace_back(c, k); }
         std::sort(top.rbegin(), top.rend());
         for (std::size_t i = 0; i < top.size() && i < 3; ++i) { why += fmt::format(" {} x{}", top[i].second, top[i].first); }
-        BOOST_TEST_MESSAGE(fmt::format("  {:20} of {}: converged {:2}, verified {:2}, wrong {:2}, Newton it/instance {:5.1f};{}",
-                                       m, sc.n, sc.converged, sc.verified, sc.wrong, double(sc.it) / std::max(sc.n, 1), why));
+        BOOST_TEST_MESSAGE(fmt::format("  {:30} of {}: converged {:2}, verified {:2}, wrong {:2}, Stein agrees/off/above-a-limit {}/{}/{}, it/instance {:5.1f}, lookups {:7.0f}, ms {:7.1f};{}",
+                                       m, sc.n, sc.converged, sc.verified, sc.wrong, sc.oracle_agrees, sc.oracle_off, sc.oracle_violates,
+                                       double(sc.it) / std::max(sc.n, 1), double(sc.lookups) / std::max(sc.n, 1), sc.ms / std::max(sc.n, 1), why));
     }
 }
 

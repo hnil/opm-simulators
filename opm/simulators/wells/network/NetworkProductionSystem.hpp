@@ -365,6 +365,12 @@ public:
     }
     /// The wells the last evaluation found unable to lift, committed or not.
     const std::vector<char>& deadNow() const { return dead_now_; }
+    const std::vector<char>& committedDead() const { return reduced_dead_; }
+    /// Give a shut well another chance: not committed, and flowing at q to
+    /// start with, so the start does not shut it again.
+    void reviveWell(const int w, const Scalar q) { reduced_dead_[w] = 0; wells_[w].q_start = q; }
+    void killWell(const int w) { reduced_dead_[w] = 1; }
+    void restoreDead(const std::vector<char>& dead) { reduced_dead_ = dead; }
     /// The other answer to a cliff: instead of dying, the well holds the
     /// rate its crossing had just before the crossing vanished -- a wellhead
     /// choke taking the difference between the node and the pressure it can
@@ -778,15 +784,27 @@ public:
                 ++lookups_;
                 return b - (tableBhp(w.vfp_table, p_node, rates(b), w.alq) - dp);
             };
-            Scalar b0 = bhp, h0 = h(b0);
-            Scalar b1 = bhp * Scalar{1.01}, h1 = h(b1);
-            for (int it = 0; it < 8 && std::abs(h1) > Scalar{1e-4} * unit::barsa; ++it) {
-                if (!(std::abs(h1 - h0) > Scalar{0})) { break; }
-                const Scalar b2 = b1 - h1 * (b1 - b0) / (h1 - h0);
-                b0 = b1; h0 = h1;
-                b1 = b2; h1 = h(b1);
+            // Bracketed, and only the root with the stable crossing's sign
+            // pattern (h rising through zero): an unguarded secant from
+            // here walked to the unstable crossing of the same tubing curve
+            // and the rate jumped by half between two nearby pressures.
+            Scalar lo = bhp * Scalar{0.9}, hi = bhp * Scalar{1.1};
+            Scalar hlo = h(lo), hhi = h(hi);
+            if (hlo < Scalar{0} && hhi > Scalar{0}) {
+                Scalar b1 = bhp, h1 = h(b1);
+                int side = 0;
+                for (int it = 0; it < 8 && std::abs(h1) > Scalar{1e-4} * unit::barsa; ++it) {
+                    (h1 < Scalar{0} ? lo : hi) = b1;
+                    (h1 < Scalar{0} ? hlo : hhi) = h1;
+                    // Illinois: halve the retained side's value so the
+                    // bracket keeps closing from both ends.
+                    if (h1 < Scalar{0}) { if (side == -1) { hhi *= Scalar{0.5}; } side = -1; }
+                    else { if (side == 1) { hlo *= Scalar{0.5}; } side = 1; }
+                    b1 = hi - hhi * (hi - lo) / (hhi - hlo);
+                    h1 = h(b1);
+                }
+                if (b1 > Scalar{0}) { bhp = b1; }
             }
-            if (b1 > Scalar{0} && std::abs(h1) < std::abs(h0)) { bhp = b1; }
         }
         const auto& flo_axis = t.getFloAxis();
         if (counting_off_axis_ && !flo_axis.empty()) {
@@ -1395,7 +1413,13 @@ public:
         }
         for (int i = 0; i < nw; ++i) {
             const int w = mine[i];
-            if (controls_[w] == Control::Shut || wells_[w].pinned) {
+            // Shut is decided afresh each evaluation; testing the stored
+            // control here kept a well shut at the first guess shut for good.
+            if (own_control_[w] == Control::Shut || wells_[w].pinned) {
+                if (!wells_[w].pinned) {
+                    changed |= (controls_[w] != Control::Shut);
+                    controls_[w] = Control::Shut;
+                }
                 tree_rate_[w] = own_allowance_[w];
                 continue;
             }

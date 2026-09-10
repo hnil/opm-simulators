@@ -254,6 +254,49 @@ solveLegacy(Sys& system,
     return out;
 }
 
+/// The legacy update with the walk as its well model: the reduced residual
+/// gives the pressures the current rates imply, and each node moves a
+/// damped, capped step toward them -- the simulator's fixed point, on a
+/// system with a group tree.
+template<class Sys>
+LegacyResult<typename Sys::ScalarType>
+solveLegacyOnWalk(Sys& system,
+                  const std::vector<typename Sys::ScalarType>& node_pressure_guess,
+                  const LegacyParameters<typename Sys::ScalarType> lp = {})
+{
+    using Scalar = typename Sys::ScalarType;
+    LegacyResult<Scalar> out;
+    system.flatTargetAsTree();
+    system.setGroupActiveSet(true);
+    system.setTreeFrozen(false);
+    system.setExactPotential(true);
+    system.setDeadWhenCannotLift(true);
+    system.resetDead();
+    system.resetCliffRates();
+    const int N = system.numNodes();
+    auto p = node_pressure_guess;
+    p.resize(N + 1);
+    p[0] = system.terminalPressure();
+    for (int it = 1; it <= lp.max_iterations; ++it) {
+        out.iterations = it;
+        const auto r = system.reducedResidual(p);       // r_n = (p_n - computed_n) / scale
+        Scalar imbalance = 0;
+        for (int n = 1; n <= N; ++n) {
+            const Scalar d = -r[n - 1] * unit::barsa;   // computed - applied
+            imbalance = std::max(imbalance, std::abs(d));
+            p[n] += std::clamp(lp.damping * d, -lp.max_update, lp.max_update);
+        }
+        out.imbalance = imbalance;
+        if (imbalance < lp.tolerance) { out.converged = true; break; }
+    }
+    (void)system.reducedResidual(p);
+    out.node_pressure = p;
+    out.well_rate = system.wellRates(system.reducedState());
+    out.controls.clear();
+    for (int w = 0; w < system.numWells(); ++w) { out.controls += system.controlLetter(w); }
+    return out;
+}
+
 } // namespace Opm::NetworkSolve
 
 #endif // OPM_NETWORK_LEGACY_SOLVE_HEADER_INCLUDED

@@ -47,6 +47,7 @@ struct ReducedResult
     /// has no fixed point, and the answer taken is the one with it flowing.
     bool on_cliff = false;
     int held_at_cliff = 0;    // wells given their cliff rate instead of dying
+    int revived = 0;          // wells shut during the solve that the revive pass reopened
     int set_changes = 0;      // iterations after which the tree walk chose differently
     Scalar residual = 0;
     int off_axis = 0;         // lookups the answer needed off a table axis
@@ -122,7 +123,8 @@ solveReduced(Sys& system,
              const std::vector<typename Sys::ScalarType>& node_pressure_guess,
              const Parameters<typename Sys::ScalarType> params,
              const bool eliminate = false,
-             const CliffRule cliff_rule = CliffRule::Die)
+             const CliffRule cliff_rule = CliffRule::Die,
+             const bool keep_dead = false)
 {
     using Scalar = typename Sys::ScalarType;
     ReducedResult<Scalar> out;
@@ -131,7 +133,7 @@ solveReduced(Sys& system,
     system.setTreeFrozen(false);
     system.setExactPotential(true);
     system.setDeadWhenCannotLift(true);
-    system.resetDead();
+    if (!keep_dead) { system.resetDead(); }
     system.resetCliffRates();
     const int n = system.numNodes();
     auto p = node_pressure_guess;
@@ -161,8 +163,15 @@ solveReduced(Sys& system,
         if (trace) {
             std::string ps;
             for (int i = 1; i <= n; ++i) { ps += fmt::format(" {:.3f}", p[i] / unit::barsa); }
-            std::fprintf(stderr, "[reduced] it %d residual %.4g set %s p%s\n", it, out.residual,
-                         system.treeSignature().c_str(), ps.c_str());
+            std::string qs;
+            if (system.numWells() <= 8) {
+                const auto q = system.wellRates(system.reducedState());
+                for (const auto v : q) { qs += fmt::format(" {:.1f}", v * 86400.0); }
+            }
+            std::string rs;
+            for (int i = 0; i < n; ++i) { rs += fmt::format(" {:.3g}", r[i] / unit::barsa); }
+            std::fprintf(stderr, "[reduced] it %d residual %.4g set %s p%s q%s r%s\n", it, out.residual,
+                         system.treeSignature().c_str(), ps.c_str(), qs.c_str(), rs.c_str());
         }
         if (out.residual < params.tolerance) {
             out.converged = true;
@@ -250,6 +259,7 @@ solveReduced(Sys& system,
                     alpha = lo;
                     at_cliff = true;
                     ++out.cliffs;
+                    if (trace) { std::fprintf(stderr, "[cliff] cut back to alpha %.3g\n", alpha); }
                 } else if (cliff_rule == CliffRule::Hold) {
                     // Asked twice: the wells that would die hold the rate they
                     // have on the alive side, and the step is taken.
@@ -273,6 +283,7 @@ solveReduced(Sys& system,
                     // Asked twice: cross, and the death holds.
                     (void)system.reducedResidual(pt);
                     system.commitDead();
+                    if (trace) { std::fprintf(stderr, "[cliff] crossed, death committed\n"); }
                     at_cliff = false;
                 }
             } else {
@@ -296,6 +307,7 @@ solveReduced(Sys& system,
             // there. Take the step anyway and let the next piece's Jacobian
             // say where to go.
             ++out.stalls;
+            if (trace) { std::fprintf(stderr, "[stall] alpha %.3g at_cliff %d\n", alpha, int(at_cliff)); }
             p = trial(alpha);
             r = system.reducedResidual(p);
             ++out.evaluations;
@@ -303,6 +315,63 @@ solveReduced(Sys& system,
         const auto set = system.treeSignature();
         if (set != last_set) { ++out.set_changes; out.sets += " " + set; }
         last_set = set;
+    }
+    // The revive pass. Shut stays shut for the solve, but a well shut on the
+    // way may flow at the settled pressure: ask each one, from the settled
+    // state, with the others' deaths kept, and keep the answer if it flows
+    // and nothing else dies. That is the operability check made part of the
+    // answer.
+    if (out.converged && !keep_dead) {
+        bool tried = true;
+        // Every accepted attempt shuts one well fewer, so the bound never
+        // binds; it is there so a bug cannot turn into a hang.
+        int attempts = 0;
+        const int max_attempts = 4 * system.numWells() + 8;
+        while (tried && attempts < max_attempts) {
+            tried = false;
+            const auto dead = system.committedDead();
+            for (int w = 0; w < system.numWells(); ++w) {
+                const auto& well = system.wells()[w];
+                if (!dead[w] || well.shut || well.vfp_table <= 0) { continue; }
+                const Scalar cross = system.thpPotential(well, p[well.node]);
+                if (trace) {
+                    std::fprintf(stderr, "[revive] candidate well %d control %c cross %.4g at %.3f bar\n", w,
+                                 system.controlLetter(w), cross * 86400.0, p[well.node] / unit::barsa);
+                }
+                if (!(cross > Scalar{0}) || cross == std::numeric_limits<Scalar>::max()) { continue; }
+                const auto saved_dead = system.committedDead();
+                const Scalar saved_start = well.q_start;
+                system.reviveWell(w, cross);
+                ++attempts;
+                auto again = solveReduced(system, p, params, eliminate, cliff_rule, /*keep_dead=*/true);
+                // Kept only if the well is still open at the end and flows
+                // at a rate that is not a rounding of zero.
+                const auto now_dead = system.committedDead();
+                bool ok = again.converged && !now_dead[w] && again.well_rate[w] > Scalar{1e-6} * cross;
+                for (std::size_t k = 0; k < now_dead.size() && ok; ++k) { ok = ok && !(now_dead[k] && !saved_dead[k]); }
+                if (trace) {
+                    std::fprintf(stderr, "[revive] well %d cross %.1f -> %s (conv %d it %d rate %.4g)\n", w, cross * 86400.0,
+                                 ok ? "kept" : "dropped", int(again.converged), again.iterations, again.well_rate[w] * 86400.0);
+                }
+                if (ok) {
+                    p = again.node_pressure;
+                    out.iterations += again.iterations;
+                    out.evaluations += again.evaluations;
+                    ++out.revived;
+                    tried = true;
+                    break;
+                }
+                // Put back the whole set: a failed attempt may have shut
+                // others on the way, and keeping those lets the pass cycle.
+                system.reviveWell(w, saved_start);
+                system.restoreDead(saved_dead);
+                (void)system.reducedResidual(p);
+                ++out.evaluations;
+            }
+        }
+        (void)system.reducedResidual(p);
+        r = system.reducedResidual(p);
+        out.residual = norm(r);
     }
     out.node_pressure = p;
     out.well_rate = system.wellRates(system.reducedState());
