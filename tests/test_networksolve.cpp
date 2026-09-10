@@ -6432,6 +6432,7 @@ BOOST_AUTO_TEST_CASE(generated_layered_cases_scored)
     };
     // Stein's balancer, fed the capacities at an answer's pressures, against
     // that answer's rates.
+    std::string instance;
     auto oracle = [&](const std::string& m, Sys& sys, const std::vector<double>& state, const std::vector<double>& rates, const Schedule& sched) {
         const auto stein = steinAllocation(sys, state, sched, 0);
         if (stein.empty()) { return; }
@@ -6457,7 +6458,23 @@ BOOST_AUTO_TEST_CASE(generated_layered_cases_scored)
                 const double bhp = (q_oil - well.ipr_a[1]) / well.ipr_b[1];
                 for (int ph = 0; ph < Sys::NP; ++ph) { on += c[ph] * std::max(well.ipr_a[ph] + well.ipr_b[ph] * bhp, 0.0); }
             }
-            if (on > groups[g].target * 1.005) { violates = true; }
+            if (on > groups[g].target * 1.005) {
+                violates = true;
+                if (m == "C reduced") {
+                    BOOST_TEST_MESSAGE(fmt::format("    {}: Stein puts {:.0f} on {} against its {:.0f} (has guide rate: {})",
+                                                   instance, on * 86400.0, groups[g].name, groups[g].target * 86400.0,
+                                                   sched.getGroup(groups[g].name, 0).productionControls({}).guide_rate > 0.0 ? "yes" : "no"));
+                }
+            }
+        }
+        if (!violates && m == "C reduced") {
+            int wm = 0; double dm = 0.0;
+            for (int w = 0; w < sys.numWells(); ++w) {
+                const double d = std::abs(rates[w] * 86400.0 - stein[w]) / std::max(std::abs(stein[w]), 1.0);
+                if (d > dm) { dm = d; wm = w; }
+            }
+            BOOST_TEST_MESSAGE(fmt::format("    {}: Stein differs, worst {}: ours {:.1f}, his {:.1f} sm3/d (control {})",
+                                           instance, sys.wells()[wm].name, rates[wm] * 86400.0, stein[wm], sys.controlLetter(wm)));
         }
         (violates ? scores[m].oracle_violates : scores[m].oracle_off) += 1;
     };
@@ -6475,6 +6492,10 @@ BOOST_AUTO_TEST_CASE(generated_layered_cases_scored)
             spec.group_depth = sh.gdepth; spec.net_depth = sh.ndepth; spec.stiff = 0.25; spec.target_fraction = 0.5;
             std::string what;
             const auto text = generateDeck(spec, &what);
+            instance = fmt::format("shape {} seed {}", si, seed);
+            if (const char* dump_dir = std::getenv("OPM_LAYERED_DUMP")) {   // the deck text, to reproduce elsewhere
+                std::ofstream(std::filesystem::path(dump_dir) / fmt::format("layered_shape{}_seed{}.DATA", si, seed)) << text;
+            }
             DeckTrees dt(text, DeckTrees::FromText{});
             DeckTrees::Ipr ipr; ipr.j_scale = 2.5; ipr.j_of = weakWells(spec);
             // node_order, and so the guess, exist only after a build.
