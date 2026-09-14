@@ -373,7 +373,9 @@ public:
     /// by their gaps was tried and cost more cutbacks than it saved (81
     /// against 1 on the MODEL5 dumps). bhp is the table-side level of the
     /// flat continuation.
-    struct Touch { bool valid = false; Scalar flo = 0; Scalar bhp = 0; Scalar gap = 0; };
+    /// res: the smaller bhp step from the touching vertex to a neighbour,
+    /// the table's own resolution there; a gap below it is not resolved.
+    struct Touch { bool valid = false; Scalar flo = 0; Scalar bhp = 0; Scalar gap = 0; Scalar res = 0; };
     Touch touchingPoint(const Well& w, const Scalar p_node, const std::array<Scalar, NP>& qdir) const
     {
         Touch tp;
@@ -386,12 +388,21 @@ public:
         // flo = A + B bhp on the line, so bhp = (flo - A) / B.
         auto line = [&](const Scalar f) { return (f - A) / B; };
         const CountScope probe(*this, false);
-        for (const double f : t.getFloAxis()) {
+        const auto& flos = t.getFloAxis();
+        std::vector<Scalar> O(flos.size());
+        std::size_t at = 0;
+        for (std::size_t i = 0; i < flos.size(); ++i) {
             std::array<Scalar, NP> q{};
-            for (int ph = 0; ph < NP; ++ph) { q[ph] = qdir[ph] * (Scalar(f) / flo_dir); }
-            const Scalar bhp = tableBhp(w.vfp_table, p_node, q, w.alq);
-            const Scalar gap = bhp - w.vfp_dp - line(Scalar(f));
-            if (!tp.valid || gap < tp.gap) { tp.valid = true; tp.flo = f; tp.bhp = bhp; tp.gap = gap; }
+            for (int ph = 0; ph < NP; ++ph) { q[ph] = qdir[ph] * (Scalar(flos[i]) / flo_dir); }
+            O[i] = tableBhp(w.vfp_table, p_node, q, w.alq);
+            const Scalar gap = O[i] - w.vfp_dp - line(Scalar(flos[i]));
+            if (!tp.valid || gap < tp.gap) { tp.valid = true; tp.flo = flos[i]; tp.bhp = O[i]; tp.gap = gap; at = i; }
+        }
+        if (tp.valid) {
+            tp.res = std::numeric_limits<Scalar>::max();
+            if (at > 0) { tp.res = std::min(tp.res, std::abs(O[at - 1] - O[at])); }
+            if (at + 1 < O.size()) { tp.res = std::min(tp.res, std::abs(O[at + 1] - O[at])); }
+            if (tp.res == std::numeric_limits<Scalar>::max()) { tp.res = Scalar{0}; }
         }
         return tp;
     }

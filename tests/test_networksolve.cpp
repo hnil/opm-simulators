@@ -6833,6 +6833,13 @@ BOOST_AUTO_TEST_CASE(the_tubing_extension_on_the_dumps)
                    std::map<std::string, int> why; };
     std::map<std::string, Score> scores;
     std::array<int, 3> gap_bins{};   // closed with a gap < 0.1, < 1, >= 1 bar
+    // The closing decision: three strategies against closing all at once,
+    // and a re-open band measured on the wells the rule closed.
+    struct ClosingScore { int n = 0, converged = 0, passes1 = 0, passes2 = 0, passes3 = 0, differs = 0, more = 0, fewer = 0; };
+    std::map<std::string, ClosingScore> closing_scores;
+    std::array<int, 4> dip_bins{};              // shut wells: line dips below the curve by < 0.1 / < 0.5 / >= 0.5 bar / not at all
+    const std::array<double, 3> bands{0.0, 0.1, 0.5};
+    std::array<int, 3> reopen_candidates{}, reopen_stable{};
     using clock = std::chrono::steady_clock;
     auto ms_since = [](const clock::time_point t) { return std::chrono::duration<double, std::milli>(clock::now() - t).count(); };
     const NetworkSolve::Parameters<double> params{1e-2, 80};
@@ -6930,7 +6937,60 @@ BOOST_AUTO_TEST_CASE(the_tubing_extension_on_the_dumps)
                 }
             }
         }
+        {
+            using NetworkSolve::Closing;
+            std::string set_all;
+            for (const auto& [closing, name] : {std::pair{Closing::All, "all at once"}, std::pair{Closing::Sequential, "one at a time"}, std::pair{Closing::Tiered, "tiered"}}) {
+                auto sys = dumped;
+                const auto rx = NetworkSolve::solveReducedOnExtension(sys, guess, params, closing);
+                auto& cs = closing_scores[name];
+                ++cs.n;
+                (rx.passes == 1 ? cs.passes1 : rx.passes == 2 ? cs.passes2 : cs.passes3) += 1;
+                if (!rx.converged) { continue; }
+                ++cs.converged;
+                const std::string set = letters(sys);
+                if (closing == Closing::All) {
+                    set_all = set;
+                    // The re-open band: how far below the curve each closed
+                    // well's line dips at the settled pressure, and whether
+                    // re-opening it gives an answer with it open.
+                    for (int w = 0; w < sys.numWells(); ++w) {
+                        if (!rx.closed_wells[w]) { continue; }
+                        const auto& well = sys.wells()[w];
+                        std::array<double, Sys::NP> q{};
+                        for (int ph = 0; ph < Sys::NP; ++ph) { q[ph] = std::max(sys.ipr(well, ph, rx.closed_bhp[w]), 0.0); }
+                        const double pn = well.node == 0 ? sys.terminalPressure() : rx.last.node_pressure[well.node];
+                        const auto tp = sys.touchingPoint(well, pn, q);
+                        const double dip = tp.valid ? convert::to(-tp.gap, bars) : -1.0;
+                        ++dip_bins[dip <= 0.0 ? 3 : dip < 0.1 ? 0 : dip < 0.5 ? 1 : 2];
+                        const double cross = sys.thpPotential(well, pn);
+                        for (std::size_t b = 0; b < bands.size(); ++b) {
+                            if (!(dip > bands[b]) || !(cross > 0.0) || cross > 1e29) { continue; }
+                            ++reopen_candidates[b];
+                            auto again = sys;
+                            again.reviveWell(w, cross);
+                            const auto r2 = NetworkSolve::solveReducedOnExtension(again, rx.last.node_pressure, params, Closing::All, 20, /*keep_dead=*/true);
+                            if (r2.converged && letters(again)[w] != 'S') { ++reopen_stable[b]; }
+                        }
+                    }
+                } else if (!set_all.empty()) {
+                    int more = 0, fewer = 0;
+                    for (std::size_t w = 0; w < set.size(); ++w) {
+                        if (set[w] == 'S' && set_all[w] != 'S') { ++more; }
+                        if (set[w] != 'S' && set_all[w] == 'S') { ++fewer; }
+                    }
+                    if (more || fewer) { ++cs.differs; cs.more += more; cs.fewer += fewer; }
+                }
+            }
+        }
     }
+    for (const auto& [m, cs] : closing_scores) {
+        BOOST_TEST_MESSAGE(fmt::format("  closing {:14} of {}: converged {:4}, passes 1/2/3+: {}/{}/{}, shut set differs from all-at-once in {} systems (wells: {} more shut, {} fewer)",
+                                       m, cs.n, cs.converged, cs.passes1, cs.passes2, cs.passes3, cs.differs, cs.more, cs.fewer));
+    }
+    BOOST_TEST_MESSAGE(fmt::format("  re-open band: of the wells the rule closed, at the settled pressure the line dips below the curve by < 0.1 / < 0.5 / >= 0.5 bar in {} / {} / {}, not at all in {}; candidates with a band of 0 / 0.1 / 0.5 bar: {} / {} / {}, staying open once re-opened: {} / {} / {}",
+                                   dip_bins[0], dip_bins[1], dip_bins[2], dip_bins[3],
+                                   reopen_candidates[0], reopen_candidates[1], reopen_candidates[2], reopen_stable[0], reopen_stable[1], reopen_stable[2]));
     for (const auto& [m, sc] : scores) {
         std::string why;
         std::vector<std::pair<int, std::string>> top;

@@ -41,14 +41,25 @@ struct ExtensionResult
     ReducedResult<Scalar> last;
     std::vector<char> closed_wells;
     std::vector<Scalar> closed_gap;   // how far the line missed the curve, where each was closed
+    std::vector<Scalar> closed_bhp;   // the bhp of the continuation point it was closed at
 };
+
+/// Which of the wells on the continuation a pass shuts. All: every one at
+/// once. Sequential: the one whose line misses the curve by most, so the
+/// others see the lower node pressure before they are judged. Tiered: every
+/// well whose gap exceeds the table's own resolution at its touching vertex
+/// at once, since the table is sure of those, then the marginal ones one at
+/// a time. The decision is kept in one place so that reservoir or global
+/// information can enter it later.
+enum class Closing { All, Sequential, Tiered };
 
 /// The reduced solve on the continued tubing curves (Stein's suggestion),
 /// with the shut decision taken afterwards for every well at once: a well
 /// whose converged point is on the continuation, where the real tubing has
 /// no crossing, is shut, sticky, and the system solved again, until no open
 /// well is on it. Shuts only, never revives, so it terminates. The
-/// continuation is switched off again on return.
+/// continuation is switched off again on return. keep_dead starts from the
+/// system's committed dead set instead of clearing it.
 ///
 /// Not a per-column change of the table data: the hump's flow moves with
 /// the fraction columns (index 0 to 13 of 21 on the MODEL5 table), so a
@@ -63,24 +74,28 @@ ExtensionResult<typename Sys::ScalarType>
 solveReducedOnExtension(Sys& system,
                         const std::vector<typename Sys::ScalarType>& node_pressure_guess,
                         const Parameters<typename Sys::ScalarType> params,
-                        const int max_passes = 10)
+                        const Closing closing = Closing::All,
+                        const int max_passes = 20,
+                        const bool keep_dead = false)
 {
     using Scalar = typename Sys::ScalarType;
     constexpr int NP = Sys::NP;
     ExtensionResult<Scalar> out;
     out.closed_wells.assign(system.numWells(), 0);
     out.closed_gap.assign(system.numWells(), Scalar{0});
+    out.closed_bhp.assign(system.numWells(), Scalar{0});
     system.setTubingExtension(true);
     auto p = node_pressure_guess;
+    struct Candidate { int w; Scalar gap; Scalar res; Scalar bhp; };
     for (int pass = 0; pass < max_passes; ++pass) {
-        auto r = solveReduced(system, p, params, true, CliffRule::Die, /*keep_dead=*/pass > 0);
+        auto r = solveReduced(system, p, params, true, CliffRule::Die, keep_dead || pass > 0);
         ++out.passes;
         out.iterations += r.iterations;
         out.evaluations += r.evaluations;
         out.last = std::move(r);
         if (!out.last.converged) { break; }
         p = out.last.node_pressure;
-        int newly = 0;
+        std::vector<Candidate> on;
         const auto& dead = system.committedDead();
         for (int w = 0; w < system.numWells(); ++w) {
             const auto& well = system.wells()[w];
@@ -92,16 +107,27 @@ solveReducedOnExtension(Sys& system,
             std::array<Scalar, NP> q{};
             for (int ph = 0; ph < NP; ++ph) { q[ph] = std::max(Sys::ipr(well, ph, bhp), Scalar{0}); }
             const Scalar p_node = well.node == 0 ? system.terminalPressure() : p[well.node];
-            const Scalar gap = system.tubingGap(well, p_node, q);
-            if (gap > Scalar{0}) {
-                system.killWell(w);
-                out.closed_wells[w] = 1;
-                out.closed_gap[w] = gap;
-                ++newly;
-            }
+            const auto tp = system.touchingPoint(well, p_node, q);
+            if (tp.valid && tp.gap > Scalar{0}) { on.push_back({w, tp.gap, tp.res, bhp}); }
         }
-        if (newly == 0) { out.converged = true; break; }
-        out.closed += newly;
+        if (on.empty()) { out.converged = true; break; }
+        std::sort(on.begin(), on.end(), [](const Candidate& a, const Candidate& b) { return a.gap > b.gap; });
+        std::vector<Candidate> chosen;
+        switch (closing) {
+        case Closing::All:        chosen = on; break;
+        case Closing::Sequential: chosen = {on.front()}; break;
+        case Closing::Tiered:
+            for (const auto& c : on) { if (c.gap > c.res) { chosen.push_back(c); } }
+            if (chosen.empty()) { chosen = {on.front()}; }
+            break;
+        }
+        for (const auto& c : chosen) {
+            system.killWell(c.w);
+            out.closed_wells[c.w] = 1;
+            out.closed_gap[c.w] = c.gap;
+            out.closed_bhp[c.w] = c.bhp;
+            ++out.closed;
+        }
     }
     system.setTubingExtension(false);
     return out;
