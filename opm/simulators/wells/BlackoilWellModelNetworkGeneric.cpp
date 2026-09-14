@@ -1359,6 +1359,20 @@ updatePressures(const int reportStepIdx,
                 // apply it directly as a dynamic THP constraint.
                 const Scalar new_limit = it->second;
                 well->setDynamicThpLimit(new_limit);
+                // The network's shut decision handed to the well, so a well at
+                // the cliff is decided once and not again by its own check.
+                static const bool apply_shut = std::getenv("OPM_NETWORK_APPLY_SHUT") != nullptr;
+                if (apply_shut && this->reduced_solver_) {
+                    bool dead = false;
+                    for (const auto& [root, tree] : last_production_solve_) {
+                        const int w = tree.system ? tree.system->wellIndex(well->name()) : -1;
+                        if (w >= 0) {
+                            dead = tree.system->control(w) == NetworkSolve::ProductionSystem<Scalar>::Control::Shut
+                                && !tree.system->wells()[w].shut;
+                        }
+                    }
+                    well->setNetworkDead(dead);
+                }
                 SingleWellState<Scalar, IndexTraits>& ws = well_model_.wellState()[well->indexOfWell()];
                 const bool thp_is_limit = ws.production_cmode == Well::ProducerCMode::THP;
                 // TODO: not sure why the thp is NOT updated properly elsewhere

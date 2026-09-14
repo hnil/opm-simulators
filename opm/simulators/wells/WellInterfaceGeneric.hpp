@@ -126,6 +126,11 @@ public:
     Well::Status wellStatus() { return this->wellStatus_;}
 
     bool wellIsStopped() const { return this->wellStatus_ == Well::Status::STOP; }
+    /// The network solve found this well unable to lift at its node pressure.
+    /// While set, the well is not operable, whatever its own check says, so
+    /// the shut decision is made once.
+    void setNetworkDead(const bool dead) { network_dead_ = dead; }
+    bool networkDead() const { return network_dead_; }
 
     int currentStep() const { return this->current_step_; }
 
@@ -337,6 +342,7 @@ protected:
     };
 
     OperabilityStatus operability_status_;
+    bool network_dead_ = false;
 
     Well well_ecl_;
 

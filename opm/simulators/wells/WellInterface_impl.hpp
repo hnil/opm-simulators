@@ -652,6 +652,10 @@ namespace Opm
         const auto& summary_state = simulator.vanguard().summaryState();
         bool converged = true;
         auto& ws = well_state.well(this->index_of_well_);
+        // The network decided: no reopening attempt of its own.
+        if (this->wellIsStopped() && this->networkDead()) {
+            return solveWellWithZeroRate(simulator, dt, groupStateHelper, well_state);
+        }
         // if well is stopped, check if we can reopen with explicit fraction
         if (this->wellIsStopped()) {
             this->openWell();
@@ -1233,6 +1237,12 @@ namespace Opm
             deferred_logger.debug("EXPLICIT_LOOKUP_VFP",
                                 "well not operable, trying with explicit vfp lookup: " + this->name());
             updateWellOperability(simulator, well_state, groupStateHelper);
+        }
+        if (this->networkDead()) {
+            // The network found the well unable to lift at its node pressure;
+            // that decision stands over the well's own check.
+            this->operability_status_.can_obtain_bhp_with_thp_limit = false;
+            this->operability_status_.obey_thp_limit_under_bhp_limit = false;
         }
     }
 
