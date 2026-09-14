@@ -6273,6 +6273,55 @@ namespace {
     }
 }
 
+// How far each flowing well is from its cliff: the highest node pressure
+// at which its tubing still has a stable crossing, against the pressure it
+// sits at. Diagnostic; run with OPM_NETWORK_DUMP_PROD and OPM_VFP_INCLUDE.
+BOOST_AUTO_TEST_CASE(crossing_margin_on_the_dumps)
+{
+    const char* dir = std::getenv("OPM_NETWORK_DUMP_PROD");
+    const char* inc = std::getenv("OPM_VFP_INCLUDE");
+    if (dir == nullptr || inc == nullptr || !std::filesystem::is_directory(dir)) { return; }
+    std::deque<VFPProdTable> tables;
+    VFPProdProperties<double> props;
+    const UnitSystem units{};
+    for (const char* name : {"well_vfp.ecl", "flowl_b_vfp.ecl", "flowl_c_vfp.ecl"}) {
+        const auto path = std::filesystem::path(inc) / name;
+        if (!std::filesystem::exists(path)) { continue; }
+        const auto deck = Parser{}.parseFile(path.string());
+        for (const auto& kw : deck.getKeywordList("VFPPROD")) {
+            tables.emplace_back(*kw, /*gaslift_opt_active=*/true, units);
+            props.addTable(tables.back());
+        }
+    }
+    std::vector<std::filesystem::path> files;
+    for (const auto& e : std::filesystem::directory_iterator(dir)) { if (e.path().extension() == ".txt") { files.push_back(e.path()); } }
+    std::sort(files.begin(), files.end());
+    for (const auto& f : files) {
+        std::ifstream in(f);
+        std::string head; std::getline(in, head);
+        if (head != "production") { continue; }
+        auto [sys, guess] = NetworkSolve::readProduction<double>(in, props, units);
+        sys.setExactPotential(true);
+        std::string line = f.filename().string() + ":";
+        for (int w = 0; w < sys.numWells(); ++w) {
+            const auto& well = sys.wells()[w];
+            if (well.vfp_table <= 0) { continue; }
+            const double p = guess[well.node];
+            const double q = sys.thpPotential(well, p);
+            // the cliff: bisect for the highest pressure with a crossing
+            double lo = p, hi = p + 20.0 * unit::barsa;
+            if (!(q > 0.0)) { hi = p; lo = std::max(p - 20.0 * unit::barsa, unit::barsa); }
+            for (int it = 0; it < 30; ++it) {
+                const double mid = 0.5 * (lo + hi);
+                (sys.thpPotential(well, mid) > 0.0 ? lo : hi) = mid;
+            }
+            line += fmt::format("  {} p {:.2f} q {:.0f} start {:.0f} cliff {:.2f}{}", well.name, p / unit::barsa, q * 86400.0,
+                                well.q_start * 86400.0, lo / unit::barsa, well.shut ? " (shut)" : "");
+        }
+        BOOST_TEST_MESSAGE(line);
+    }
+}
+
 BOOST_AUTO_TEST_CASE(methods_on_the_dumps_scored)
 {
     using Sys = DeckTrees::Sys;
