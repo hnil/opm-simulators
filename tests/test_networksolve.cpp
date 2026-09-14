@@ -6322,6 +6322,104 @@ BOOST_AUTO_TEST_CASE(crossing_margin_on_the_dumps)
     }
 }
 
+// The well solve as the well function. Each dumped well gets a curved inflow
+// with the dump's linear IPR as its tangent at the operating point and a
+// slope kappa*100 % different at shut-in; the reduced form re-linearises at
+// every evaluation (solveWells). Against the fixed-IPR answer: how far the
+// node pressures move, which wells change state, and what it costs.
+BOOST_AUTO_TEST_CASE(the_well_solve_as_the_well_function)
+{
+    using Sys = DeckTrees::Sys;
+    const char* dir = std::getenv("OPM_NETWORK_DUMP_PROD");
+    const char* inc = std::getenv("OPM_VFP_INCLUDE");
+    if (dir == nullptr || inc == nullptr || !std::filesystem::is_directory(dir)) { return; }
+    std::deque<VFPProdTable> tables;
+    VFPProdProperties<double> props;
+    const UnitSystem units{};
+    for (const char* name : {"well_vfp.ecl", "flowl_b_vfp.ecl", "flowl_c_vfp.ecl"}) {
+        const auto path = std::filesystem::path(inc) / name;
+        if (!std::filesystem::exists(path)) { continue; }
+        const auto deck = Parser{}.parseFile(path.string());
+        for (const auto& kw : deck.getKeywordList("VFPPROD")) {
+            tables.emplace_back(*kw, /*gaslift_opt_active=*/true, units);
+            props.addTable(tables.back());
+        }
+    }
+    const NetworkSolve::Parameters<double> params{1e-2, 80};
+    auto letters = [](const Sys& sys) { std::string s; for (int w = 0; w < sys.numWells(); ++w) { s += sys.controlLetter(w); } return s; };
+    auto curved = [&](Sys& sys, const double kappa) {
+        for (int w = 0; w < sys.numWells(); ++w) {
+            const auto& well = sys.wells()[w];
+            if (well.shut || well.vfp_table <= 0 || !(well.ipr_b[1] < 0.0)) { continue; }
+            const double bhp0 = (well.q_start > 0.0) ? (well.q_start - well.ipr_a[1]) / well.ipr_b[1] : well.bhp_limit;
+            const auto a = well.ipr_a, b = well.ipr_b;
+            std::array<double, Sys::NP> c{};
+            for (int ph = 0; ph < Sys::NP; ++ph) {
+                const double shut_in = (b[ph] < 0.0) ? -a[ph] / b[ph] : bhp0 + 100.0 * unit::barsa;
+                c[ph] = (shut_in > bhp0) ? kappa * b[ph] / (2.0 * (shut_in - bhp0)) : 0.0;
+            }
+            sys.setWellInflow(w, [a, b, c, bhp0](const double bhp) {
+                std::array<double, Sys::NP> q{};
+                for (int ph = 0; ph < Sys::NP; ++ph) { q[ph] = a[ph] + b[ph] * bhp + c[ph] * (bhp - bhp0) * (bhp - bhp0); }
+                return q;
+            });
+        }
+    };
+    using clock = std::chrono::steady_clock;
+    struct Tally { int n = 0, converged = 0, verified = 0, set_changed = 0, shut_changed = 0; double max_dp = 0.0, sum_dp = 0.0, ms = 0.0; long evals = 0, solves = 0; std::map<std::string, int> why; };
+    std::map<std::string, Tally> tally;
+    std::vector<std::filesystem::path> files;
+    for (const auto& e : std::filesystem::directory_iterator(dir)) { if (e.path().extension() == ".txt") { files.push_back(e.path()); } }
+    std::sort(files.begin(), files.end());
+    int shown = 0;
+    for (const auto& f : files) {
+        std::ifstream in(f);
+        std::string head; std::getline(in, head);
+        if (head != "production") { continue; }
+        auto [dumped, guess] = NetworkSolve::readProduction<double>(in, props, units);
+        auto base = dumped; base.setAnalyticJacobian(true);
+        const auto rb = NetworkSolve::solveReduced(base, guess, params, true);
+        if (!rb.converged) { continue; }
+        const std::string set_b = letters(base);
+        for (const double kappa : {0.0, -0.3, 0.3}) {
+            const std::string key = fmt::format("kappa {:+.1f}", kappa);
+            auto& t = tally[key];
+            auto sys = dumped; sys.setAnalyticJacobian(true);
+            curved(sys, kappa);
+            const auto t0 = clock::now();
+            const auto r = NetworkSolve::solveReduced(sys, guess, params, true);
+            t.ms += std::chrono::duration<double, std::milli>(clock::now() - t0).count();
+            ++t.n; t.evals += r.evaluations; t.solves += sys.wellSolves();
+            if (!r.converged) { continue; }
+            ++t.converged;
+            const auto v = verifyAnswer(sys, r.node_pressure, r.well_rate, letters(sys));
+            if (v.ok) { ++t.verified; } else { for (const auto& [k, cnt] : v.violations) { t.why[k] += cnt; } }
+            double dp = 0.0;
+            for (std::size_t i = 0; i < r.node_pressure.size(); ++i) { dp = std::max(dp, std::abs(r.node_pressure[i] - rb.node_pressure[i])); }
+            t.max_dp = std::max(t.max_dp, dp); t.sum_dp += dp;
+            const std::string set = letters(sys);
+            if (set != set_b) { ++t.set_changed; }
+            bool shut_diff = false;
+            for (std::size_t i = 0; i < set.size(); ++i) { shut_diff |= (set[i] == 'S') != (set_b[i] == 'S'); }
+            if (shut_diff) {
+                ++t.shut_changed;
+                if (shown++ < 6) {
+                    BOOST_TEST_MESSAGE(fmt::format("  {} {}: set {} -> {}, node shift {:.3f} bar", f.filename().string(), key, set_b, set, dp / unit::barsa));
+                }
+            }
+            if (kappa == 0.0) { BOOST_CHECK_SMALL(dp / unit::barsa, 1e-3); }
+        }
+    }
+    for (const auto& [key, t] : tally) {
+        BOOST_TEST_MESSAGE(fmt::format("  {}: of {}: converged {}, verified {}, set changed {}, shut set changed {}, node shift mean {:.3f} max {:.3f} bar, evals/solve {:.1f}, well solves/solve {:.0f}, ms/solve {:.2f}",
+                                       key, t.n, t.converged, t.verified, t.set_changed, t.shut_changed,
+                                       t.converged ? t.sum_dp / t.converged / unit::barsa : 0.0, t.max_dp / unit::barsa,
+                                       t.n ? double(t.evals) / t.n : 0.0, t.n ? double(t.solves) / t.n : 0.0, t.n ? t.ms / t.n : 0.0));
+        std::string why; for (const auto& [k, cnt] : t.why) { why += fmt::format(" {} x{}", k, cnt); }
+        if (!why.empty()) { BOOST_TEST_MESSAGE("    not verified:" + why); }
+    }
+}
+
 BOOST_AUTO_TEST_CASE(methods_on_the_dumps_scored)
 {
     using Sys = DeckTrees::Sys;
