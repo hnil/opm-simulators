@@ -85,10 +85,12 @@
 #include <opm/simulators/wells/network/NetworkLegacySolve.hpp>
 #include <opm/simulators/wells/network/NetworkReducedSolve.hpp>
 #include <opm/simulators/wells/network/NetworkTreeSolve.hpp>
+#include <opm/simulators/wells/network/NetworkTubingExtension.hpp>
 
 #include <algorithm>
 #include <array>
 #include <deque>
+#include <set>
 #include <filesystem>
 #include <sstream>
 #include <fmt/format.h>
@@ -6796,6 +6798,154 @@ BOOST_AUTO_TEST_CASE(production_step_bounds)
     dx[system.pIdx(1)] = -x[system.pIdx(1)] - convert::from(5.0, bars);
     out = system.limitStep(x, dx);
     BOOST_CHECK_GE(x[system.pIdx(1)] + out[system.pIdx(1)], convert::from(1.0, bars) * 0.99);
+}
+
+
+// The tubing curve continued below its loading hump so that every inflow
+// line crosses it once (Stein's suggestion): solve with no shut logic in the
+// loop, then shut every well whose converged point is on the continuation,
+// all at once, and solve again until none is. Judged on the real tables.
+// Run with OPM_NETWORK_DUMP_PROD and OPM_VFP_INCLUDE; OPM_EXTENSION_TRACE
+// prints the wells of the first systems that differ from the baseline.
+BOOST_AUTO_TEST_CASE(the_tubing_extension_on_the_dumps)
+{
+    using Sys = DeckTrees::Sys;
+    const char* dir = std::getenv("OPM_NETWORK_DUMP_PROD");
+    const char* inc = std::getenv("OPM_VFP_INCLUDE");
+    if (dir == nullptr || inc == nullptr || !std::filesystem::is_directory(dir)) { return; }
+    std::deque<VFPProdTable> tables;
+    VFPProdProperties<double> props;
+    const UnitSystem units{};
+    for (const char* name : {"well_vfp.ecl", "flowl_b_vfp.ecl", "flowl_c_vfp.ecl"}) {
+        const auto path = std::filesystem::path(inc) / name;
+        if (!std::filesystem::exists(path)) { continue; }
+        const auto deck = Parser{}.parseFile(path.string());
+        for (const auto& kw : deck.getKeywordList("VFPPROD")) {
+            tables.emplace_back(*kw, /*gaslift_opt_active=*/true, units);
+            props.addTable(tables.back());
+        }
+    }
+    static const bool trace = std::getenv("OPM_EXTENSION_TRACE") != nullptr;
+    struct Score { int n = 0, converged = 0, verified = 0, wrong = 0, hysteresis = 0, closed = 0;
+                   int passes1 = 0, passes2 = 0, passes3 = 0, same_shut = 0, more_shut = 0, fewer_shut = 0, other_shut = 0;
+                   int rescued = 0, cliff_resolved = 0, compared = 0, on_cliff = 0, cliffs = 0, stalls = 0, revived = 0, set_changes = 0;
+                   long iterations = 0, evaluations = 0, lookups = 0; double ms = 0.0, max_dp = 0.0, sum_dp = 0.0;
+                   std::map<std::string, int> why; };
+    std::map<std::string, Score> scores;
+    std::array<int, 3> gap_bins{};   // closed with a gap < 0.1, < 1, >= 1 bar
+    using clock = std::chrono::steady_clock;
+    auto ms_since = [](const clock::time_point t) { return std::chrono::duration<double, std::milli>(clock::now() - t).count(); };
+    const NetworkSolve::Parameters<double> params{1e-2, 80};
+    auto letters = [](const Sys& sys) { std::string s; for (int w = 0; w < sys.numWells(); ++w) { s += sys.controlLetter(w); } return s; };
+    std::vector<std::filesystem::path> files;
+    for (const auto& e : std::filesystem::directory_iterator(dir)) { if (e.path().extension() == ".txt") { files.push_back(e.path()); } }
+    std::sort(files.begin(), files.end());
+    int shown = 0, traced = 0;
+    for (const auto& f : files) {
+        std::ifstream in(f);
+        std::string head; std::getline(in, head);
+        if (head != "production") { continue; }
+        auto [dumped, guess] = NetworkSolve::readProduction<double>(in, props, units);
+        dumped.setAnalyticJacobian(true);
+        const std::string fname = f.filename().string();
+        // Baseline: the reduced form with the well model's dead rule.
+        std::string set0; bool conv0 = false, ok0 = false, cliff0 = false; std::vector<double> p0;
+        {
+            auto sys = dumped; sys.resetLookups();
+            const auto t0 = clock::now();
+            const auto r = NetworkSolve::solveReduced(sys, guess, params, true);
+            auto& sc = scores["reduced (baseline)"];
+            ++sc.n; sc.ms += ms_since(t0); sc.lookups += sys.lookups(); sc.iterations += r.iterations; sc.evaluations += r.evaluations; ++sc.passes1;
+            sc.cliffs += r.cliffs; sc.stalls += r.stalls; sc.revived += r.revived; sc.set_changes += r.set_changes;
+            conv0 = r.converged; cliff0 = r.on_cliff; set0 = letters(sys); p0 = r.node_pressure;
+            if (!conv0 && trace) { BOOST_TEST_MESSAGE(fmt::format("  baseline did not converge on {}: residual {:.3g} after {} it, set {}", fname, r.residual, r.iterations, set0)); }
+            if (r.on_cliff) { ++sc.on_cliff; }
+            if (conv0) {
+                ++sc.converged;
+                const auto v = verifyAnswer(sys, r.node_pressure, r.well_rate, set0);
+                ok0 = v.ok;
+                if (v.hysteresis > 0) { ++sc.hysteresis; }
+                if (v.ok) { ++sc.verified; } else { ++sc.wrong; for (const auto& [k, c] : v.violations) { sc.why[k] += c; } }
+            }
+        }
+        {
+            auto sys = dumped; sys.resetLookups();
+            const auto t0 = clock::now();
+            const auto rx = NetworkSolve::solveReducedOnExtension(sys, guess, params);
+            auto& sc = scores["extension"];
+            ++sc.n; sc.ms += ms_since(t0); sc.lookups += sys.lookups(); sc.iterations += rx.iterations; sc.evaluations += rx.evaluations; sc.closed += rx.closed;
+            (rx.passes == 1 ? sc.passes1 : rx.passes == 2 ? sc.passes2 : sc.passes3) += 1;
+            sc.cliffs += rx.last.cliffs; sc.stalls += rx.last.stalls; sc.revived += rx.last.revived; sc.set_changes += rx.last.set_changes;
+            if (!rx.converged && trace) { BOOST_TEST_MESSAGE(fmt::format("  extension did not converge on {}: residual {:.3g} after {} it, pass {}, set {}, baseline {}{}", fname, rx.last.residual, rx.last.iterations, rx.passes, letters(sys), set0, conv0 ? "" : " (baseline neither)")); }
+            for (std::size_t w = 0; w < rx.closed_wells.size(); ++w) {
+                if (!rx.closed_wells[w]) { continue; }
+                const double g = convert::to(rx.closed_gap[w], bars);
+                ++gap_bins[g < 0.1 ? 0 : g < 1.0 ? 1 : 2];
+            }
+            if (!rx.converged) { continue; }
+            ++sc.converged;
+            if (rx.last.on_cliff) { ++sc.on_cliff; }
+            const std::string set = letters(sys);
+            const auto v = verifyAnswer(sys, rx.last.node_pressure, rx.last.well_rate, set);
+            if (v.hysteresis > 0) { ++sc.hysteresis; }
+            if (v.ok) { ++sc.verified; } else { ++sc.wrong; for (const auto& [k, c] : v.violations) { sc.why[k] += c; } }
+            if (trace && (!v.ok || set != set0) && traced++ < 5) {
+                std::string why; for (const auto& [k, c] : v.violations) { why += fmt::format(" {} x{}", k, c); }
+                BOOST_TEST_MESSAGE(fmt::format("  trace {}: baseline {} extension {} passes {} closed {}{}", fname, set0, set, rx.passes, rx.closed, why));
+                for (int w = 0; w < sys.numWells(); ++w) {
+                    const auto& well = sys.wells()[w];
+                    if (well.vfp_table <= 0) { continue; }
+                    const double pn = well.node == 0 ? sys.terminalPressure() : rx.last.node_pressure[well.node];
+                    const double pg = well.node == 0 ? sys.terminalPressure() : guess[well.node];
+                    const double shut_in = well.ipr_b[1] < 0.0 ? -well.ipr_a[1] / well.ipr_b[1] : 0.0;
+                    const double po = sys.thpPotential(well, pn), pog = sys.thpPotential(well, pg);
+                    sys.setTubingExtension(true);
+                    const double pe = sys.thpPotential(well, pn), peg = sys.thpPotential(well, pg);
+                    sys.setTubingExtension(false);
+                    auto show = [](const double q) { return q > 1e29 ? std::string("nobind") : fmt::format("{:.1f}", q * 86400.0); };
+                    BOOST_TEST_MESSAGE(fmt::format("    {} {}->{}: q {:.1f} sm3/d at node {:.3f} bar (guess {:.3f}); crossing table {} continued {}; at guess {} / {}; q_start {:.1f} shut-in {:.1f} limit {:.1f} bar{}",
+                                                   well.name, set0[w], set[w], rx.last.well_rate[w] * 86400.0, convert::to(pn, bars), convert::to(pg, bars),
+                                                   show(po), show(pe), show(pog), show(peg), well.q_start * 86400.0, convert::to(shut_in, bars), convert::to(well.bhp_limit, bars),
+                                                   rx.closed_wells[w] ? fmt::format(", closed with gap {:.3f} bar", convert::to(rx.closed_gap[w], bars)) : std::string{}));
+                }
+            }
+            if (!conv0) { ++sc.rescued; }
+            if (cliff0 && !rx.last.on_cliff) { ++sc.cliff_resolved; }
+            if (conv0) {
+                ++sc.compared;
+                int more = 0, fewer = 0;
+                for (std::size_t w = 0; w < set.size(); ++w) {
+                    if (set[w] == 'S' && set0[w] != 'S') { ++more; }
+                    if (set[w] != 'S' && set0[w] == 'S') { ++fewer; }
+                }
+                if (more == 0 && fewer == 0) { ++sc.same_shut; } else if (fewer == 0) { ++sc.more_shut; } else if (more == 0) { ++sc.fewer_shut; } else { ++sc.other_shut; }
+                if (ok0 && v.ok) {
+                    double dp = 0.0;
+                    for (std::size_t i = 1; i < p0.size() && i < rx.last.node_pressure.size(); ++i) { dp = std::max(dp, std::abs(p0[i] - rx.last.node_pressure[i])); }
+                    sc.max_dp = std::max(sc.max_dp, dp); sc.sum_dp += dp;
+                }
+                if ((more || fewer) && shown++ < 8) {
+                    BOOST_TEST_MESSAGE(fmt::format("  {}: baseline {} -> {} ({} passes, {} closed by the rule{})",
+                                                   fname, set0, set, rx.passes, rx.closed, v.ok ? "" : ", judged wrong"));
+                }
+            }
+        }
+    }
+    for (const auto& [m, sc] : scores) {
+        std::string why;
+        std::vector<std::pair<int, std::string>> top;
+        for (const auto& [k, c] : sc.why) { top.emplace_back(c, k); }
+        std::sort(top.rbegin(), top.rend());
+        for (std::size_t i = 0; i < top.size() && i < 3; ++i) { why += fmt::format(" {} x{}", top[i].second, top[i].first); }
+        BOOST_TEST_MESSAGE(fmt::format("  {:20} of {}: converged {:4}, verified {:4} ({:3} shut-stays-shut), wrong {:4}, on a cliff {:3}, cliff cutbacks {:3}, stalls {:3}, revived {:3}, set changes {:4}, it/solve {:4.1f}, evals/solve {:5.1f}, lookups/solve {:6.0f}, ms/solve {:5.2f};{}",
+                                       m, sc.n, sc.converged, sc.verified, sc.hysteresis, sc.wrong, sc.on_cliff, sc.cliffs, sc.stalls, sc.revived, sc.set_changes,
+                                       double(sc.iterations) / std::max(sc.n, 1), double(sc.evaluations) / std::max(sc.n, 1), double(sc.lookups) / std::max(sc.n, 1), sc.ms / std::max(sc.n, 1), why));
+        if (m == "reduced (baseline)") { continue; }
+        BOOST_TEST_MESSAGE(fmt::format("  {:20} closed wells, line missed the curve by < 0.1 / < 1 / >= 1 bar: {} / {} / {}", "", gap_bins[0], gap_bins[1], gap_bins[2]));
+        BOOST_TEST_MESSAGE(fmt::format("  {:20} passes 1/2/3+: {}/{}/{}, wells closed by the rule {}; vs baseline ({} compared): same shut set {}, more shut {}, fewer shut {}, mixed {}; rescued {}, cliffs resolved {}; node pressure max {:.3f} mean {:.3f} bar",
+                                       "", sc.passes1, sc.passes2, sc.passes3, sc.closed, sc.compared, sc.same_shut, sc.more_shut, sc.fewer_shut, sc.other_shut,
+                                       sc.rescued, sc.cliff_resolved, convert::to(sc.max_dp, bars), convert::to(sc.sum_dp / std::max(sc.compared, 1), bars)));
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

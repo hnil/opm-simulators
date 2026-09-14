@@ -41,6 +41,7 @@
 #include <sstream>
 #include <string>
 #include <utility>
+#include <optional>
 #include <vector>
 
 namespace Opm::NetworkSolve {
@@ -346,6 +347,99 @@ public:
     /// 0.25 bar grid: the reduced form differences it, and its answer should
     /// not carry the grid's interpolation error.
     void setExactPotential(const bool on) { exact_potential_ = on; }
+    /// Swap the tubing tables, e.g. for a continued copy; same table numbers.
+    void setTables(const VFPProdProperties<Scalar>& props) { props_ = &props; }
+    /// The tubing curve continued below the point where the well's own IPR
+    /// line touches it (Stein's suggestion): a well whose line dips below
+    /// the curve keeps the table and its stable crossing, unchanged; a well
+    /// whose line misses the curve has the table held flat below the point
+    /// of closest approach, so the line crosses the continuation exactly
+    /// once, at a rate that is not an operating point. tubingGap() says
+    /// which. Applied to the wells' tables only, never to a branch.
+    ///
+    /// Flat, not the nearest segment's slope: at the touching point that
+    /// slope equals the line's and the crossing would be degenerate. Anchored
+    /// at the line's touching point, not the table's minimum: the blended
+    /// table has shallow dips above the hump that a running minimum flattens
+    /// although the line still crosses them stably, which moved a flowing
+    /// well's crossing by 1 %.
+    void setTubingExtension(const bool on) { tubing_extension_ = on; }
+    bool tubingExtension() const { return tubing_extension_; }
+
+    /// Where the IPR line comes closest to the tubing curve at these
+    /// fractions: an axis point, since both are linear between them. The
+    /// nearest vertex switches as the node pressure moves, so the level
+    /// jumps by the table's step there; blending the two nearest vertices
+    /// by their gaps was tried and cost more cutbacks than it saved (81
+    /// against 1 on the MODEL5 dumps). bhp is the table-side level of the
+    /// flat continuation.
+    struct Touch { bool valid = false; Scalar flo = 0; Scalar bhp = 0; Scalar gap = 0; };
+    Touch touchingPoint(const Well& w, const Scalar p_node, const std::array<Scalar, NP>& qdir) const
+    {
+        Touch tp;
+        if (!hasTubing(w)) { return tp; }
+        const auto& t = props_->getTable(w.vfp_table);
+        const Scalar flo_dir = std::abs(detail::getFlo(t, -qdir[0], -qdir[1], -qdir[2]));
+        const Scalar A = detail::getFlo(t, w.ipr_a[0], w.ipr_a[1], w.ipr_a[2]);
+        const Scalar B = detail::getFlo(t, w.ipr_b[0], w.ipr_b[1], w.ipr_b[2]);
+        if (!(flo_dir > Scalar{0}) || !(B < Scalar{0})) { return tp; }
+        // flo = A + B bhp on the line, so bhp = (flo - A) / B.
+        auto line = [&](const Scalar f) { return (f - A) / B; };
+        const CountScope probe(*this, false);
+        for (const double f : t.getFloAxis()) {
+            std::array<Scalar, NP> q{};
+            for (int ph = 0; ph < NP; ++ph) { q[ph] = qdir[ph] * (Scalar(f) / flo_dir); }
+            const Scalar bhp = tableBhp(w.vfp_table, p_node, q, w.alq);
+            const Scalar gap = bhp - w.vfp_dp - line(Scalar(f));
+            if (!tp.valid || gap < tp.gap) { tp.valid = true; tp.flo = f; tp.bhp = bhp; tp.gap = gap; }
+        }
+        return tp;
+    }
+
+    /// A well's tubing bhp at these rates: the table, or its continuation.
+    Scalar tubingBhp(const Well& w, const Scalar thp, const std::array<Scalar, NP>& q) const
+    {
+        if (!tubing_extension_) { return tableBhp(w.vfp_table, thp, q, w.alq); }
+        const auto tp = touchingPoint(w, thp, q);
+        if (!tp.valid || tp.gap < Scalar{0}) { return tableBhp(w.vfp_table, thp, q, w.alq); }
+        const auto& t = props_->getTable(w.vfp_table);
+        const Scalar flo = std::abs(detail::getFlo(t, -q[0], -q[1], -q[2]));
+        return flo >= tp.flo ? tableBhp(w.vfp_table, thp, q, w.alq) : tp.bhp;
+    }
+
+    /// How far the IPR line misses the tubing curve at these fractions, in
+    /// pressure: positive means the well has no real crossing here and any
+    /// point it sits on is on the continuation. Zero when the extension is
+    /// off or the line crosses.
+    Scalar tubingGap(const Well& w, const Scalar thp, const std::array<Scalar, NP>& q) const
+    {
+        if (!tubing_extension_) { return Scalar{0}; }
+        const auto tp = touchingPoint(w, thp, q);
+        return (tp.valid && tp.gap > Scalar{0}) ? tp.gap : Scalar{0};
+    }
+
+    /// The crossing of the IPR line with the continued tubing curve, in the
+    /// helper's form (-flo, bhp): the table's own stable crossing where the
+    /// line dips below the curve, else the point on the flat continuation
+    /// the line meets, or nothing when the line is below the touching point
+    /// even at shut-in.
+    std::optional<std::pair<Scalar, Scalar>>
+    continuedCrossing(const Well& w, const VFPProdTable& t, const Scalar p_node,
+                      const std::array<Scalar, NP>& qdir, const Scalar wfr, const Scalar gfr,
+                      const Scalar ipr_a_flo, const Scalar ipr_b_flo, const Scalar dp) const
+    {
+        const auto tp = touchingPoint(w, p_node, qdir);
+        if (!tp.valid) { return std::nullopt; }
+        if (tp.gap < Scalar{0}) {
+            return VFPHelpers<Scalar>::intersectWithIPR(
+                t, p_node, wfr, gfr, w.alq, ipr_a_flo, ipr_b_flo,
+                [dp](const Scalar bhp_table) { return bhp_table - dp; });
+        }
+        // flo = a - b bhp on the line, in the helper's signs.
+        const Scalar f = ipr_a_flo - ipr_b_flo * (tp.bhp - dp);
+        if (f >= Scalar{0}) { return std::make_pair(-f, tp.bhp - dp); }
+        return std::nullopt;
+    }
     /// A well whose tubing cannot lift at its node pressure is dead: rate
     /// zero, no capacity for the tree. The full system says "thp is not a
     /// control" instead and leaves the case to its complementarity row; the
@@ -706,7 +800,7 @@ public:
         ++lookups_;
         {
             const CountScope probe(*this, false);
-            if (w.bhp_limit - (tableBhp(w.vfp_table, p_node, rates(w.bhp_limit), w.alq) - w.vfp_dp)
+            if (w.bhp_limit - (tubingBhp(w, p_node, rates(w.bhp_limit)) - w.vfp_dp)
                     >= Scalar{0}) {
                 return std::numeric_limits<Scalar>::max();
             }
@@ -725,7 +819,7 @@ public:
         const auto qf = rates(fraction_bhp);
         const Scalar wfr = detail::getWFR(t, -qf[0], -qf[1], -qf[2]);
         const Scalar gfr = detail::getGFR(t, -qf[0], -qf[1], -qf[2]);
-        return crossing(w, t, p_node, wfr, gfr);
+        return crossing(w, t, p_node, wfr, gfr, qf);
     }
 
     /// Passes over the fractions. One (fractions where the well is now) costs
@@ -747,7 +841,7 @@ public:
 
     /// One axis walk: the crossing at fixed fractions.
     Scalar crossing(const Well& w, const VFPProdTable& t, const Scalar p_node,
-                    const Scalar wfr, const Scalar gfr) const
+                    const Scalar wfr, const Scalar gfr, const std::array<Scalar, NP>& qdir) const
     {
         // FLO is a linear combination of the phase rates and our rates are
         // linear in bhp, so flo is too: flo(bhp) = A + B*bhp, with flo the
@@ -767,9 +861,11 @@ public:
             if (off_axis_note_.empty()) { off_axis_note_ = "thp off table " + std::to_string(w.vfp_table) + " (crossing)"; }
         }
         ++lookups_;              // one axis walk
-        const auto hit = VFPHelpers<Scalar>::intersectWithIPR(
-            t, p_node, wfr, gfr, w.alq, ipr_a_flo, ipr_b_flo,
-            [dp](const Scalar bhp_table) { return bhp_table - dp; });
+        const auto hit = tubing_extension_
+            ? continuedCrossing(w, t, p_node, qdir, wfr, gfr, ipr_a_flo, ipr_b_flo, dp)
+            : VFPHelpers<Scalar>::intersectWithIPR(
+                  t, p_node, wfr, gfr, w.alq, ipr_a_flo, ipr_b_flo,
+                  [dp](const Scalar bhp_table) { return bhp_table - dp; });
         if (!hit.has_value()) {
             return Scalar{0};        // nowhere does the reservoir out-push the tubing
         }
@@ -788,7 +884,7 @@ public:
             };
             auto h = [&](const Scalar b) {
                 ++lookups_;
-                return b - (tableBhp(w.vfp_table, p_node, rates(b), w.alq) - dp);
+                return b - (tubingBhp(w, p_node, rates(b)) - dp);
             };
             // Bracketed, and only the root with the stable crossing's sign
             // pattern (h rising through zero): an unguarded secant from
@@ -872,7 +968,7 @@ public:
         }
         auto h = [&](const Scalar bhp) {
             ++lookups_;
-            return bhp - (tableBhp(w.vfp_table, p_node, rates(bhp), w.alq) - w.vfp_dp);
+            return bhp - (tubingBhp(w, p_node, rates(bhp)) - w.vfp_dp);
         };
         // At the bhp limit the tubing already needs less than the limit, so thp
         // does not hold the well back: it is the bhp limit that binds. Say so by
@@ -1008,7 +1104,7 @@ public:
             Scalar& control = r[4 * nodes + NP * wells + w];
             switch (controls_[w]) {
             case Control::Thp:
-                control = (bhp - (tableBhp(well.vfp_table, pressure(well.node), q, well.alq)
+                control = (bhp - (tubingBhp(well, pressure(well.node), q)
                                   - well.vfp_dp)) / pressure_scale_;
                 break;
             case Control::Bhp:
@@ -1052,7 +1148,7 @@ public:
                 // No VFPPROD means no tubing curve, so thp is not one of this
                 // well's limits and its slack never binds.
                 const Scalar b = hasTubing(well)
-                    ? (bhp - (tableBhp(well.vfp_table, pressure(well.node), qp, well.alq)
+                    ? (bhp - (tubingBhp(well, pressure(well.node), qp)
                               - well.vfp_dp)) / pressure_scale_
                     : Scalar{1e6};
                 const Scalar c = (bhp - well.bhp_limit) / pressure_scale_;
@@ -1081,7 +1177,7 @@ public:
                 // what flips; the Fischer-Burmeister function has the same
                 // zero set and is smooth everywhere but the origin.
                 const Scalar a = (well.oil_rate_limit - q[1]) / rate_scale_;
-                const Scalar b = (bhp - (tableBhp(well.vfp_table, pressure(well.node), q, well.alq)
+                const Scalar b = (bhp - (tubingBhp(well, pressure(well.node), q)
                                          - well.vfp_dp)) / pressure_scale_;
                 control = a + b - std::sqrt(a * a + b * b);
                 break;
@@ -2156,6 +2252,25 @@ public:
         return out;
     }
 
+    /// tableLookup() for a well: on the continuation the value is its flat
+    /// level, the rate derivatives are zero and the thp derivative is that
+    /// of the level. Otherwise the table's own.
+    Lookup tubingLookup(const Well& w, const Scalar thp, const std::array<Scalar, NP>& q) const
+    {
+        if (!tubing_extension_) { return tableLookup(w.vfp_table, thp, q, w.alq); }
+        const auto tp = touchingPoint(w, thp, q);
+        if (!tp.valid || tp.gap < Scalar{0}) { return tableLookup(w.vfp_table, thp, q, w.alq); }
+        const auto& t = props_->getTable(w.vfp_table);
+        const Scalar flo = std::abs(detail::getFlo(t, -q[0], -q[1], -q[2]));
+        if (flo >= tp.flo) { return tableLookup(w.vfp_table, thp, q, w.alq); }
+        Lookup out;
+        out.value = tp.bhp;
+        out.dq.fill(Scalar{0});
+        const Scalar h = Scalar{0.01} * unit::barsa;
+        out.dthp = (touchingPoint(w, thp + h, q).bhp - tp.bhp) / h;
+        return out;
+    }
+
     DenseMatrix<Scalar> jacobian(const State& x) const override
     {
         const int nodes = numNodes();
@@ -2238,7 +2353,7 @@ public:
             case Control::Thp: {
                 std::array<Scalar, NP> q{};
                 for (int ph = 0; ph < NP; ++ph) { q[ph] = x[qwIdx(w, ph)]; }
-                const auto e = tableLookup(well.vfp_table, pressure(well.node), q, well.alq);
+                const auto e = tubingLookup(well, pressure(well.node), q);
                 add(row, bhpIdx(w), 1.0, pressure_scale_);
                 if (well.node != 0) {
                     add(row, pIdx(well.node), -e.dthp, pressure_scale_);
@@ -2278,7 +2393,7 @@ public:
                 // No VFPPROD means no tubing curve, so no table to look up and
                 // that slack never binds -- mirror the residual exactly.
                 Lookup e{};
-                if (tubing) { e = tableLookup(well.vfp_table, pressure(well.node), qp, well.alq); }
+                if (tubing) { e = tubingLookup(well, pressure(well.node), qp); }
                 const bool has_rate = well.oil_rate_limit > Scalar{0};
                 const Scalar a = has_rate ? (well.oil_rate_limit - q[1]) / rate_scale_ : Scalar{1e6};
                 const Scalar b = tubing
@@ -2327,7 +2442,7 @@ public:
             case Control::Tied: {
                 std::array<Scalar, NP> q{};
                 for (int ph = 0; ph < NP; ++ph) { q[ph] = x[qwIdx(w, ph)]; }
-                const auto e = tableLookup(well.vfp_table, pressure(well.node), q, well.alq);
+                const auto e = tubingLookup(well, pressure(well.node), q);
                 const Scalar a = (well.oil_rate_limit - q[1]) / rate_scale_;
                 const Scalar b = (x[bhpIdx(w)] - (e.value - well.vfp_dp)) / pressure_scale_;
                 const Scalar norm = std::sqrt(a * a + b * b);
@@ -2414,6 +2529,7 @@ private:
     std::vector<Scalar> tree_rate_;
     bool exact_potential_ = false;
     bool dead_when_cannot_lift_ = false;
+    bool tubing_extension_ = false;
     std::vector<char> reduced_dead_;
     std::vector<Scalar> cliff_q_;
     mutable std::vector<char> dead_now_;
