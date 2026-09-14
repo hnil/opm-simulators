@@ -29,6 +29,7 @@
 #include <opm/simulators/wells/network/NetworkInjectionSystem.hpp>
 #include <opm/simulators/wells/network/NetworkProductionSystem.hpp>
 #include <opm/simulators/wells/network/NetworkReducedSolve.hpp>
+#include <opm/simulators/wells/network/NetworkTubingExtension.hpp>
 
 #include <fstream>
 #include <set>
@@ -995,8 +996,26 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
             return NetworkSolve::solve(system, guess, kNetworkSolveParams<Scalar>, NetworkSolve::FullStep{});
         }
         static const bool hold = std::getenv("OPM_NETWORK_CLIFF_HOLD") != nullptr;
-        const auto rr = NetworkSolve::solveReduced(system, guess, kNetworkSolveParams<Scalar>, /*eliminate=*/true,
-                                                   hold ? NetworkSolve::CliffRule::Hold : NetworkSolve::CliffRule::Die);
+        // OPM_NETWORK_TUBING_EXTENSION: the tubing curves continued below
+        // their touching points, no shut decision inside the loop, every
+        // well on a continuation shut at once afterwards (bench-verified
+        // to give the same answers; here to see what the reservoir Newton
+        // makes of it). Experimental, like the other switches above.
+        static const bool extension = std::getenv("OPM_NETWORK_TUBING_EXTENSION") != nullptr;
+        const auto rr = [&]() {
+            if (!extension) {
+                return NetworkSolve::solveReduced(system, guess, kNetworkSolveParams<Scalar>, /*eliminate=*/true,
+                                                  hold ? NetworkSolve::CliffRule::Hold : NetworkSolve::CliffRule::Die);
+            }
+            auto rx = NetworkSolve::solveReducedOnExtension(system, guess, kNetworkSolveParams<Scalar>,
+                                                            NetworkSolve::Closing::Tiered);
+            if (rx.passes > 1 || rx.closed > 0) {
+                OpmLog::debug(fmt::format("Network: continuation solve under {} at report step {}: {} passes, "
+                                          "{} wells closed", root.name(), reportStepIdx, rx.passes, rx.closed));
+            }
+            rx.last.converged = rx.converged && rx.last.converged;
+            return rx.last;
+        }();
         NetworkSolve::Result<Scalar> r;
         r.converged = rr.converged;
         r.iterations = rr.iterations;
