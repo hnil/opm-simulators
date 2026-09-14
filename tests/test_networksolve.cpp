@@ -7008,4 +7008,219 @@ BOOST_AUTO_TEST_CASE(the_tubing_extension_on_the_dumps)
     }
 }
 
+// The IPR of a well that cannot lift: where its tangent is taken decides
+// whether the linear rows say it lifts. Each dumped well gets a curved
+// inflow (the dump's line as its tangent at the operating point, kappa*100 %
+// off in slope at shut-in), and the shut decision of the solve is checked
+// against the exact one for the curve at the settled pressure: the curve
+// misses the tubing everywhere, or not. Tangent rule off (where the well
+// last flowed, or its bhp limit) against on (the touching point, or a rate
+// limit below the crossing), with and without the tubing continuation.
+// Run with OPM_NETWORK_DUMP_PROD and OPM_VFP_INCLUDE.
+BOOST_AUTO_TEST_CASE(the_shut_well_ipr_on_the_dumps)
+{
+    using Sys = DeckTrees::Sys;
+    const char* dir = std::getenv("OPM_NETWORK_DUMP_PROD");
+    const char* inc = std::getenv("OPM_VFP_INCLUDE");
+    if (dir == nullptr || inc == nullptr || !std::filesystem::is_directory(dir)) { return; }
+    std::deque<VFPProdTable> tables;
+    VFPProdProperties<double> props;
+    const UnitSystem units{};
+    for (const char* name : {"well_vfp.ecl", "flowl_b_vfp.ecl", "flowl_c_vfp.ecl"}) {
+        const auto path = std::filesystem::path(inc) / name;
+        if (!std::filesystem::exists(path)) { continue; }
+        const auto deck = Parser{}.parseFile(path.string());
+        for (const auto& kw : deck.getKeywordList("VFPPROD")) {
+            tables.emplace_back(*kw, /*gaslift_opt_active=*/true, units);
+            props.addTable(tables.back());
+        }
+    }
+    const NetworkSolve::Parameters<double> params{1e-2, 80};
+    static const bool trace = std::getenv("OPM_EXTENSION_TRACE") != nullptr;
+    auto letters = [](const Sys& sys) { std::string s; for (int w = 0; w < sys.numWells(); ++w) { s += sys.controlLetter(w); } return s; };
+    using Inflow = std::function<std::array<double, Sys::NP>(double)>;
+    // The curved inflow per well, kept so the exact test can evaluate it.
+    // The slope change is over the distance to shut-in, floored at 20 bar:
+    // a well operating a fraction of a bar below its shut-in would
+    // otherwise get a curvature that turns its oil negative a bar away.
+    std::vector<double> bhp0s;
+    auto curved = [&](Sys& sys, const double kappa, std::vector<Inflow>& inflows) {
+        inflows.assign(sys.numWells(), nullptr);
+        bhp0s.assign(sys.numWells(), 0.0);
+        for (int w = 0; w < sys.numWells(); ++w) {
+            const auto& well = sys.wells()[w];
+            if (well.shut || well.vfp_table <= 0 || !(well.ipr_b[1] < 0.0)) { continue; }
+            const double bhp0 = (well.q_start > 0.0) ? (well.q_start - well.ipr_a[1]) / well.ipr_b[1] : well.bhp_limit;
+            bhp0s[w] = bhp0;
+            const auto a = well.ipr_a, b = well.ipr_b;
+            std::array<double, Sys::NP> c{};
+            for (int ph = 0; ph < Sys::NP; ++ph) {
+                const double shut_in = (b[ph] < 0.0) ? -a[ph] / b[ph] : bhp0 + 100.0 * unit::barsa;
+                c[ph] = kappa * b[ph] / (2.0 * std::max(shut_in - bhp0, 20.0 * unit::barsa));
+            }
+            inflows[w] = [a, b, c, bhp0](const double bhp) {
+                std::array<double, Sys::NP> q{};
+                for (int ph = 0; ph < Sys::NP; ++ph) { q[ph] = a[ph] + b[ph] * bhp + c[ph] * (bhp - bhp0) * (bhp - bhp0); }
+                return q;
+            };
+            sys.setWellInflow(w, inflows[w]);
+        }
+    };
+    // The exact decision for the curve: does it miss the tubing at every
+    // bhp between the limit and its shut-in? Scanned, since it is a judge.
+    auto curve_margin = [&](const Sys& sys, const int w, const Inflow& inflow, const double p_node) {
+        const auto& well = sys.wells()[w];
+        // The curve's flowing range, found outward from its operating point.
+        double lo = bhp0s[w], hi = bhp0s[w];
+        while (lo - 0.5 * unit::barsa >= well.bhp_limit && inflow(lo - 0.5 * unit::barsa)[1] > 0.0) { lo -= 0.5 * unit::barsa; }
+        while (inflow(hi + 0.5 * unit::barsa)[1] > 0.0 && hi < 1000.0 * unit::barsa) { hi += 0.5 * unit::barsa; }
+        double least = std::numeric_limits<double>::max();
+        for (int i = 0; i <= 400; ++i) {
+            const double bhp = lo + (hi - lo) * i / 400.0;
+            auto q = inflow(bhp);
+            for (auto& v : q) { v = std::max(v, 0.0); }
+            if (!(q[1] > 0.0)) { continue; }
+            least = std::min(least, sys.tableBhp(well.vfp_table, p_node, q, well.alq) - well.vfp_dp - bhp);
+        }
+        return least;
+    };
+    auto curve_dead = [&](const Sys& sys, const int w, const Inflow& inflow, const double p_node) { return curve_margin(sys, w, inflow, p_node) > 0.0; };
+    struct Tally { int n = 0, converged = 0, verified = 0, over_shut = 0, under_shut = 0, wells = 0, shut = 0, pinned_dead = 0,
+                   tangent_lifts_curve_not = 0, curve_lifts_tangent_not = 0, margins = 0; long solves = 0, evals = 0;
+                   double ms = 0.0, margin_err = 0.0, margin_err_max = 0.0; };
+    std::map<std::string, Tally> tally;
+    std::vector<std::filesystem::path> files;
+    for (const auto& e : std::filesystem::directory_iterator(dir)) { if (e.path().extension() == ".txt") { files.push_back(e.path()); } }
+    std::sort(files.begin(), files.end());
+    using clock = std::chrono::steady_clock;
+    int shown = 0;
+    for (const auto& f : files) {
+        std::ifstream in(f);
+        std::string head; std::getline(in, head);
+        if (head != "production") { continue; }
+        auto [dumped, guess] = NetworkSolve::readProduction<double>(in, props, units);
+        dumped.setAnalyticJacobian(true);
+        // The wells the linear solve shuts: given a zero starting rate in the
+        // "start shut" runs, so their tangent begins at the bhp limit, as a
+        // well the well model has had shut for a while is linearised.
+        std::vector<char> shut_by_line(dumped.numWells(), 0);
+        {
+            auto sys = dumped;
+            const auto r = NetworkSolve::solveReduced(sys, guess, params, true);
+            if (r.converged) { for (int w = 0; w < sys.numWells(); ++w) { shut_by_line[w] = sys.controlLetter(w) == 'S'; } }
+        }
+        for (const double kappa : {-0.3, 0.3}) {
+            for (const bool rule : {false, true}) {
+                for (const bool start_shut : {false, true}) {
+                    const bool ext = false;
+                    const std::string key = fmt::format("kappa {:+.1f}, tangent {}, start {}", kappa, rule ? "at touch" : "as was ", start_shut ? "shut     " : "as dumped");
+                    auto& t = tally[key];
+                    auto sys = dumped;
+                    if (start_shut) {
+                        Sys rebuilt(props, units);
+                        for (int nd = 0; nd <= dumped.numNodes(); ++nd) { rebuilt.addNode(dumped.nodes()[nd], dumped.branchAlq(nd)); }
+                        rebuilt.setTerminalPressure(dumped.terminalPressure());
+                        for (int i = 0; i < dumped.numWells(); ++i) { auto wl = dumped.wells()[i]; if (shut_by_line[i]) { wl.q_start = 0.0; } rebuilt.addWell(wl); }
+                        rebuilt.setGroupTarget(dumped.groupTarget());
+                        rebuilt.setAnalyticJacobian(true);
+                        rebuilt.finish();
+                        sys = rebuilt;
+                    }
+                    std::vector<Inflow> inflows;
+                    curved(sys, kappa, inflows);
+                    sys.setTangentAtTouchingPoint(rule);
+                    const auto t0 = clock::now();
+                    std::vector<double> p; std::vector<double> q; bool converged = false; int evals = 0;
+                    if (ext) {
+                        const auto r = NetworkSolve::solveReducedOnExtension(sys, guess, params);
+                        converged = r.converged; p = r.last.node_pressure; q = r.last.well_rate; evals = r.evaluations;
+                    } else {
+                        const auto r = NetworkSolve::solveReduced(sys, guess, params, true);
+                        converged = r.converged; p = r.node_pressure; q = r.well_rate; evals = r.evaluations;
+                    }
+                    t.ms += std::chrono::duration<double, std::milli>(clock::now() - t0).count();
+                    ++t.n; t.evals += evals; t.solves += sys.wellSolves();
+                    if (!converged) { continue; }
+                    ++t.converged;
+                    const std::string set = letters(sys);
+                    if (verifyAnswer(sys, p, q, set).ok) { ++t.verified; }
+                    for (int w = 0; w < sys.numWells(); ++w) {
+                        if (!inflows[w]) { continue; }
+                        const auto& well = sys.wells()[w];
+                        const double pn = well.node == 0 ? sys.terminalPressure() : p[well.node];
+                        const bool dead = curve_dead(sys, w, inflows[w], pn);
+                        if (well.pinned) {
+                            // Held as a source by the group; the network does not decide it.
+                            if (dead) { ++t.pinned_dead; }
+                            continue;
+                        }
+                        ++t.wells;
+                        const bool shut = set[w] == 'S' || !(q[w] > 0.0);
+                        if (shut) {
+                            ++t.shut;
+                            // Where the tangent of a well that cannot lift was
+                            // taken: its margin to the tubing against the curve's.
+                            // Fractions iterated to the touching bhp, as the rule does.
+                            const auto& tbl = props.getTable(well.vfp_table);
+                            const double A = detail::getFlo(tbl, well.ipr_a[0], well.ipr_a[1], well.ipr_a[2]);
+                            const double B = detail::getFlo(tbl, well.ipr_b[0], well.ipr_b[1], well.ipr_b[2]);
+                            double bhp_t = 0.5 * (well.bhp_limit + (well.ipr_b[1] < 0.0 ? -well.ipr_a[1] / well.ipr_b[1] : well.bhp_limit));
+                            auto tp = sys.touchingPoint(well, pn, sys.ratesAt(well, bhp_t));
+                            for (int pass = 0; pass < 3 && tp.valid && B < 0.0; ++pass) {
+                                bhp_t = std::max((tp.flo - A) / B, well.bhp_limit);
+                                tp = sys.touchingPoint(well, pn, sys.ratesAt(well, bhp_t));
+                            }
+                            if (tp.valid && dead) {
+                                const double cm = curve_margin(sys, w, inflows[w], pn);
+                                const double err = std::abs(tp.gap - cm);
+                                ++t.margins; t.margin_err += err; t.margin_err_max = std::max(t.margin_err_max, err);
+                                static int outliers = 0;
+                                if (trace && rule && err > 5.0 * unit::barsa && outliers++ < 3) {
+                                    const double bhp_tan = (well.q_start > 0.0 && well.ipr_b[1] < 0.0) ? (well.q_start - well.ipr_a[1]) / well.ipr_b[1] : well.bhp_limit;
+                                    BOOST_TEST_MESSAGE(fmt::format("  outlier {} {}: {} tangent margin {:.2f} curve margin {:.2f} bar at node {:.2f}; touching flo {:.0f} bhp_t {:.1f}; tangent slope {:.0f} sm3/d/bar, line slope {:.0f}; q_start {:.0f} bhp0 {:.1f} limit {:.1f}",
+                                                                   f.filename().string(), key, well.name, convert::to(tp.gap, bars), convert::to(cm, bars), convert::to(pn, bars),
+                                                                   tp.flo * 86400.0, convert::to(bhp_t, bars), -well.ipr_b[1] * 86400.0 * unit::barsa, -dumped.wells()[w].ipr_b[1] * 86400.0 * unit::barsa,
+                                                                   well.q_start * 86400.0, convert::to(bhp0s[w], bars), convert::to(well.bhp_limit, bars)));
+                                    (void)bhp_tan;
+                                }
+                            }
+                        }
+                        if (shut && !dead) {
+                            ++t.over_shut;
+                            static int traced = 0;
+                            if (trace && rule && start_shut && kappa < 0.0 && traced++ < 3) {
+                                const auto& dd = sys.committedDead();
+                                const double bhp_tan = well.ipr_b[1] < 0.0 ? -well.ipr_a[1] / well.ipr_b[1] : 0.0;
+                                BOOST_TEST_MESSAGE(fmt::format("  sticky {} {}: {} control {} rate {:.0f}, committed dead {}, tangent crossing at settled {:.3f} bar: {:.0f} sm3/d, at guess {:.3f}: {:.0f}; tangent shut-in {:.1f} bar, curve margin {:.2f} bar, q_start {:.0f}",
+                                                               f.filename().string(), key, well.name, set[w], q[w] * 86400.0, static_cast<std::size_t>(w) < dd.size() ? int(dd[w]) : -1,
+                                                               convert::to(pn, bars), sys.thpPotential(well, pn) * 86400.0, convert::to(guess[well.node], bars), sys.thpPotential(well, guess[well.node]) * 86400.0,
+                                                               convert::to(bhp_tan, bars), convert::to(curve_margin(sys, w, inflows[w], pn), bars), well.q_start * 86400.0));
+                            }
+                        }
+                        if (!shut && dead) { ++t.under_shut; }
+                        // The IPR question itself: does the final tangent agree
+                        // with the curve about lifting at the settled pressure?
+                        const double cap = sys.thpPotential(well, pn);
+                        const bool tangent_lifts = cap > 0.0;
+                        if (tangent_lifts && dead) { ++t.tangent_lifts_curve_not; }
+                        if (!tangent_lifts && !dead) {
+                            ++t.curve_lifts_tangent_not;
+                            if (trace && shown++ < 4) {
+                                BOOST_TEST_MESSAGE(fmt::format("  {} {}: {} ({}, {:.0f} sm3/d) tangent says cannot lift at {:.2f} bar, the curve can",
+                                                               f.filename().string(), key, well.name, set[w], q[w] * 86400.0, convert::to(pn, bars)));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for (const auto& [key, t] : tally) {
+        BOOST_TEST_MESSAGE(fmt::format("  {}: of {}: converged {}, verified {}; network-decided tubing wells {}, shut {}; shut but the curve lifts {}, open but the curve cannot lift {}; tangent lifts but curve not {}, curve lifts but tangent not {}; pinned wells the curve cannot lift {}; shut wells' margin to the tubing, tangent vs curve: mean {:.3f} max {:.3f} bar over {}; evals/solve {:.1f}, well solves/solve {:.0f}, ms/solve {:.2f}",
+                                       key, t.n, t.converged, t.verified, t.wells, t.shut, t.over_shut, t.under_shut, t.tangent_lifts_curve_not, t.curve_lifts_tangent_not, t.pinned_dead,
+                                       t.margins ? convert::to(t.margin_err / t.margins, bars) : 0.0, convert::to(t.margin_err_max, bars), t.margins,
+                                       t.n ? double(t.evals) / t.n : 0.0, t.n ? double(t.solves) / t.n : 0.0, t.n ? t.ms / t.n : 0.0));
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()

@@ -366,6 +366,21 @@ public:
     void setTubingExtension(const bool on) { tubing_extension_ = on; }
     bool tubingExtension() const { return tubing_extension_; }
 
+    /// Where a well with an inflow of its own is linearised when its tangent
+    /// misses the tubing curve: at the touching point, where the shut
+    /// decision is made, instead of wherever it last flowed; and at a rate
+    /// limit that binds below the crossing, the lowest binding constraint.
+    void setTangentAtTouchingPoint(const bool on) { tangent_at_touch_ = on; }
+    bool tangentAtTouchingPoint() const { return tangent_at_touch_; }
+
+    /// Production-positive phase rates on the IPR at this bhp.
+    std::array<Scalar, NP> ratesAt(const Well& w, const Scalar bhp) const
+    {
+        std::array<Scalar, NP> q{};
+        for (int ph = 0; ph < NP; ++ph) { q[ph] = std::max(ipr(w, ph, bhp), Scalar{0}); }
+        return q;
+    }
+
     /// Where the IPR line comes closest to the tubing curve at these
     /// fractions: an axis point, since both are linear between them. The
     /// nearest vertex switches as the node pressure moves, so the level
@@ -1650,8 +1665,25 @@ public:
             } else {
                 for (int pass = 0; pass < kFractionPasses; ++pass) {
                     linearise(well, bhp);
-                    const Scalar q = thpPotentialExact(well, p_node, bhp);
-                    if (!(q > Scalar{0}) || q == std::numeric_limits<Scalar>::max()) { break; }
+                    Scalar q = thpPotentialExact(well, p_node, bhp);
+                    if (q == std::numeric_limits<Scalar>::max()) { break; }
+                    if (tangent_at_touch_) {
+                        // No crossing, or one only on the continuation: the
+                        // tangent belongs at the touching point, where the
+                        // shut decision is made. An exact tangency counts
+                        // too: the crossing walk sees no sign change there.
+                        const auto tp = touchingPoint(well, p_node, ratesAt(well, bhp));
+                        if (tp.valid && (tp.gap > Scalar{0} || !(q > Scalar{0}))) {
+                            const auto& t = props_->getTable(well.vfp_table);
+                            const Scalar A = detail::getFlo(t, well.ipr_a[0], well.ipr_a[1], well.ipr_a[2]);
+                            const Scalar B = detail::getFlo(t, well.ipr_b[0], well.ipr_b[1], well.ipr_b[2]);
+                            q = B < Scalar{0} ? ipr(well, 1, (tp.flo - A) / B) : Scalar{0};
+                        }
+                        // The lowest binding constraint: a rate limit below
+                        // the crossing is where the well will sit.
+                        if (well.oil_rate_limit > Scalar{0} && well.oil_rate_limit < q) { q = well.oil_rate_limit; }
+                    }
+                    if (!(q > Scalar{0})) { break; }
                     bhp = std::max((q - well.ipr_a[1]) / well.ipr_b[1], well.bhp_limit);
                 }
             }
@@ -2541,6 +2573,7 @@ private:
     bool exact_potential_ = false;
     bool dead_when_cannot_lift_ = false;
     bool tubing_extension_ = false;
+    bool tangent_at_touch_ = false;
     std::vector<char> reduced_dead_;
     std::vector<Scalar> cliff_q_;
     mutable std::vector<char> dead_now_;
