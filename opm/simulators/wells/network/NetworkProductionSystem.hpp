@@ -34,6 +34,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
 #include <limits>
 #include <istream>
 #include <ostream>
@@ -163,6 +164,11 @@ public:
         /// Whether the node adds the well's lift gas to the stream, so a
         /// change of alq is a change of lift_gas too.
         bool node_adds_lift_gas = false;
+        /// The well's own inflow, rates at a bhp, when it is not the linear
+        /// IPR: ipr_a/ipr_b become its tangent, re-taken at the operating
+        /// point on every evaluation (solveWells). The well model's solve at
+        /// a fixed reservoir state goes here.
+        std::function<std::array<Scalar, NP>(Scalar)> inflow;
     };
 
     ProductionSystem(const VFPProdProperties<Scalar>& props, const UnitSystem& units)
@@ -1506,9 +1512,70 @@ public:
     /// or its share -- with its other phases from the IPR at that rate, and
     /// the rows are p - branch(p_up, q), one per node. The state it was
     /// evaluated at is kept for the caller (reducedState()).
+    /// The well solve at fixed reservoir state, for wells with an inflow of
+    /// their own: linearise at the operating bhp, cross the tubing, move the
+    /// operating point there, a fixed number of times. Everything after runs
+    /// on the tangent, as the simulator's rows do on the well model's IPR.
+    void solveWells(const State& node_pressure)
+    {
+        for (int w = 0; w < numWells(); ++w) {
+            auto& well = wells_[w];
+            if (!well.inflow || well.shut || !hasTubing(well)) { continue; }
+            const Scalar p_node = (well.node == 0) ? terminal_pressure_ : node_pressure[pIdx(well.node)];
+            ++well_solves_;
+            // The operating point is where the well's control has it: a rate
+            // well at the bhp its rate needs on the inflow, a bhp well at its
+            // limit, a thp well at the tubing crossing. The tangent is taken
+            // there, as the well model's IPR is.
+            const auto c = (static_cast<std::size_t>(w) < controls_.size()) ? controls_[w] : Control::Thp;
+            Scalar bhp = operatingBhp(well);
+            const bool on_rate = (c == Control::OilRate || c == Control::Grup || c == Control::Tree || c == Control::Tied)
+                && static_cast<std::size_t>(w) < last_rate_.size() && last_rate_[w] > Scalar{0};
+            if (c == Control::Bhp) {
+                bhp = well.bhp_limit;
+            } else if (on_rate) {
+                // Newton on the tangent for inflow(bhp) = last rate.
+                for (int pass = 0; pass < 4; ++pass) {
+                    linearise(well, bhp);
+                    if (!(well.ipr_b[1] < Scalar{0})) { break; }
+                    bhp = std::max((last_rate_[w] - well.ipr_a[1]) / well.ipr_b[1], well.bhp_limit);
+                }
+            } else {
+                for (int pass = 0; pass < kFractionPasses; ++pass) {
+                    linearise(well, bhp);
+                    const Scalar q = thpPotentialExact(well, p_node, bhp);
+                    if (!(q > Scalar{0}) || q == std::numeric_limits<Scalar>::max()) { break; }
+                    bhp = std::max((q - well.ipr_a[1]) / well.ipr_b[1], well.bhp_limit);
+                }
+            }
+            linearise(well, bhp);
+        }
+    }
+
+    /// ipr_a/ipr_b as the inflow's tangent at bhp (central difference).
+    void linearise(Well& well, const Scalar bhp) const
+    {
+        const Scalar h = std::max(Scalar{0.5} * unit::barsa, Scalar{1e-3} * bhp);
+        const auto up = well.inflow(bhp + h), dn = well.inflow(bhp - h), at = well.inflow(bhp);
+        for (int ph = 0; ph < NP; ++ph) {
+            well.ipr_b[ph] = (up[ph] - dn[ph]) / (Scalar{2} * h);
+            well.ipr_a[ph] = at[ph] - well.ipr_b[ph] * bhp;
+        }
+    }
+
+    long wellSolves() const { return well_solves_; }
+    /// The oil rates of the last evaluation, the operating point solveWells() linearises at.
+    void noteRates(const State& x)
+    {
+        last_rate_.resize(numWells());
+        for (int w = 0; w < numWells(); ++w) { last_rate_[w] = x[qwIdx(w, 1)]; }
+    }
+    void setWellInflow(const int w, std::function<std::array<Scalar, NP>(Scalar)> f) { wells_[w].inflow = std::move(f); }
+
     State reducedResidual(const State& node_pressure)
     {
         const CountScope counting(*this, true);
+        solveWells(node_pressure);
         State x = start(node_pressure);
         updateControls(x);
         for (int w = 0; w < numWells(); ++w) {
@@ -1547,6 +1614,7 @@ public:
                 ? tableBhp(node.vfp_table, upstream, q, branch_alq_[n]) : upstream;
             r[n - 1] = (x[pIdx(n)] - p_calc) / pressure_scale_;
         }
+        noteRates(x);
         reduced_state_ = std::move(x);
         return r;
     }
@@ -2326,6 +2394,8 @@ private:
     mutable std::vector<char> cmpl_dead_;
     mutable std::vector<Scalar> cmpl_alive_p_;   // lowest node pressure seen alive at
     std::vector<Well> wells_;
+    long well_solves_ = 0;
+    std::vector<Scalar> last_rate_;
     std::vector<std::vector<int>> children_;
     std::vector<std::vector<int>> wells_at_;
     std::vector<Control> controls_;
