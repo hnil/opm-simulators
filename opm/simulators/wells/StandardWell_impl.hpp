@@ -1025,6 +1025,8 @@ namespace Opm
         const auto& summary_state = simulator.vanguard().summaryState();
         const Scalar thp_limit = this->getTHPConstraint(summary_state);
         if (!(thp_limit > Scalar{0})) {
+            deferred_logger.debug(fmt::format("Well {}: no thp constraint, inflow left as it was",
+                                              this->name()));
             return false;
         }
         auto& ws = well_state.well(this->index_of_well_);
@@ -1049,28 +1051,39 @@ namespace Opm
                                    this->getRefDensity(), this->getALQ(well_state),
                                    thp_limit, deferred_logger);
         if (!touch.has_value()) {
+            deferred_logger.debug(fmt::format("Well {} at zero rate: no inflow at full drawdown, "
+                                              "inflow left as it was", this->name()));
             return false;
         }
         const Scalar bhp_touch = touch->first, gap = touch->second;
+        // Where the well would operate: its crossing when its inflow reaches
+        // the tubing, the touching point when it does not. Both beat the
+        // derivative at a zero-rate state, which is where the well is not.
+        Scalar anchor = bhp_touch;
         if (!(gap > Scalar{0})) {
-            // The inflow does cross its tubing here: the crossing, not the
-            // touching point, is where the well would sit, and the ordinary
-            // implicit IPR at the state it is solved to covers that.
-            return false;
+            const auto crossing = computeBhpAtThpLimitProdWithAlq(simulator, groupStateHelper,
+                                                                  summary_state, this->getALQ(well_state),
+                                                                  /*iterate_if_no_solution=*/false);
+            if (!crossing.has_value()) {
+                deferred_logger.debug(fmt::format("Well {} at zero rate: its inflow reaches the tubing but "
+                                                  "no crossing was found, inflow left as it was", this->name()));
+                return false;
+            }
+            anchor = *crossing;
         }
         // The tangent of the inflow there, by central differences. The
         // implicit IPR proper -- the derivative of the converged well
         // equations -- would need the well solved at this bhp first, which
         // is a well solve per network refresh; the inflow's own tangent is
         // the function the operability decision is made with anyway.
-        const Scalar h = std::max(Scalar{0.5} * unit::barsa, Scalar{1e-3} * bhp_touch);
-        const auto up = frates(bhp_touch + h), dn = frates(bhp_touch - h), at = frates(bhp_touch);
+        const Scalar h = std::max(Scalar{0.5} * unit::barsa, Scalar{1e-3} * anchor);
+        const auto up = frates(anchor + h), dn = frates(anchor - h), at = frates(anchor);
         const auto& pu = this->phaseUsage();
         // What the linearisation being replaced said the well would do here.
         const int oil_idx = pu.phaseIsActive(IndexTraits::oilPhaseIdx)
             ? pu.canonicalToActivePhaseIdx(IndexTraits::oilPhaseIdx) : -1;
         const Scalar oil_was = oil_idx >= 0
-            ? ws.implicit_ipr_b[oil_idx] * bhp_touch - ws.implicit_ipr_a[oil_idx] : Scalar{0};
+            ? ws.implicit_ipr_b[oil_idx] * anchor - ws.implicit_ipr_a[oil_idx] : Scalar{0};
         for (const int canonical : {IndexTraits::waterPhaseIdx,
                                     IndexTraits::oilPhaseIdx,
                                     IndexTraits::gasPhaseIdx}) {
@@ -1081,13 +1094,15 @@ namespace Opm
             // Signs as updateIPRImplicit leaves them: q = b * bhp - a with
             // opm's own rates, production negative.
             ws.implicit_ipr_b[idx] = (up[canonical] - dn[canonical]) / (Scalar{2} * h);
-            ws.implicit_ipr_a[idx] = ws.implicit_ipr_b[idx] * bhp_touch - at[canonical];
+            ws.implicit_ipr_a[idx] = ws.implicit_ipr_b[idx] * anchor - at[canonical];
         }
-        deferred_logger.debug(fmt::format("Well {} at zero rate: inflow linearised at its touching point, "
-                                          "bhp {:.2f} bar, {:.2f} bar short of its tubing at thp {:.2f} bar; "
-                                          "oil there {:.1f} sm3/d, the linearisation replaced said {:.1f}",
-                                          this->name(), unit::convert::to(bhp_touch, unit::barsa),
-                                          unit::convert::to(gap, unit::barsa),
+        deferred_logger.debug(fmt::format("Well {} at zero rate: inflow linearised at its {}, bhp {:.2f} bar "
+                                          "({:.2f} bar {} its tubing at thp {:.2f} bar); oil there {:.1f} sm3/d, "
+                                          "the linearisation replaced said {:.1f}",
+                                          this->name(), gap > Scalar{0} ? "touching point" : "crossing",
+                                          unit::convert::to(anchor, unit::barsa),
+                                          unit::convert::to(std::abs(gap), unit::barsa),
+                                          gap > Scalar{0} ? "short of" : "clear of",
                                           unit::convert::to(thp_limit, unit::barsa),
                                           oil_idx >= 0 ? -at[IndexTraits::oilPhaseIdx] * 86400.0 : 0.0,
                                           -oil_was * 86400.0));

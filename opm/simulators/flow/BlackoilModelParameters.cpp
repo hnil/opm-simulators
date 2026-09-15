@@ -304,10 +304,10 @@ void BlackoilModelParameters<Scalar>::registerParameters()
          "targets -- so it allocates the wells on group control itself, instead of one "
          "flattened target (--network-solver=newton or reduced)");
     Parameters::Register<Parameters::WellIprAtTouchingPoint>
-        ("Linearise the inflow of a producer the well model has at zero rate where its "
-         "shut decision is made -- the point at which the inflow comes closest to its "
-         "tubing curve at the thp limit -- instead of at the state the well is in "
-         "(--network-solver=newton or reduced)");
+        ("Linearise the inflow of a producer the well model has at zero rate where it "
+         "would operate -- its crossing with its tubing curve at the thp limit, or the "
+         "point where it comes closest when there is no crossing -- instead of at the "
+         "zero-rate state the well is in (--network-solver=newton or reduced)");
     Parameters::Register<Parameters::NetworkAutochoke>
         ("Solve autochoke nodes inside the simultaneous network solve: the node pressure "
          "becomes the group's common thp and is raised until the oil through the node meets "

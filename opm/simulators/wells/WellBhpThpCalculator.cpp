@@ -314,16 +314,41 @@ findTouchingPointProd(const std::function<std::vector<Scalar>(const Scalar)>& fr
         const auto rates = frates(bhp);
         return detail::getFlo(table, rates[Water], rates[Oil], rates[Gas]);
     };
-    const auto bhp_max = this->bhpMax(fflo, controls.bhp_limit, maxPerfPress,
-                                      table.getFloAxis().front(), deferred_logger);
-    if (!bhp_max.has_value()) {
-        return std::nullopt;
-    }
-    const Scalar lo = controls.bhp_limit, hi = *bhp_max;
-    if (!(hi > lo)) {
-        return std::nullopt;
-    }
+    // The range is the well's own, not bhpMax()'s. bhpMax() returns the bhp at
+    // which the flow reaches the lift table's first axis point, which a well
+    // too weak to reach it never has -- and that is exactly the well whose
+    // touching point is wanted. Here: from the bhp limit, where the well makes
+    // the most, up to where its inflow stops producing, which no reservoir
+    // pressure it sees can be above.
     auto eq = [&fbhp, &frates](const Scalar bhp) { return fbhp(frates(bhp)) - bhp; };
+    const Scalar lo = controls.bhp_limit;
+    const Scalar front = table.getFloAxis().front();
+    if (!(maxPerfPress > lo) || !(fflo(lo) < Scalar{0})) {
+        // Not producing even at full drawdown; nothing to linearise about.
+        return std::nullopt;
+    }
+    auto highestWith = [&](const std::function<bool(Scalar)>& producing) {
+        if (producing(maxPerfPress)) { return maxPerfPress; }
+        Scalar a = lo, b = maxPerfPress;
+        for (int i = 0; i < 40 && (b - a) > Scalar{1e-2} * unit::barsa; ++i) {
+            const Scalar m = Scalar{0.5} * (a + b);
+            (producing(m) ? a : b) = m;
+        }
+        return a;
+    };
+    // Stay on the table: below its first flow point the tubing lookup is an
+    // extrapolation, and a minimum found out there is a minimum of nothing.
+    const bool on_axis_at_lo = std::abs(fflo(lo)) >= front;
+    if (!on_axis_at_lo) {
+        // The well cannot deliver the least flow its own lift table is drawn
+        // for. It cannot lift at any rate, and the most it can say about
+        // itself is said at full drawdown.
+        return std::make_pair(lo, eq(lo));
+    }
+    const Scalar hi = highestWith([&](const Scalar b) { return std::abs(fflo(b)) >= front; });
+    if (!(hi > lo)) {
+        return std::make_pair(lo, eq(lo));
+    }
     // Scan first: the difference is not unimodal in general -- the loading
     // hump puts a maximum between two minima -- so a bracket taken on the
     // ends alone can settle on the wrong one.
