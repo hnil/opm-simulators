@@ -1552,7 +1552,11 @@ public:
                 continue;
             }
             const bool held = split[nk + i] < cap[nk + i];
-            tree_rate_[w] = held ? oilForShare(w, split[nk + i], cg) : own_allowance_[w];
+            // The split is on what reaches the group, so divide WEFAC back out
+            // before asking the well for it -- as a child group does above.
+            const Scalar eff = wells_[w].efficiency;
+            const Scalar mine_share = (eff > Scalar{0}) ? split[nk + i] / eff : split[nk + i];
+            tree_rate_[w] = held ? oilForShare(w, mine_share, cg) : own_allowance_[w];
             const auto wanted = held ? Control::Tree : own_control_[w];
             changed |= (wanted != controls_[w]);
             controls_[w] = wanted;
