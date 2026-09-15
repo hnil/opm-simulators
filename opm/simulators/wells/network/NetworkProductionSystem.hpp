@@ -2594,7 +2594,14 @@ void write(const ProductionSystem<Scalar>& system, const std::vector<Scalar>& gu
     os << "production\n"
        << "terminal " << system.terminalPressure() << '\n'
        << "group_target " << system.groupTarget() << '\n'
-       << "analytic_jacobian " << system.usesAnalyticJacobian() << '\n';
+       << "analytic_jacobian " << system.usesAnalyticJacobian() << '\n'
+       << "group_tree " << system.usesGroupTree() << ' '
+       << system.usesGroupActiveSet() << '\n';
+    for (const auto& g : system.groups()) {
+        os << "group " << g.name << ' ' << g.parent << ' ' << g.target << ' '
+           << static_cast<int>(g.mode) << ' ' << g.guide << ' ' << g.efficiency << ' '
+           << g.resv_coeff[0] << ' ' << g.resv_coeff[1] << ' ' << g.resv_coeff[2] << '\n';
+    }
     for (int n = 0; n < static_cast<int>(system.nodes().size()); ++n) {
         const auto& node = system.nodes()[n];
         const auto src = system.nodeSource(n);
@@ -2608,7 +2615,8 @@ void write(const ProductionSystem<Scalar>& system, const std::vector<Scalar>& gu
            << w.ipr_b[0] << ' ' << w.ipr_b[1] << ' ' << w.ipr_b[2] << ' '
            << w.bhp_limit << ' ' << w.oil_rate_limit << ' ' << w.in_group << ' ' << w.guide << ' '
            << w.efficiency << ' ' << w.vfp_dp << ' ' << w.pinned << ' ' << w.dead_above << ' '
-           << w.lift_gas << ' ' << w.node_adds_lift_gas << ' ' << w.q_start << ' ' << w.shut << '\n';
+           << w.lift_gas << ' ' << w.node_adds_lift_gas << ' ' << w.q_start << ' ' << w.shut << ' '
+           << w.group << '\n';
     }
     os << "guess";
     for (const auto p : guess) { os << ' ' << p; }
@@ -2622,6 +2630,7 @@ readProduction(std::istream& is, const VFPProdProperties<Scalar>& props, const U
     ProductionSystem<Scalar> system(props, units);
     std::vector<Scalar> guess;
     std::string line;
+    bool group_tree = false, group_active_set = false;
     while (std::getline(is, line)) {
         std::istringstream in(line);
         std::string tag;
@@ -2629,6 +2638,16 @@ readProduction(std::istream& is, const VFPProdProperties<Scalar>& props, const U
         if (tag == "terminal") { Scalar v; in >> v; system.setTerminalPressure(v); }
         else if (tag == "group_target") { Scalar v; in >> v; system.setGroupTarget(v); }
         else if (tag == "analytic_jacobian") { int v; in >> v; system.setAnalyticJacobian(v != 0); }
+        else if (tag == "group_tree") {
+            int t = 0, a = 0; in >> t >> a;
+            group_tree = t != 0; group_active_set = a != 0;
+        } else if (tag == "group") {
+            typename ProductionSystem<Scalar>::Group g; int mode = 0;
+            in >> g.name >> g.parent >> g.target >> mode >> g.guide >> g.efficiency
+               >> g.resv_coeff[0] >> g.resv_coeff[1] >> g.resv_coeff[2];
+            g.mode = static_cast<typename ProductionSystem<Scalar>::Mode>(mode);
+            system.addGroup(std::move(g));
+        }
         else if (tag == "node") {
             Node n; Scalar alq, s0, s1, s2, choke;
             in >> n.name >> n.parent >> n.vfp_table >> n.efficiency >> alq >> s0 >> s1 >> s2 >> choke;
@@ -2645,10 +2664,14 @@ readProduction(std::istream& is, const VFPProdProperties<Scalar>& props, const U
             w.in_group = in_group != 0; w.pinned = pinned != 0; w.node_adds_lift_gas = adds != 0;
             in >> w.q_start;             // older dumps: stays 0
             int shut = 0; in >> shut; w.shut = shut != 0;
+            int grp = -1; if (in >> grp) { w.group = grp; }   // older dumps: no tree
             system.addWell(std::move(w));
         } else if (tag == "guess") { Scalar v; while (in >> v) { guess.push_back(v); } }
     }
+    system.setGroupTree(group_tree);
+    system.setGroupActiveSet(group_active_set);
     system.finish();
+    if (system.numGroups() > 0) { system.finishGroups(); }
     return {std::move(system), std::move(guess)};
 }
 
