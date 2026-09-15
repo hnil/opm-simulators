@@ -891,7 +891,13 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
         std::map<std::string, int> gidx;
         std::map<std::string, Scalar> wguide;
         std::set<std::string> here;
-        for (const auto& w : system.wells()) { wguide[w.name] = w.guide; here.insert(w.name); }
+        // The wells the *walk* can place, not every well in the system: one
+        // the system holds on its own control takes no share, so a group
+        // counting it would divide its target among the rest.
+        for (const auto& [w, name] : tree_wells) {
+            wguide[name] = system.wells()[w].guide;
+            here.insert(name);
+        }
         std::function<Scalar(const std::string&)> subtreeGuide = [&](const std::string& g) {
             const auto& grp = schedule.getGroup(g, reportStepIdx);
             Scalar sum = 0;
