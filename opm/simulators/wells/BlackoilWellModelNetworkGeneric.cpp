@@ -865,6 +865,12 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
             ++pinned_cmode[static_cast<int>(e[14])];
         }
         if (!(current > Scalar{0}) && !w.in_group && !candidate.node_is_choke) {
+            // tree_wells already holds the index this well would have had;
+            // left there, setWellGroup writes one past the wells.
+            if (!tree_wells.empty()
+                && tree_wells.back().first == static_cast<int>(system.numWells())) {
+                tree_wells.pop_back();
+            }
             continue;                 // producing nothing; not part of the network
         }
         system.addWell(std::move(w));
