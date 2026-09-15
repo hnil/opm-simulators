@@ -1430,8 +1430,10 @@ updatePressures(const int reportStepIdx,
                 well->setDynamicThpLimit(new_limit);
                 // The network's shut decision handed to the well, so a well at
                 // the cliff is decided once and not again by its own check.
-                static const bool apply_shut = std::getenv("OPM_NETWORK_APPLY_SHUT") != nullptr;
-                if (apply_shut && this->reduced_solver_) {
+                // The environment switch is kept as an override for the runs
+                // that were measured with it; the parameter is the way in.
+                static const bool apply_shut_env = std::getenv("OPM_NETWORK_APPLY_SHUT") != nullptr;
+                if ((this->network_apply_shut_ || apply_shut_env) && this->reduced_solver_) {
                     bool dead = false;
                     for (const auto& [root, tree] : last_production_solve_) {
                         const int w = tree.system ? tree.system->wellIndex(well->name()) : -1;

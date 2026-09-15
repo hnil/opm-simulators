@@ -150,6 +150,7 @@ update(const bool mandatory_network_balance,
         this->useNetworkGroupControl(well_model_.param().network_group_control_);
         this->useNetworkGroupTree(well_model_.param().network_group_tree_);
         this->useNetworkGroupAllocation(well_model_.param().network_group_allocation_);
+        this->useNetworkApplyShut(well_model_.param().network_apply_shut_);
         this->useNetworkAutochoke(well_model_.param().network_autochoke_);
         this->useNetworkComplementarity(well_model_.param().network_complementarity_);
         this->useGasLiftNetworkResponse(well_model_.param().gaslift_network_response_);

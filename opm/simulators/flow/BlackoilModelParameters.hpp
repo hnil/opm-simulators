@@ -165,6 +165,7 @@ struct NetworkGroupControl { static constexpr bool value = false; };
 struct NetworkGroupTree { static constexpr bool value = false; };
 struct WellIprAtTouchingPoint { static constexpr bool value = false; };
 struct NetworkGroupAllocation { static constexpr bool value = false; };
+struct NetworkApplyShut { static constexpr bool value = false; };
 struct NetworkAutochoke { static constexpr bool value = false; };
 struct NetworkAutochokeBracketSamples { static constexpr int value = 300; };
 struct NetworkComplementarity { static constexpr bool value = false; };
@@ -393,6 +394,10 @@ public:
     /// Write the network tree's allocation back to the wells, instead of
     /// letting the group logic derive the split again.
     bool network_group_allocation_;
+
+    /// Hand the network's shut decision to the well, so a well at the cliff
+    /// is decided once instead of again by its own operability check.
+    bool network_apply_shut_;
 
     /// Path prefix for writing network systems that fail to converge; empty off.
     std::string network_dump_failures_;

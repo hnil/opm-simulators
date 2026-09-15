@@ -123,6 +123,7 @@ BlackoilModelParameters<Scalar>::BlackoilModelParameters()
     network_group_tree_ = Parameters::Get<Parameters::NetworkGroupTree>();
     well_ipr_at_touching_point_ = Parameters::Get<Parameters::WellIprAtTouchingPoint>();
     network_group_allocation_ = Parameters::Get<Parameters::NetworkGroupAllocation>();
+    network_apply_shut_ = Parameters::Get<Parameters::NetworkApplyShut>();
     network_autochoke_ = Parameters::Get<Parameters::NetworkAutochoke>();
     network_autochoke_bracket_samples_ = Parameters::Get<Parameters::NetworkAutochokeBracketSamples>();
     network_complementarity_ = Parameters::Get<Parameters::NetworkComplementarity>();
@@ -304,6 +305,11 @@ void BlackoilModelParameters<Scalar>::registerParameters()
         ("Give the production network solve the deck's group tree -- GRUPTREE and GCONPROD "
          "targets -- so it allocates the wells on group control itself, instead of one "
          "flattened target (--network-solver=newton or reduced)");
+    Parameters::Register<Parameters::NetworkApplyShut>
+        ("Hand the network solve's shut decision to the well: a well its tubing cannot lift "
+         "is marked not operable, and the well model does not decide the same thing again "
+         "from its own check. Removes one of the two decisions a well at its lift limit is "
+         "subject to (--network-solver=reduced)");
     Parameters::Register<Parameters::NetworkGroupAllocation>
         ("Write the allocation the network's group tree decided back to the wells, so the "
          "well model starts from the network's operating point instead of deriving the "
