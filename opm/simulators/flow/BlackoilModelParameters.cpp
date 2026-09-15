@@ -122,6 +122,7 @@ BlackoilModelParameters<Scalar>::BlackoilModelParameters()
     network_group_control_ = Parameters::Get<Parameters::NetworkGroupControl>();
     network_group_tree_ = Parameters::Get<Parameters::NetworkGroupTree>();
     well_ipr_at_touching_point_ = Parameters::Get<Parameters::WellIprAtTouchingPoint>();
+    network_group_allocation_ = Parameters::Get<Parameters::NetworkGroupAllocation>();
     network_autochoke_ = Parameters::Get<Parameters::NetworkAutochoke>();
     network_autochoke_bracket_samples_ = Parameters::Get<Parameters::NetworkAutochokeBracketSamples>();
     network_complementarity_ = Parameters::Get<Parameters::NetworkComplementarity>();
@@ -303,6 +304,10 @@ void BlackoilModelParameters<Scalar>::registerParameters()
         ("Give the production network solve the deck's group tree -- GRUPTREE and GCONPROD "
          "targets -- so it allocates the wells on group control itself, instead of one "
          "flattened target (--network-solver=newton or reduced)");
+    Parameters::Register<Parameters::NetworkGroupAllocation>
+        ("Write the allocation the network's group tree decided back to the wells, so the "
+         "well model starts from the network's operating point instead of deriving the "
+         "split again from the wells' current rates (--network-group-tree only)");
     Parameters::Register<Parameters::WellIprAtTouchingPoint>
         ("Linearise the inflow of a producer the well model has at zero rate where it "
          "would operate -- its crossing with its tubing curve at the thp limit, or the "

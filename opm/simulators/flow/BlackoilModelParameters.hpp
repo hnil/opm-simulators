@@ -164,6 +164,7 @@ struct NetworkAnalyticJacobian { static constexpr bool value = false; };
 struct NetworkGroupControl { static constexpr bool value = false; };
 struct NetworkGroupTree { static constexpr bool value = false; };
 struct WellIprAtTouchingPoint { static constexpr bool value = false; };
+struct NetworkGroupAllocation { static constexpr bool value = false; };
 struct NetworkAutochoke { static constexpr bool value = false; };
 struct NetworkAutochokeBracketSamples { static constexpr int value = 300; };
 struct NetworkComplementarity { static constexpr bool value = false; };
@@ -388,6 +389,10 @@ public:
     /// Linearise a zero-rate producer's inflow where its shut decision is
     /// made instead of at the state it is in.
     bool well_ipr_at_touching_point_;
+
+    /// Write the network tree's allocation back to the wells, instead of
+    /// letting the group logic derive the split again.
+    bool network_group_allocation_;
 
     /// Path prefix for writing network systems that fail to converge; empty off.
     std::string network_dump_failures_;

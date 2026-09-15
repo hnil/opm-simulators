@@ -1063,6 +1063,56 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
             this->network_shut_.insert(system.wells()[w].name);
         }
     }
+    // The allocation written back. The tree in the solve decided which wells
+    // it held and at what rate; without this the group logic derives that
+    // split again from the wells' current rates, and the two are computed
+    // twice from different starting points. Only the split is written: the
+    // group's own total is still enforced downstream, which rescales these
+    // rates without changing their proportions.
+    if (this->network_group_allocation_ && this->network_group_tree_) {
+        using Ctrl = typename NetworkSolve::ProductionSystem<Scalar>::Control;
+        auto& well_state = well_model_.wellState();
+        int written = 0, moved = 0;
+        Scalar worst = 0;
+        for (int w = 0; w < system.numWells(); ++w) {
+            const auto& well = system.wells()[w];
+            const auto control = system.control(w);
+            if (control != Ctrl::Tree && control != Ctrl::Grup) {
+                continue;                 // the network did not place this one
+            }
+            if (!well_state.has(well.name)) {
+                continue;                 // not this rank's well
+            }
+            auto& ws = well_state.well(well.name);
+            if (ws.status != WellStatus::OPEN || !ws.producer) {
+                continue;
+            }
+            const Scalar q_oil = result.well_rate[w];
+            if (!(q_oil > Scalar{0}) || !(well.ipr_b[1] < Scalar{0})) {
+                continue;
+            }
+            // The other phases where the inflow puts them at the bhp this
+            // oil rate needs, which is the point the system solved at.
+            const Scalar bhp = (q_oil - well.ipr_a[1]) / well.ipr_b[1];
+            const Scalar was = std::max(-ws.surface_rates[pos[1]], Scalar{0});
+            for (int ph = 0; ph < Sys::NP; ++ph) {
+                ws.surface_rates[pos[ph]] =
+                    -std::max(well.ipr_a[ph] + well.ipr_b[ph] * bhp, Scalar{0});
+            }
+            ++written;
+            if (was > Scalar{0} && std::abs(q_oil - was) > Scalar{0.01} * was) {
+                ++moved;
+                worst = std::max(worst, std::abs(q_oil - was) / was);
+            }
+        }
+        if (written > 0) {
+            OpmLog::debug(fmt::format("Network: allocation written back under {} at report step {}: "
+                                      "{} wells, {} of them more than 1 % off the rate the group "
+                                      "logic had them at (worst {:.1f} %)",
+                                      root.name(), reportStepIdx, written, moved,
+                                      unit::convert::to(worst, 0.01)));
+        }
+    }
     last_production_solve_[root.name()] = SolvedTree{
         std::move(inputs), pressures, order,
         std::make_shared<const NetworkSolve::ProductionSystem<Scalar>>(system)};
