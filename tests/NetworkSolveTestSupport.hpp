@@ -2402,10 +2402,16 @@ namespace {
             for (int g = 0; g < sys.numGroups(); ++g) {
                 const auto c = Sys::modeWeights(groups[g].mode, groups[g].resv_coeff);
                 for (int w = 0; w < sys.numWells(); ++w) {
+                    // GEFAC applies where a group hands its rate to its parent,
+                    // as the group rows have it: q_g = sum_c eff_c q_c + sum_w eff_w q_w.
                     bool under = false;
-                    for (int a = sys.wells()[w].group; a >= 0; a = groups[a].parent) { if (a == g) { under = true; break; } }
+                    double eff = sys.wells()[w].efficiency;
+                    for (int a = sys.wells()[w].group; a >= 0; a = groups[a].parent) {
+                        if (a == g) { under = true; break; }
+                        eff *= groups[a].efficiency;
+                    }
                     if (!under) { continue; }
-                    for (int ph = 0; ph < NP; ++ph) { on_mode[g] += c[ph] * sys.wells()[w].efficiency * q[w][ph]; }
+                    for (int ph = 0; ph < NP; ++ph) { on_mode[g] += c[ph] * eff * q[w][ph]; }
                 }
                 if (groups[g].target > 0.0 && on_mode[g] > groups[g].target * (1 + r_tol)) { fail("group above its target"); }
             }
