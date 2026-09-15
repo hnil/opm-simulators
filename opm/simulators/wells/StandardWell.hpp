@@ -226,6 +226,10 @@ namespace Opm
                                const GroupStateHelperType& groupStateHelper,
                                WellStateType& well_state) override;
 
+        bool updateIPRAtTouchingPoint(const Simulator& simulator,
+                                      const GroupStateHelperType& groupStateHelper,
+                                      WellStateType& well_state) const override;
+
         void computeWellRatesWithBhp(const Simulator& ebosSimulator,
                                      const Scalar& bhp,
                                      std::vector<Scalar>& well_flux,

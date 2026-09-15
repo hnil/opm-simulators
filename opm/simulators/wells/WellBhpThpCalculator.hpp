@@ -26,6 +26,7 @@
 
 #include <functional>
 #include <optional>
+#include <utility>
 #include <vector>
 
 namespace Opm {
@@ -69,6 +70,21 @@ public:
                              const Scalar alq_value,
                              const Scalar thp_limit,
                              DeferredLogger& deferred_logger) const;
+
+    //! \brief Where a producer's inflow comes closest to its tubing curve.
+    //! Returns (bhp, gap): the bhp minimising what the tubing needs less what
+    //! the inflow delivers, and that least difference. A positive gap means
+    //! the inflow misses the curve everywhere, so the well cannot lift and
+    //! this point is where the decision is made -- and where the inflow
+    //! should be linearised. Nothing when the search range cannot be found.
+    std::optional<std::pair<Scalar, Scalar>>
+    findTouchingPointProd(const std::function<std::vector<Scalar>(const Scalar)>& frates,
+                          const SummaryState& summary_state,
+                          const Scalar maxPerfPress,
+                          const Scalar rho,
+                          const Scalar alq_value,
+                          const Scalar thp_limit,
+                          DeferredLogger& deferred_logger) const;
 
     //! \brief Compute BHP from THP limit for an injector.
     std::optional<Scalar>

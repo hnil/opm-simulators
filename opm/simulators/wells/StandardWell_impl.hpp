@@ -1012,6 +1012,89 @@ namespace Opm
     }
 
     template<typename TypeTag>
+    bool
+    StandardWell<TypeTag>::
+    updateIPRAtTouchingPoint(const Simulator& simulator,
+                             const GroupStateHelperType& groupStateHelper,
+                             WellStateType& well_state) const
+    {
+        auto& deferred_logger = groupStateHelper.deferredLogger();
+        if (!this->isProducer() || this->wellEcl().vfp_table_number() <= 0) {
+            return false;
+        }
+        const auto& summary_state = simulator.vanguard().summaryState();
+        const Scalar thp_limit = this->getTHPConstraint(summary_state);
+        if (!(thp_limit > Scalar{0})) {
+            return false;
+        }
+        auto& ws = well_state.well(this->index_of_well_);
+        // Only a well at zero rate. A flowing well is already linearised at
+        // its operating point, which the bench measured to be within
+        // 0.05 bar of the curve's own margin to the tubing; a well at zero
+        // is linearised wherever its state happens to sit, and that was off
+        // by 19 bar.
+        if (std::ranges::any_of(ws.surface_rates, [](const Scalar r) { return r != Scalar{0}; })) {
+            return false;
+        }
+        // The same inflow the operability check uses: the well's rates at a
+        // bhp with the reservoir held fixed.
+        auto frates = [this, &simulator, &deferred_logger](const Scalar bhp) {
+            std::vector<Scalar> rates(3);
+            computeWellRatesWithBhp(simulator, bhp, rates, deferred_logger);
+            this->adaptRatesForVFP(rates);
+            return rates;
+        };
+        const auto touch = WellBhpThpCalculator(*this)
+            .findTouchingPointProd(frates, summary_state, maxPerfPress(simulator),
+                                   this->getRefDensity(), this->getALQ(well_state),
+                                   thp_limit, deferred_logger);
+        if (!touch.has_value()) {
+            return false;
+        }
+        const Scalar bhp_touch = touch->first, gap = touch->second;
+        if (!(gap > Scalar{0})) {
+            // The inflow does cross its tubing here: the crossing, not the
+            // touching point, is where the well would sit, and the ordinary
+            // implicit IPR at the state it is solved to covers that.
+            return false;
+        }
+        // The tangent of the inflow there, by central differences. The
+        // implicit IPR proper -- the derivative of the converged well
+        // equations -- would need the well solved at this bhp first, which
+        // is a well solve per network refresh; the inflow's own tangent is
+        // the function the operability decision is made with anyway.
+        const Scalar h = std::max(Scalar{0.5} * unit::barsa, Scalar{1e-3} * bhp_touch);
+        const auto up = frates(bhp_touch + h), dn = frates(bhp_touch - h), at = frates(bhp_touch);
+        const auto& pu = this->phaseUsage();
+        // What the linearisation being replaced said the well would do here.
+        const int oil_idx = pu.phaseIsActive(IndexTraits::oilPhaseIdx)
+            ? pu.canonicalToActivePhaseIdx(IndexTraits::oilPhaseIdx) : -1;
+        const Scalar oil_was = oil_idx >= 0
+            ? ws.implicit_ipr_b[oil_idx] * bhp_touch - ws.implicit_ipr_a[oil_idx] : Scalar{0};
+        for (const int canonical : {IndexTraits::waterPhaseIdx,
+                                    IndexTraits::oilPhaseIdx,
+                                    IndexTraits::gasPhaseIdx}) {
+            if (!pu.phaseIsActive(canonical)) {
+                continue;
+            }
+            const int idx = pu.canonicalToActivePhaseIdx(canonical);
+            // Signs as updateIPRImplicit leaves them: q = b * bhp - a with
+            // opm's own rates, production negative.
+            ws.implicit_ipr_b[idx] = (up[canonical] - dn[canonical]) / (Scalar{2} * h);
+            ws.implicit_ipr_a[idx] = ws.implicit_ipr_b[idx] * bhp_touch - at[canonical];
+        }
+        deferred_logger.debug(fmt::format("Well {} at zero rate: inflow linearised at its touching point, "
+                                          "bhp {:.2f} bar, {:.2f} bar short of its tubing at thp {:.2f} bar; "
+                                          "oil there {:.1f} sm3/d, the linearisation replaced said {:.1f}",
+                                          this->name(), unit::convert::to(bhp_touch, unit::barsa),
+                                          unit::convert::to(gap, unit::barsa),
+                                          unit::convert::to(thp_limit, unit::barsa),
+                                          oil_idx >= 0 ? -at[IndexTraits::oilPhaseIdx] * 86400.0 : 0.0,
+                                          -oil_was * 86400.0));
+        return true;
+    }
+
+    template<typename TypeTag>
     void
     StandardWell<TypeTag>::
     checkOperabilityUnderBHPLimit(const WellStateType& well_state,

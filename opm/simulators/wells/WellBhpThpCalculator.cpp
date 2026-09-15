@@ -275,6 +275,81 @@ computeBhpAtThpLimitProd(const std::function<std::vector<Scalar>(const Scalar)>&
 }
 
 template<typename Scalar, typename IndexTraits>
+std::optional<std::pair<Scalar, Scalar>>
+WellBhpThpCalculator<Scalar, IndexTraits>::
+findTouchingPointProd(const std::function<std::vector<Scalar>(const Scalar)>& frates,
+                      const SummaryState& summary_state,
+                      const Scalar maxPerfPress,
+                      const Scalar rho,
+                      const Scalar alq_value,
+                      const Scalar thp_limit,
+                      DeferredLogger& deferred_logger) const
+{
+    // The same equation computeBhpAtThpLimitProd() looks for a root of, and
+    // the same range: fbhp(frates(bhp)) - bhp, what the tubing needs less
+    // what the inflow gives. Where it has no root the well cannot lift, and
+    // its minimum is the point of closest approach -- the touching point.
+    static constexpr int Water = IndexTraits::waterPhaseIdx;
+    static constexpr int Oil = IndexTraits::oilPhaseIdx;
+    static constexpr int Gas = IndexTraits::gasPhaseIdx;
+
+    const auto& controls = well_.wellEcl().productionControls(summary_state);
+    const auto& table = well_.vfpProperties()->getProd()->getTable(controls.vfp_table_number);
+    const Scalar dp = wellhelpers::computeHydrostaticCorrection(well_.refDepth(),
+                                                                table.getDatumDepth(),
+                                                                rho,
+                                                                well_.gravity());
+    auto fbhp = [this, &controls, thp_limit, dp, alq_value](const std::vector<Scalar>& rates) {
+        const auto& wfr = well_.vfpProperties()->getExplicitWFR(controls.vfp_table_number,
+                                                                well_.indexOfWell());
+        const auto& gfr = well_.vfpProperties()->getExplicitGFR(controls.vfp_table_number,
+                                                               well_.indexOfWell());
+        const Scalar bhp = well_.vfpProperties()->getProd()->bhp(controls.vfp_table_number,
+                                                                 rates[Water], rates[Oil], rates[Gas],
+                                                                 thp_limit, alq_value, wfr, gfr,
+                                                                 well_.useVfpExplicit());
+        return bhp - dp + getVfpBhpAdjustment(bhp, thp_limit);
+    };
+    auto fflo = [&table, &frates](const Scalar bhp) {
+        const auto rates = frates(bhp);
+        return detail::getFlo(table, rates[Water], rates[Oil], rates[Gas]);
+    };
+    const auto bhp_max = this->bhpMax(fflo, controls.bhp_limit, maxPerfPress,
+                                      table.getFloAxis().front(), deferred_logger);
+    if (!bhp_max.has_value()) {
+        return std::nullopt;
+    }
+    const Scalar lo = controls.bhp_limit, hi = *bhp_max;
+    if (!(hi > lo)) {
+        return std::nullopt;
+    }
+    auto eq = [&fbhp, &frates](const Scalar bhp) { return fbhp(frates(bhp)) - bhp; };
+    // Scan first: the difference is not unimodal in general -- the loading
+    // hump puts a maximum between two minima -- so a bracket taken on the
+    // ends alone can settle on the wrong one.
+    constexpr int samples = 20;
+    Scalar best = lo, best_eq = eq(lo);
+    for (int i = 1; i <= samples; ++i) {
+        const Scalar b = lo + (hi - lo) * Scalar(i) / Scalar(samples);
+        const Scalar e = eq(b);
+        if (e < best_eq) { best_eq = e; best = b; }
+    }
+    // Golden section within the sampled interval around it.
+    constexpr Scalar g = 0.6180339887498949;
+    const Scalar step = (hi - lo) / Scalar(samples);
+    Scalar a = std::max(lo, best - step), c = std::min(hi, best + step);
+    Scalar x1 = c - g * (c - a), x2 = a + g * (c - a);
+    Scalar f1 = eq(x1), f2 = eq(x2);
+    for (int it = 0; it < 20 && (c - a) > Scalar{1e-3} * unit::barsa; ++it) {
+        if (f1 < f2) { c = x2; x2 = x1; f2 = f1; x1 = c - g * (c - a); f1 = eq(x1); }
+        else         { a = x1; x1 = x2; f1 = f2; x2 = a + g * (c - a); f2 = eq(x2); }
+    }
+    if (f1 < best_eq) { best_eq = f1; best = x1; }
+    if (f2 < best_eq) { best_eq = f2; best = x2; }
+    return std::make_pair(best, best_eq);
+}
+
+template<typename Scalar, typename IndexTraits>
 std::optional<Scalar>
 WellBhpThpCalculator<Scalar, IndexTraits>::
 computeBhpAtThpLimitInj(const std::function<std::vector<Scalar>(const Scalar)>& frates,

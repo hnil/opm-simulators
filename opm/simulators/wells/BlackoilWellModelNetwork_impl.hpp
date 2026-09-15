@@ -165,6 +165,14 @@ update(const bool mandatory_network_balance,
                     well->updateIPRImplicit(well_model_.simulator(),
                                             well_model_.groupStateHelper(),
                                             well_model_.wellState());
+                    // A well at zero rate has just been linearised wherever
+                    // its state sits, which for a well that cannot lift is
+                    // not where that is decided. Re-take the tangent there.
+                    if (well_model_.param().well_ipr_at_touching_point_) {
+                        well->updateIPRAtTouchingPoint(well_model_.simulator(),
+                                                       well_model_.groupStateHelper(),
+                                                       well_model_.wellState());
+                    }
                     // The tubing table's datum is not the well's reference
                     // depth; the well's thp evaluation corrects for it and
                     // the network system has to apply the same.

@@ -375,6 +375,16 @@ public:
                                    const GroupStateHelperType& groupStateHelper,
                                    WellStateType& well_state) = 0;
 
+    /// Linearise a producer's inflow where its shut decision is made: the
+    /// point where the inflow comes closest to its tubing curve at the thp
+    /// limit, instead of at the state the well is in. Only for a well the
+    /// well model has at zero rate, whose state says nothing about where it
+    /// would flow. Writes the implicit IPR and says whether it did.
+    virtual bool updateIPRAtTouchingPoint([[maybe_unused]] const Simulator& simulator,
+                                          [[maybe_unused]] const GroupStateHelperType& groupStateHelper,
+                                          [[maybe_unused]] WellStateType& well_state) const
+    { return false; }
+
     static constexpr int numResDofs = Indices::numEq;
     static constexpr int numWellDofs = numResDofs + 1;  // NB will fail for for thermal for now
     using BMatrix = Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, numWellDofs, numResDofs>>;

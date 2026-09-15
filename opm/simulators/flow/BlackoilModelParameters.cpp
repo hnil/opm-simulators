@@ -121,6 +121,7 @@ BlackoilModelParameters<Scalar>::BlackoilModelParameters()
     network_analytic_jacobian_ = Parameters::Get<Parameters::NetworkAnalyticJacobian>();
     network_group_control_ = Parameters::Get<Parameters::NetworkGroupControl>();
     network_group_tree_ = Parameters::Get<Parameters::NetworkGroupTree>();
+    well_ipr_at_touching_point_ = Parameters::Get<Parameters::WellIprAtTouchingPoint>();
     network_autochoke_ = Parameters::Get<Parameters::NetworkAutochoke>();
     network_autochoke_bracket_samples_ = Parameters::Get<Parameters::NetworkAutochokeBracketSamples>();
     network_complementarity_ = Parameters::Get<Parameters::NetworkComplementarity>();
@@ -302,6 +303,11 @@ void BlackoilModelParameters<Scalar>::registerParameters()
         ("Give the production network solve the deck's group tree -- GRUPTREE and GCONPROD "
          "targets -- so it allocates the wells on group control itself, instead of one "
          "flattened target (--network-solver=newton or reduced)");
+    Parameters::Register<Parameters::WellIprAtTouchingPoint>
+        ("Linearise the inflow of a producer the well model has at zero rate where its "
+         "shut decision is made -- the point at which the inflow comes closest to its "
+         "tubing curve at the thp limit -- instead of at the state the well is in "
+         "(--network-solver=newton or reduced)");
     Parameters::Register<Parameters::NetworkAutochoke>
         ("Solve autochoke nodes inside the simultaneous network solve: the node pressure "
          "becomes the group's common thp and is raised until the oil through the node meets "
