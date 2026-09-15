@@ -133,6 +133,10 @@ solveReduced(Sys& system,
     system.setTreeFrozen(false);
     system.setExactPotential(true);
     system.setDeadWhenCannotLift(true);
+    // reducedResidual() places every well on its IPR line, so the walk that
+    // hands it the shares has to measure capacity the same way; fixed
+    // fractions leave each held well off its share by the GOR drift.
+    system.setCapacityFractions(Sys::CapacityFractions::Ipr);
     if (!keep_dead) { system.resetDead(); }
     system.resetCliffRates();
     const int n = system.numNodes();
