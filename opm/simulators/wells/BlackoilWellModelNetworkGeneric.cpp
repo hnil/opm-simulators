@@ -1043,6 +1043,18 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
         }
         return r;
     }();
+    // OPM_NETWORK_TRACE: one line per network solve -- the active set it
+    // ended on, the sets it walked through, and what each cost. Counting how
+    // often a well changes control between consecutive solves is the whole
+    // point of the comparison, and nothing else records it.
+    if (std::getenv("OPM_NETWORK_TRACE")) {
+        OpmLog::debug(fmt::format("NETTRACE root={} step={} conv={} it={} nwells={} "
+                                  "wellsolves={} lookups={} set={} trace=[{}]",
+                                  root.name(), reportStepIdx, result.converged ? 1 : 0,
+                                  result.iterations, system.numWells(), system.wellSolves(),
+                                  system.lookups(), system.treeSignature(),
+                                  result.control_trace));
+    }
     // OPM_NETWORK_DUMP_ALL=N writes the first N solved systems too, not only
     // the failures: a converged answer can still be the wrong root, and that
     // is only visible by replaying the same system both ways in the bench.
@@ -1196,6 +1208,32 @@ updatePressures(const int reportStepIdx,
     OPM_TIMEFUNCTION();
     if (!details::anyNetworkActive(well_model_.schedule(), reportStepIdx)) {
         return 0.0;
+    }
+
+    // OPM_NETWORK_TRACE: the well control each producer carries into this
+    // network update. Every route passes here -- legacy included, which never
+    // reaches the simultaneous solve -- so this is the one switching history
+    // the routes can be compared on.
+    if (std::getenv("OPM_NETWORK_TRACE")) {
+        std::string letters;
+        for (const auto& well : well_model_.genericWells()) {
+            if (!well->isProducer()) { continue; }
+            const auto& ws = well_model_.wellState()[well->indexOfWell()];
+            if (ws.status != WellStatus::OPEN) { letters += 'X'; continue; }
+            switch (ws.production_cmode) {
+            case Well::ProducerCMode::ORAT: letters += 'o'; break;
+            case Well::ProducerCMode::WRAT: letters += 'w'; break;
+            case Well::ProducerCMode::GRAT: letters += 'g'; break;
+            case Well::ProducerCMode::LRAT: letters += 'l'; break;
+            case Well::ProducerCMode::CRAT: letters += 'c'; break;
+            case Well::ProducerCMode::RESV: letters += 'v'; break;
+            case Well::ProducerCMode::BHP:  letters += 'B'; break;
+            case Well::ProducerCMode::THP:  letters += 'T'; break;
+            case Well::ProducerCMode::GRUP: letters += 'G'; break;
+            default:                        letters += '-'; break;
+            }
+        }
+        OpmLog::debug(fmt::format("WELLTRACE step={} controls={}", reportStepIdx, letters));
     }
 
     this->syncProductionDomainState_();
