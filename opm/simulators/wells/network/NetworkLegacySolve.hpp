@@ -271,6 +271,9 @@ solveLegacyOnWalk(Sys& system,
     system.setTreeFrozen(false);
     system.setExactPotential(true);
     system.setDeadWhenCannotLift(true);
+    // Same evaluation as the reduced route, so the same fraction model: this
+    // walks on reducedResidual(), which places each well on its IPR line.
+    system.setCapacityFractions(Sys::CapacityFractions::Ipr);
     system.resetDead();
     system.resetCliffRates();
     const int N = system.numNodes();

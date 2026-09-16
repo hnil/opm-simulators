@@ -815,6 +815,17 @@ BOOST_AUTO_TEST_CASE(methods_on_the_dumps_scored)
             const std::string c = r.controls;
             record("legacy rules", grouped, r.converged, r.converged ? verifyAnswer(sys, r.node_pressure, r.well_rate, c) : Verdict{}, sys.lookups(), ms);
         }
+        {   // the legacy pressure update with the tree walk as its well model:
+            // the simulator's fixed point on a system that has a group tree,
+            // so the group rows can be judged against it too
+            auto sys = dumped; sys.resetLookups();
+            const auto t0 = clock::now();
+            const auto r = NetworkSolve::solveLegacyOnWalk(sys, guess);
+            const double ms = ms_since(t0);
+            record("legacy rules + the walk", grouped, r.converged,
+                   r.converged ? verifyAnswer(sys, r.node_pressure, r.well_rate, letters(sys)) : Verdict{},
+                   sys.lookups(), ms);
+        }
         {   // the reduced form, die rule -- and every shut well asked whether it could have flowed
             auto sys = dumped; sys.resetLookups();
             const auto t0 = clock::now();
