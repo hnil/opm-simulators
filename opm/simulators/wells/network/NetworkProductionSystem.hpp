@@ -557,6 +557,8 @@ public:
     void setControl(const int w, const Control c) { controls_[w] = c; }
     /// Put a well the adapter or a dump added into a group of the tree.
     void setWellGroup(const int w, const int g) { wells_[w].group = g; }
+    /// The weight the tree splits by, once the adapter knows the deck's.
+    void setWellGuide(const int w, const Scalar g) { wells_[w].guide = g; }
     /// Change a group's own limit after the tree is built, for a sweep.
     void setGroupLimit(const int g, const Mode m, const Scalar target)
     {

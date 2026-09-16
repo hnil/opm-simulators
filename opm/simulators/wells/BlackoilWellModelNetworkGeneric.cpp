@@ -41,6 +41,7 @@
 #include <opm/material/fluidsystems/BlackOilDefaultFluidSystemIndices.hpp>
 
 #include <opm/input/eclipse/Schedule/Schedule.hpp>
+#include <opm/input/eclipse/Schedule/Group/GuideRateModel.hpp>
 #include <opm/input/eclipse/Schedule/Network/Balance.hpp>
 
 #include <opm/simulators/wells/BlackoilWellModelGeneric.hpp>
@@ -711,7 +712,33 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
     // Per candidate: present, usable, three ipr_a, three ipr_b, current oil
     // rate, on group, efficiency scaling, alq, tubing-table correction,
     // current thp.
-    constexpr int kEntries = 15;
+    // The deck's guide rate for a well, on the mode of the nearest group above
+    // it that carries a rate target -- the target OPM's own FractionCalculator
+    // uses for the same well. Zero when the deck gives it none, and then the
+    // tree falls back to the well's current rate, as it always did.
+    const auto deckGuide = [&](const std::string& name) -> Scalar {
+        const auto& gr = well_model_.guideRate();
+        if (!gr.has(name) && !gr.hasPotentials(name)) {
+            return Scalar{0};
+        }
+        const auto& helper = well_model_.groupStateHelper();
+        auto target = GuideRateModel::Target::OIL;
+        for (std::string g = schedule.getWell(name, reportStepIdx).groupName();
+             !g.empty(); ) {
+            const auto& grp = schedule.getGroup(g, reportStepIdx);
+            if (grp.isProductionGroup()) {
+                const auto cmode = grp.productionControls(summary_state).cmode;
+                if (cmode != Group::ProductionCMode::NONE && cmode != Group::ProductionCMode::FLD) {
+                    target = helper.getProductionGuideTargetModeFromControlMode(cmode);
+                    break;
+                }
+            }
+            if (grp.parent() == g) { break; }
+            g = grp.parent();
+        }
+        return static_cast<Scalar>(gr.get(name, target, helper.getWellRateVector(name)));
+    };
+    constexpr int kEntries = 16;
     std::vector<Scalar> shared(candidates.size() * kEntries, 0.0);
     for (std::size_t i = 0; i < candidates.size(); ++i) {
         const auto it = local.find(candidates[i].name);
@@ -748,6 +775,7 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
         }
         e[13] = ws.thp;
         e[14] = static_cast<Scalar>(ws.production_cmode);
+        e[15] = deckGuide(candidates[i].name);
     }
     well_model_.comm().sum(shared.data(), shared.size());
 
@@ -835,6 +863,8 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
             }
         } else if (on_group && this->network_group_tree_) {
             // The tree decides its share; its own limits stay its own.
+            // The guide is overwritten by the deck's below, if the deck gives
+            // one to every well in the tree.
             w.oil_rate_limit = candidate.oil_rate_limit;
             w.guide = current;
             tree_wells.emplace_back(static_cast<int>(system.numWells()), candidate.name);
@@ -888,6 +918,22 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
     // wells here alone.
     std::vector<Scalar> tree_inputs;
     if (!tree_wells.empty()) {
+        // The deck's guide rates, if every tree well has one. WGRUPCON gives a
+        // dimensionless weight and the fallback is the well's current rate, so
+        // handing some siblings one and some the other makes the ratio the
+        // split is built from meaningless -- it is all of them or none. With
+        // none, the guide stays the current rate, which is what it always was.
+        const bool deck_guides = std::all_of(tree_wells.begin(), tree_wells.end(),
+                                             [&](const auto& tw) {
+                                                 return shared[tw.first * kEntries + 15] > Scalar{0};
+                                             });
+        if (deck_guides) {
+            for (const auto& [w, name] : tree_wells) {
+                system.setWellGuide(w, shared[w * kEntries + 15]);
+            }
+        }
+        OpmLog::debug(fmt::format("Network: the tree under {} splits by {} guide rates",
+                                  root.name(), deck_guides ? "the deck's" : "current-rate"));
         std::map<std::string, int> gidx;
         std::map<std::string, Scalar> wguide;
         std::set<std::string> here;
