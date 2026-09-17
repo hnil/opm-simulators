@@ -1031,6 +1031,7 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
             node.parent = parent;
             node.efficiency = grp.getGroupEfficiencyFactor(/*network=*/true);
             node.guide = subtreeGuide(g);
+            node.available = grp.productionGroupControlAvailable();
             if (grp.isProductionGroup() && allHere(g)) {
                 const auto ctl = grp.productionControls(summary_state);
                 using C = Group::ProductionCMode;

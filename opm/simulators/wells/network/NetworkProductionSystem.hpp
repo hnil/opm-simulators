@@ -111,6 +111,10 @@ public:
         std::array<Scalar, NP> resv_coeff{};   // Mode::Resv only
         Scalar guide = 1;              // share of its parent
         Scalar efficiency = 1;
+        /// GCONPROD item 8: whether its parent's limit may hand it a share. One
+        /// that may not follows its own target, and what it produces comes off
+        /// the limit its siblings divide.
+        bool available = true;
     };
 
     /// Tied: on its rate limit and its tubing at once -- see the residual.
@@ -1573,23 +1577,30 @@ public:
         const auto& mine = group_wells_[g];
         const int nk = static_cast<int>(kids.size()), nw = static_cast<int>(mine.size());
         std::vector<Scalar> guide(nk + nw), cap(nk + nw);
-        const std::vector<char> pooled(nk + nw, 1);
+        std::vector<char> pooled(nk + nw, 1);
+        Scalar outside = 0;            // on cg, from children the limit may not hold
         for (int i = 0; i < nk; ++i) {
             const auto& c = groups_[kids[i]];
             guide[i] = c.guide;
             cap[i] = c.efficiency * subtreeCapacity(x, kids[i], cg);
+            if (!c.available) {
+                pooled[i] = 0;
+                outside += cap[i];
+            }
         }
         for (int i = 0; i < nw; ++i) {
             const auto& w = wells_[mine[i]];
             guide[nk + i] = w.guide;
             cap[nk + i] = w.efficiency * wellCapOnMode(x, mine[i], own_allowance_[mine[i]], cg);
         }
-        const auto split = shareByGuide<Scalar>(guide, pooled, cap, bound);
+        const Scalar pool = (bound > Scalar{0}) ? std::max(bound - outside, Scalar{1e-30}) : bound;
+        const auto split = shareByGuide<Scalar>(guide, pooled, cap, pool);
 
         for (int i = 0; i < nk; ++i) {
             const Scalar eff = groups_[kids[i]].efficiency;
-            const Scalar down = (split[i] < kNoLimit && eff > Scalar{0}) ? split[i] / eff : kNoLimit;
-            resolveGroup(x, kids[i], down, bind == GroupBind::Free ? nullptr : &cg, changed);
+            const Scalar down = (pooled[i] && split[i] < kNoLimit && eff > Scalar{0}) ? split[i] / eff : kNoLimit;
+            resolveGroup(x, kids[i], down,
+                         (bind == GroupBind::Free || !pooled[i]) ? nullptr : &cg, changed);
         }
         for (int i = 0; i < nw; ++i) {
             const int w = mine[i];
@@ -2656,7 +2667,8 @@ void write(const ProductionSystem<Scalar>& system, const std::vector<Scalar>& gu
     for (const auto& g : system.groups()) {
         os << "group " << g.name << ' ' << g.parent << ' ' << g.target << ' '
            << static_cast<int>(g.mode) << ' ' << g.guide << ' ' << g.efficiency << ' '
-           << g.resv_coeff[0] << ' ' << g.resv_coeff[1] << ' ' << g.resv_coeff[2] << '\n';
+           << g.resv_coeff[0] << ' ' << g.resv_coeff[1] << ' ' << g.resv_coeff[2] << ' '
+           << g.available << '\n';
     }
     for (int n = 0; n < static_cast<int>(system.nodes().size()); ++n) {
         const auto& node = system.nodes()[n];
@@ -2701,6 +2713,7 @@ readProduction(std::istream& is, const VFPProdProperties<Scalar>& props, const U
             typename ProductionSystem<Scalar>::Group g; int mode = 0;
             in >> g.name >> g.parent >> g.target >> mode >> g.guide >> g.efficiency
                >> g.resv_coeff[0] >> g.resv_coeff[1] >> g.resv_coeff[2];
+            int avail = 1; if (in >> avail) { g.available = avail != 0; }   // older dumps: available
             g.mode = static_cast<typename ProductionSystem<Scalar>::Mode>(mode);
             system.addGroup(std::move(g));
         }
