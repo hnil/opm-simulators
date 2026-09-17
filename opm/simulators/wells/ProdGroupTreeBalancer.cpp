@@ -27,7 +27,9 @@
 #include <opm/input/eclipse/Schedule/Group/Group.hpp>
 #include <opm/input/eclipse/Schedule/Group/GuideRate.hpp>
 #include <opm/input/eclipse/Schedule/Group/GuideRateModel.hpp>
+#include <opm/input/eclipse/Schedule/Group/GSatProd.hpp>
 #include <opm/input/eclipse/Schedule/Schedule.hpp>
+#include <opm/input/eclipse/Schedule/ScheduleState.hpp>
 #include <opm/input/eclipse/Schedule/Well/Well.hpp>
 
 #include <opm/material/fluidsystems/BlackOilDefaultFluidSystemIndices.hpp>
@@ -366,13 +368,12 @@ void populateGroupNode(ProdGroupTreeNode<Scalar>& node,
         node.availableForGroupControl = false;
         node.modeCategory = ProdNodeModeCategory::Individual;
         if (group.hasSatelliteProduction()) {
-            const auto& gsat_prod = schedule[reportStep].gsatprod();
+            const auto& gsat_prod = schedule[reportStep].satelliteProduction;
             if (gsat_prod.has(groupName)) {
-                const auto& sat_rates = gsat_prod.get(groupName, summaryState);
-                // GSATPROD rates map: rate[phase_enum_value] where phase is Phase::OIL, WATER, GAS
-                node.rates[0] = -sat_rates.rate[static_cast<int>(Phase::OIL)];
-                node.rates[1] = -sat_rates.rate[static_cast<int>(Phase::WATER)];
-                node.rates[2] = -sat_rates.rate[static_cast<int>(Phase::GAS)];
+                const auto sat_rates = gsat_prod.get(groupName).getRates(summaryState);
+                node.rates[0] = -sat_rates[GSatProd::Rate::Oil];
+                node.rates[1] = -sat_rates[GSatProd::Rate::Water];
+                node.rates[2] = -sat_rates[GSatProd::Rate::Gas];
             }
         }
     } else if (groupState.has_production_rates(groupName)) {
