@@ -190,6 +190,20 @@ GenericOutputModule<FluidSystem>::
 
 template<class FluidSystem>
 void GenericOutputModule<FluidSystem>::
+setupInterRegionFlowsOnLeaf_(const std::size_t numLeafCells)
+{
+    auto regions = std::vector<InterRegFlowMap::SingleRegion>{};
+    for (const auto& name : this->summaryConfig_.fip_regions_interreg_flow()) {
+        regions.push_back({ name, std::cref(this->regions_.at(name)) });
+    }
+
+    this->interRegionFlows_ = InterRegFlowMap {
+        numLeafCells, regions, declaredMaxRegionID(this->eclState_.runspec())
+    };
+}
+
+template<class FluidSystem>
+void GenericOutputModule<FluidSystem>::
 registerParameters()
 {
     Parameters::Register<Parameters::ForceDisableFluidInPlaceOutput>
