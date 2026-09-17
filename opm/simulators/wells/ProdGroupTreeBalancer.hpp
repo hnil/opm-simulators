@@ -31,6 +31,7 @@
 namespace Opm {
 
 class DeferredLogger;
+class GuideRate;
 class SummaryState;
 template<typename Scalar, typename IndexTraits> class BlackoilWellModelGeneric;
 
@@ -65,6 +66,15 @@ bool runGroupTreeBalancer(BlackoilWellModelGeneric<Scalar, IndexTraits>& wellMod
                           bool assignTargets = false,
                           std::vector<std::string>* decidedWells = nullptr,
                           bool writeRates = true);
+
+/// Balance a tree built by hand (unit tests): the same top-down pass
+/// buildTree() ends with, then the algorithm and the validity check.
+template<class Scalar>
+bool balanceTreeForTesting(Tree<Scalar>& tree,
+                           const GuideRate& guideRate,
+                           Scalar tol,
+                           DeferredLogger& logger,
+                           bool assignTargets = false);
 
 } // namespace Opm::ProdGroupTreeBalancer
 

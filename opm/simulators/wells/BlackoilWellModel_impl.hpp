@@ -1845,6 +1845,13 @@ namespace Opm {
         this->controller_assigned_cmode_.clear();
         this->controller_assigned_rates_.clear();
         for (const auto& name : decided) {
+            auto& ws = this->wellState().well(name);
+            if (ws.production_cmode == Well::ProducerCMode::GRUP && !ws.group_target.has_value()) {
+                // Under a group without a binding target there is nothing to hold it to.
+                deferred_logger.debug(fmt::format("Controller: well {} is on GRUP with no group target, "
+                                                  "switching it to BHP", name));
+                ws.production_cmode = Well::ProducerCMode::BHP;
+            }
             this->controller_decided_wells_.insert(name);
             this->controller_assigned_cmode_[name] = this->wellState().well(name).production_cmode;
             this->controller_assigned_rates_[name] = this->wellState().well(name).surface_rates;

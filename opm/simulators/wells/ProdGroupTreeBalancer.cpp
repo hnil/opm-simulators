@@ -240,7 +240,7 @@ void populateWellNode(ProdGroupTreeNode<Scalar>& node,
                       const WellState<Scalar, IndexTraits>& wellState,
                       const GroupState<Scalar>& /*groupState*/,
                       const GuideRate& /*guideRate*/,
-                      const SummaryState& /*summaryState*/,
+                      const SummaryState& summaryState,
                       int reportStep,
                       int fipnum,
                       int pvtreg,
@@ -324,6 +324,19 @@ void populateWellNode(ProdGroupTreeNode<Scalar>& node,
     }
 
     node.Limits[cachedMode] = limitValue;
+    // The well's own rate limits from the deck as well; the strictest one
+    // above may be a pressure proxy, and a second limit must bind in the
+    // tree rather than in the well solve afterwards.
+    const auto controls = eclWell.productionControls(summaryState);
+    auto own = [&](const Well::ProducerCMode m, const Scalar v) {
+        if (controls.hasControl(m) && v > Scalar(0) && node.Limits.count(m) == 0) {
+            node.Limits[m] = v;
+        }
+    };
+    own(Well::ProducerCMode::ORAT, controls.oil_rate);
+    own(Well::ProducerCMode::WRAT, controls.water_rate);
+    own(Well::ProducerCMode::GRAT, controls.gas_rate);
+    own(Well::ProducerCMode::LRAT, controls.liquid_rate);
 }
 
 // ---------------------------------------------------------------------------
@@ -1825,10 +1838,10 @@ void setTargets(Tree<Scalar>& tree, const std::string& topName)
 
 // ---------------------------------------------------------------------------
 
-template<class Scalar, typename IndexTraits>
-bool runBalancingAlgorithm(const BlackoilWellModelGeneric<Scalar, IndexTraits>& wellModel,
+template<class Scalar>
+bool runBalancingAlgorithm(const GuideRate& guideRate, const int rank,
                            Tree<Scalar>& tree, Scalar tol, DeferredLogger& logger,
-                           const bool assignTargets = false)
+                           const bool assignTargets)
 {
     // Main algorithm entry point
     // Get sub-tree ordering - each "top" node will be balanced independently, 
@@ -1864,14 +1877,14 @@ bool runBalancingAlgorithm(const BlackoilWellModelGeneric<Scalar, IndexTraits>& 
         Scalar qm = 0.0;
         if (node.Limits.count(mode) > 0) {
             qm = node.Limits.at(mode);
-        } else if (wellModel.comm().rank() == 0) {
+        } else if (rank == 0) {
             logger.warning("ProdGroupTreeBalancer",
                 fmt::format("runBalancingAlgorithm: top node '{}' has no limit for given mode, returning", nodeName));
             return false;
         }
 
         // Balance this subtree
-        balanceGroupTree(tree, nodeName, wellModel.guideRate(), mode, qm, tol, logger);
+        balanceGroupTree(tree, nodeName, guideRate, mode, qm, tol, logger);
 
         // Without assignTargets the group target values (groupName, value,
         // guideRateRatio) are left to getWellGroupTargetProducer.
@@ -1880,7 +1893,7 @@ bool runBalancingAlgorithm(const BlackoilWellModelGeneric<Scalar, IndexTraits>& 
         }
 
         // Report completion of this top node's balancing
-        if (tree.at(nodeName).type == ProdNodeType::Group && wellModel.comm().rank() == 0) {
+        if (tree.at(nodeName).type == ProdNodeType::Group && rank == 0) {
             const auto& n = tree.at(nodeName);
             logger.debug("ProdGroupTreeBalancer",
                 fmt::format("Balancer: Completed for top node '{}': balanced={}, iterations={}",
@@ -2258,7 +2271,8 @@ bool runGroupTreeBalancer(BlackoilWellModelGeneric<Scalar, IndexTraits>& wellMod
 
     auto tree = buildTree(wellModel, summaryState, reportStep, limits);
 
-    const bool success = runBalancingAlgorithm(wellModel, tree, tol, logger, assignTargets);
+    const bool success = runBalancingAlgorithm(wellModel.guideRate(), wellModel.comm().rank(),
+                                               tree, tol, logger, assignTargets);
 
     if (wellModel.comm().rank() == 0) {
         logTree(tree, logger);
@@ -2292,6 +2306,23 @@ bool runGroupTreeBalancer(BlackoilWellModelGeneric<Scalar, IndexTraits>& wellMod
     return valid;
 }
 
+template<class Scalar>
+bool balanceTreeForTesting(Tree<Scalar>& tree,
+                           const GuideRate& guideRate,
+                           Scalar tol,
+                           DeferredLogger& logger,
+                           const bool assignTargets)
+{
+    // The top-down pass buildTree() ends with, so a hand-built tree is not
+    // half-initialised: effective modes, guide rates, preferred control.
+    propagateGuideRatesAndMode(tree, guideRate, "FIELD",
+                               Well::ProducerCMode::CMODE_UNDEFINED,
+                               Group::ProductionCMode::NONE,
+                               /* parentSeesLimits */ false);
+    const bool ok = runBalancingAlgorithm(guideRate, /*rank=*/0, tree, tol, logger, assignTargets);
+    return ok && checkTreeValidity(tree, "FIELD", tol, logger);
+}
+
 // ===========================================================================
 // Explicit instantiations
 // ===========================================================================
@@ -2305,7 +2336,11 @@ template bool runGroupTreeBalancer<double, BlackOilDefaultFluidSystemIndices>(
     const std::unordered_map<std::string, std::pair<int, double>>&,
     DeferredLogger&, bool, std::vector<std::string>*, bool);
 
+template bool balanceTreeForTesting<double>(Tree<double>&, const GuideRate&, double, DeferredLogger&, bool);
+
 #ifdef FLOW_INSTANTIATE_FLOAT
+
+template bool balanceTreeForTesting<float>(Tree<float>&, const GuideRate&, float, DeferredLogger&, bool);
 
 template bool runGroupTreeBalancer<float, BlackOilDefaultFluidSystemIndices>(
     BlackoilWellModelGeneric<float, BlackOilDefaultFluidSystemIndices>&,
