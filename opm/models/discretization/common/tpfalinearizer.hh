@@ -1283,6 +1283,14 @@ public:
         setResAndJacobi(res, bMat, adres);
 
         if constexpr (!useGPU) { // Cached storage not enabled for GPU
+            // The storage is per unit volume and multiplied by the current volume below.
+            // An auxiliary DOF (a fracture cell) can change volume within the run, so
+            // its start-of-step mass needs the start-of-step volume: scale the old
+            // storage by Vold/V. Grid DOFs have Vold == V and are left untouched.
+            const Scalar volumeNow = model.dofTotalVolume(globI);
+            const Scalar volumeOld = model.dofTotalVolumeOld(globI);
+            const bool scaleOld = (volumeNow > 0.0) && (volumeOld != volumeNow);
+            const Scalar oldFactor = scaleOld ? volumeOld / volumeNow : Scalar{1};
             // Either use cached storage term, or compute it on the fly.
             if (model.enableStorageCache()) {
                 // The cached storage for timeIdx 0 (current time) is not
@@ -1308,7 +1316,13 @@ public:
                         model.updateCachedStorage(globI, 1, tmp);
                     }
                 }
-                res -= model.cachedStorage(globI, 1);
+                if (scaleOld) {
+                    VectorBlock oldStorage = model.cachedStorage(globI, 1);
+                    oldStorage *= oldFactor;
+                    res -= oldStorage;
+                } else {
+                    res -= model.cachedStorage(globI, 1);
+                }
             } else {
 #if OPM_IS_INSIDE_HOST_FUNCTION
                 OPM_TIMEBLOCK_LOCAL(computeStorage0, Subsystem::Assembly);
@@ -1316,7 +1330,9 @@ public:
                 VectorBlock tmp;
                 const auto& intQuantOld = model.intensiveQuantities(globI, 1);
                 LocalResidualT::template computeStorage<Scalar>(tmp, intQuantOld);
-                // assume volume do not change
+                if (scaleOld) {
+                    tmp *= oldFactor;
+                }
                 res -= tmp;
             }
         } else {
