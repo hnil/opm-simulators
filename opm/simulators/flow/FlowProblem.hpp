@@ -836,6 +836,10 @@ public:
         return materialLawManager_->materialLawParams(auxCellSaturationProxy_(globalDofIdx));
     }
 
+    //! Grid cell whose saturation functions a DOF uses; identity for grid cells.
+    unsigned saturationFunctionCell(unsigned globalDofIdx) const
+    { return auxCellSaturationProxy_(globalDofIdx); }
+
     const MaterialLawParams& materialLawParams(unsigned globalDofIdx, FaceDir::DirEnum facedir) const
     {
         return materialLawManager_->materialLawParams(auxCellSaturationProxy_(globalDofIdx), facedir);
