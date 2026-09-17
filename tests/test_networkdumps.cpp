@@ -1560,4 +1560,133 @@ BOOST_AUTO_TEST_CASE(the_shut_well_ipr_on_the_dumps)
     }
 }
 
+// What --network-owns-group-control writes back, judged on dumped systems.
+// Every held well must find the group whose own target binds above it, and the
+// GRUP targets written to the wells -- each well's share on that group's mode --
+// must put the group on its target once the efficiencies are applied up the
+// tree. That is the promise the write-back makes to the well model: honour
+// these targets and the tree lands where the solve put it.
+BOOST_AUTO_TEST_CASE(held_targets_on_the_dumps)
+{
+    using Sys = DeckTrees::Sys;
+    const char* dir = std::getenv("OPM_NETWORK_DUMP_PROD");
+    const char* inc = std::getenv("OPM_VFP_INCLUDE");
+    if (dir == nullptr || inc == nullptr || !std::filesystem::is_directory(dir)) {
+        BOOST_TEST_MESSAGE("OPM_NETWORK_DUMP_PROD / OPM_VFP_INCLUDE not set, nothing to check");
+        return;
+    }
+    std::deque<VFPProdTable> tables;
+    VFPProdProperties<double> props;
+    const UnitSystem units{};
+    for (const char* name : {"well_vfp.ecl", "flowl_b_vfp.ecl", "flowl_c_vfp.ecl"}) {
+        const auto path = std::filesystem::path(inc) / name;
+        if (!std::filesystem::exists(path)) { continue; }
+        const auto deck = Parser{}.parseFile(path.string());
+        for (const auto& kw : deck.getKeywordList("VFPPROD")) {
+            tables.emplace_back(*kw, /*gaslift_opt_active=*/true, units);
+            props.addTable(tables.back());
+        }
+    }
+    const NetworkSolve::Parameters<double> params{1e-2, 80};
+    const double r_tol = 0.005;
+    auto letters = [](const Sys& sys) {
+        std::string s;
+        for (int w = 0; w < sys.numWells(); ++w) { s += sys.controlLetter(w); }
+        return s;
+    };
+    struct Tally { int systems = 0, verified = 0, held = 0, unbound = 0, groups_checked = 0, groups_off = 0;
+                   std::map<char, int> written; double worst = 0.0; std::string worst_at; };
+    std::map<std::string, Tally> tally;
+    long wells_total = 0, wells_in_tree = 0;
+    int shown = 0;
+
+    for (const auto& e : std::filesystem::directory_iterator(dir)) {
+        if (e.path().extension() != ".txt") { continue; }
+        std::ifstream in(e.path());
+        std::string head; std::getline(in, head);
+        if (head != "production") { continue; }
+        auto [dumped, guess] = NetworkSolve::readProduction<double>(in, props, units);
+        dumped.setAnalyticJacobian(true);
+        for (const auto& w : dumped.wells()) { ++wells_total; wells_in_tree += (w.group >= 0); }
+        const std::string fname = e.path().filename().string();
+
+        for (const std::string route : {"reduced", "full active set + dead rule"}) {
+            auto sys = dumped;
+            NetworkSolve::Result<double> r;
+            if (route == "reduced") {
+                const auto rr = NetworkSolve::solveReduced(sys, guess, params, true);
+                r.converged = rr.converged; r.node_pressure = rr.node_pressure; r.well_rate = rr.well_rate;
+            } else {
+                sys.setDeadWhenCannotLift(true); sys.resetDead();
+                r = NetworkSolve::solve(sys, guess, params, NetworkSolve::FullStep{});
+            }
+            auto& t = tally[route];
+            ++t.systems;
+            if (!r.converged || !verifyAnswer(sys, r.node_pressure, r.well_rate, letters(sys)).ok) { continue; }
+            ++t.verified;
+            if (!sys.usesGroupTree()) { continue; }
+
+            const auto held = sys.heldTargets(r.well_rate);
+            const auto& groups = sys.groups();
+            std::set<int> binding;
+            for (int w = 0; w < sys.numWells(); ++w) {
+                const char c = sys.controlLetter(w);
+                ++t.written[c];
+                if (held[w].control != Sys::Control::Tree) { continue; }
+                ++t.held;
+                if (held[w].group < 0) { ++t.unbound; continue; }
+                binding.insert(held[w].group);
+            }
+            // Each binding group's rate on its own mode, rebuilt from what the
+            // write-back hands the wells: a held well's written target, any
+            // other well's actual rate, each scaled by the efficiencies above it.
+            for (const int g : binding) {
+                const auto c = Sys::modeWeights(groups[g].mode, groups[g].resv_coeff);
+                double on = 0.0;
+                for (int w = 0; w < sys.numWells(); ++w) {
+                    const auto& well = sys.wells()[w];
+                    double eff = well.efficiency;
+                    bool under = false;
+                    for (int a = well.group; a >= 0; a = groups[a].parent) {
+                        if (a == g) { under = true; break; }
+                        eff *= groups[a].efficiency;
+                    }
+                    if (!under) { continue; }
+                    double rate = 0.0;
+                    if (held[w].control == Sys::Control::Tree && held[w].group == g) {
+                        rate = held[w].value;
+                    } else if (well.ipr_b[1] < 0.0) {
+                        const double bhp = (r.well_rate[w] - well.ipr_a[1]) / well.ipr_b[1];
+                        for (int ph = 0; ph < Sys::NP; ++ph) {
+                            rate += c[ph] * std::max(well.ipr_a[ph] + well.ipr_b[ph] * bhp, 0.0);
+                        }
+                    }
+                    on += eff * rate;
+                }
+                ++t.groups_checked;
+                const double off = std::abs(on - groups[g].target) / groups[g].target;
+                if (off > t.worst) { t.worst = off; t.worst_at = fname + " " + groups[g].name; }
+                if (off > r_tol) {
+                    ++t.groups_off;
+                    if (shown++ < 6) {
+                        BOOST_TEST_MESSAGE(fmt::format("  {} {}: {} on its mode from the written targets is {:.4f} of its target",
+                                                       route, fname, groups[g].name, on / groups[g].target));
+                    }
+                }
+            }
+        }
+    }
+    BOOST_TEST_MESSAGE(fmt::format("wells in the tree: {} of {} across the dumps", wells_in_tree, wells_total));
+    for (const auto& [route, t] : tally) {
+        std::string w;
+        for (const auto& [c, n] : t.written) { w += fmt::format(" {}x{}", c, n); }
+        BOOST_TEST_MESSAGE(fmt::format("  {:28} {} systems, {} verified; held {} ({} with no binding group); "
+                                       "binding groups checked {}, off target {} (worst {:.2e} at {}); controls{}",
+                                       route, t.systems, t.verified, t.held, t.unbound, t.groups_checked,
+                                       t.groups_off, t.worst, t.worst_at.empty() ? "-" : t.worst_at, w));
+        BOOST_CHECK_EQUAL(t.unbound, 0);
+        BOOST_CHECK_EQUAL(t.groups_off, 0);
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()
