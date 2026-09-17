@@ -345,6 +345,14 @@ protected:
 
     /// The same for a production network. A rate is three numbers instead of
     /// one and the wells are producers, which is the whole difference.
+    /// Hand a solved tree's targets to the wells it controls: GRUP with the
+    /// share as group target for a held well, THP / BHP / ORAT otherwise. The
+    /// only place the network answer reaches the well state's controls.
+    void applyNetworkTargets(const NetworkSolve::ProductionSystem<Scalar>& system,
+                             const std::vector<typename NetworkSolve::ProductionSystem<Scalar>::HeldTarget>& held,
+                             const std::string& root_name,
+                             int reportStepIdx) const;
+
     std::optional<std::map<std::string, Scalar>>
     newtonProductionNodePressures(const Network::ExtNetwork& network,
                                   const int reportStepIdx,

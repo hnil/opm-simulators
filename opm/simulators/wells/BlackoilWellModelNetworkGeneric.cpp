@@ -1252,59 +1252,10 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
         }
     }
     if (this->network_owns_group_control_) {
-        // The controls written back, so the well solve assembles what the
-        // network solved for. A held well goes on GRUP with its share as the
-        // group target -- the one the well model's group control row reads --
-        // on the mode of the group whose own target binds above it. Shut goes
-        // through the shut hand-over in updatePressures.
-        using Ctrl = typename Sys::Control;
-        using Mode = typename Sys::Mode;
-        using GC = Group::ProductionCMode;
-        const auto held = system.heldTargets(result.well_rate);
-        auto& well_state = well_model_.wellState();
-        int n_held = 0, n_own = 0, n_unbound = 0;
-        for (int w = 0; w < system.numWells(); ++w) {
-            const auto& well = system.wells()[w];
-            if (!well_state.has(well.name)) {
-                continue;
-            }
-            auto& ws = well_state.well(well.name);
-            if (!ws.network_controlled || ws.status != WellStatus::OPEN) {
-                continue;
-            }
-            const auto& t = held[w];
-            switch (t.control) {
-            case Ctrl::Tree: {
-                if (t.group < 0) {
-                    ++n_unbound;
-                    break;
-                }
-                const GC cmode = t.mode == Mode::Gas    ? GC::GRAT
-                               : t.mode == Mode::Water  ? GC::WRAT
-                               : t.mode == Mode::Liquid ? GC::LRAT
-                               : t.mode == Mode::Resv   ? GC::RESV : GC::ORAT;
-                ws.production_cmode = Well::ProducerCMode::GRUP;
-                ws.group_target.emplace();
-                ws.group_target->group_name = system.groups()[t.group].name;
-                ws.group_target->target_value = t.value;
-                ws.group_target->production_cmode = cmode;
-                ws.group_target_fallback = std::nullopt;
-                ws.use_group_target_fallback = false;
-                ++n_held;
-                break;
-            }
-            case Ctrl::Thp:     ws.production_cmode = Well::ProducerCMode::THP; ++n_own; break;
-            case Ctrl::Bhp:     ws.production_cmode = Well::ProducerCMode::BHP; ++n_own; break;
-            case Ctrl::OilRate:
-            case Ctrl::Tied:    ws.production_cmode = Well::ProducerCMode::ORAT; ++n_own; break;
-            default:            break;
-            }
-        }
-        OpmLog::debug(fmt::format("Network: controls written back under {} at report step {}: "
-                                  "{} held on their share, {} on their own control{}",
-                                  root.name(), reportStepIdx, n_held, n_own,
-                                  n_unbound ? fmt::format(", {} held with no binding group", n_unbound)
-                                            : std::string{}));
+        // The algorithm's answer is the targets; handing them to the wells is a
+        // separate step, so what the well solve does with them can be varied.
+        this->applyNetworkTargets(system, system.heldTargets(result.well_rate),
+                                  root.name(), reportStepIdx);
         // Branch rates for the output: legacy's computePressures is not run
         // for a network the solve owns, and it was what filled them.
         auto probe = system;
@@ -1370,6 +1321,69 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
         std::move(inputs), pressures, order,
         std::make_shared<const NetworkSolve::ProductionSystem<Scalar>>(system)};
     return pressures;
+}
+
+template<typename Scalar, typename IndexTraits>
+void
+BlackoilWellModelNetworkGeneric<Scalar, IndexTraits>::
+applyNetworkTargets(const NetworkSolve::ProductionSystem<Scalar>& system,
+                    const std::vector<typename NetworkSolve::ProductionSystem<Scalar>::HeldTarget>& held,
+                    const std::string& root_name,
+                    const int reportStepIdx) const
+{
+    using Sys = NetworkSolve::ProductionSystem<Scalar>;
+    // The controls written back, so the well solve assembles what the
+    // network solved for. A held well goes on GRUP with its share as the
+    // group target -- the one the well model's group control row reads --
+    // on the mode of the group whose own target binds above it. Shut goes
+    // through the shut hand-over in updatePressures.
+    using Ctrl = typename Sys::Control;
+    using Mode = typename Sys::Mode;
+    using GC = Group::ProductionCMode;
+    auto& well_state = well_model_.wellState();
+    int n_held = 0, n_own = 0, n_unbound = 0;
+    for (int w = 0; w < system.numWells(); ++w) {
+        const auto& well = system.wells()[w];
+        if (!well_state.has(well.name)) {
+            continue;
+        }
+        auto& ws = well_state.well(well.name);
+        if (!ws.network_controlled || ws.status != WellStatus::OPEN) {
+            continue;
+        }
+        const auto& t = held[w];
+        switch (t.control) {
+        case Ctrl::Tree: {
+            if (t.group < 0) {
+                ++n_unbound;
+                break;
+            }
+            const GC cmode = t.mode == Mode::Gas    ? GC::GRAT
+                           : t.mode == Mode::Water  ? GC::WRAT
+                           : t.mode == Mode::Liquid ? GC::LRAT
+                           : t.mode == Mode::Resv   ? GC::RESV : GC::ORAT;
+            ws.production_cmode = Well::ProducerCMode::GRUP;
+            ws.group_target.emplace();
+            ws.group_target->group_name = system.groups()[t.group].name;
+            ws.group_target->target_value = t.value;
+            ws.group_target->production_cmode = cmode;
+            ws.group_target_fallback = std::nullopt;
+            ws.use_group_target_fallback = false;
+            ++n_held;
+            break;
+        }
+        case Ctrl::Thp:     ws.production_cmode = Well::ProducerCMode::THP; ++n_own; break;
+        case Ctrl::Bhp:     ws.production_cmode = Well::ProducerCMode::BHP; ++n_own; break;
+        case Ctrl::OilRate:
+        case Ctrl::Tied:    ws.production_cmode = Well::ProducerCMode::ORAT; ++n_own; break;
+        default:            break;
+        }
+    }
+    OpmLog::debug(fmt::format("Network: controls written back under {} at report step {}: "
+                              "{} held on their share, {} on their own control{}",
+                              root_name, reportStepIdx, n_held, n_own,
+                              n_unbound ? fmt::format(", {} held with no binding group", n_unbound)
+                                        : std::string{}));
 }
 
 template<typename Scalar, typename IndexTraits>
