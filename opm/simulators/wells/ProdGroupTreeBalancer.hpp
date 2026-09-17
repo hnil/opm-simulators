@@ -26,6 +26,7 @@
 #include <string>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 namespace Opm {
 
@@ -50,6 +51,9 @@ using Tree = std::map<std::string, ProdGroupTreeNode<Scalar>>;
 /// \param[in]    tol           Convergence tolerance
 /// \param[in]    limits        Globally gathered well limits (from prepareWellsForBalancing_*)
 /// \param[in]    logger        Deferred logger
+/// \param[in]    assignTargets Also write the allocation as each well's group target
+///                             (setTargets); otherwise legacy derives the targets from the modes
+/// \param[out]   decidedWells  If given, the wells the tree assigned a control to
 /// \return       true if the result passed checkTreeValidity
 template<class Scalar, typename IndexTraits>
 bool runGroupTreeBalancer(BlackoilWellModelGeneric<Scalar, IndexTraits>& wellModel,
@@ -57,7 +61,10 @@ bool runGroupTreeBalancer(BlackoilWellModelGeneric<Scalar, IndexTraits>& wellMod
                           int reportStep,
                           Scalar tol,
                           const std::unordered_map<std::string, std::pair<int, Scalar>>& limits,
-                          DeferredLogger& logger);
+                          DeferredLogger& logger,
+                          bool assignTargets = false,
+                          std::vector<std::string>* decidedWells = nullptr,
+                          bool writeRates = true);
 
 } // namespace Opm::ProdGroupTreeBalancer
 

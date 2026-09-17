@@ -280,6 +280,21 @@ template<class Scalar> class WellContributions;
             bool
             updateWellControls(DeferredLogger& deferred_logger);
 
+            /// The group controller's control update: the wells' own limits are the
+            /// feasibility report and the balancer re-decides on them; legacy's group
+            /// switching does not run.
+            bool updateWellControlsController_(DeferredLogger& deferred_logger);
+
+            /// Run the balancer on \p limits; under the controller its allocation
+            /// becomes the wells' targets and the decided wells are recorded.
+            void runControllerBalance_(const std::unordered_map<std::string, std::pair<int, Scalar>>& limits,
+                                       DeferredLogger& deferred_logger,
+                                       bool write_rates = true);
+
+            /// A production group's current rates exceed one of its own limits by more
+            /// than 1 %: the group-level feasibility report.
+            bool controllerGroupLimitViolated_() const;
+
             void updateAndCommunicate(const int reportStepIdx);
 
             bool updateGroupControls(const Group& group,

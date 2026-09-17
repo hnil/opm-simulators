@@ -1534,6 +1534,10 @@ updateAndCommunicateGroupData(const int reportStepIdx,
     if (update_wellgrouptarget) {
         for (const auto& well : well_container_generic_) {
             auto& ws = this->wellState().well(well->indexOfWell());
+            if (controller_decided_wells_.count(well->name())) {
+                ws.use_group_target_fallback = false;
+                continue;
+            }
             const Group& group = this->schedule().getGroup(well->wellEcl().groupName(), reportStepIdx);
             std::vector<Scalar> resv_coeff(this->numPhases(), 0.0);
             const int fipnum = 0;

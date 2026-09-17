@@ -50,6 +50,7 @@
 #include <cstddef>
 #include <functional>
 #include <map>
+#include <set>
 #include <memory>
 #include <optional>
 #include <string>
@@ -583,6 +584,12 @@ protected:
 
     // a vector of all the wells.
     std::vector<WellInterfaceGeneric<Scalar, IndexTraits>*> well_container_generic_{};
+
+    // Wells whose control and target the group controller set this iteration;
+    // legacy's per-well target assignment leaves them alone.
+    std::set<std::string> controller_decided_wells_{};
+    std::map<std::string, Well::ProducerCMode> controller_assigned_cmode_{};
+    std::map<std::string, std::vector<Scalar>> controller_assigned_rates_{};
 
     std::vector<int> local_shut_wells_{};
 

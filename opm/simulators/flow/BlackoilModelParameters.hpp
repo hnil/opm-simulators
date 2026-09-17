@@ -107,6 +107,7 @@ struct UseUpdateStabilization { static constexpr bool value = true; };
 struct MatrixAddWellContributions { static constexpr bool value = false; };
 
 struct EnableGroupTreeBalancer { static constexpr bool value = true; };
+struct EnableGroupController { static constexpr bool value = false; };
 template<class Scalar>
 struct GroupTreeBalancerTolerance { static constexpr Scalar value = 1e-5; };
 
@@ -428,6 +429,9 @@ public:
 
     /// Relative tolerance for the group-tree balancer convergence check
     Scalar group_tree_balancer_tolerance_;
+
+    /// The balancer decides production group control (implies the balancer)
+    bool enable_group_controller_;
 
     template<class Serializer>
     void serializeOp(Serializer& serializer)

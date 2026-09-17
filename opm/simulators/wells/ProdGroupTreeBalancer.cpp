@@ -1827,7 +1827,8 @@ void setTargets(Tree<Scalar>& tree, const std::string& topName)
 
 template<class Scalar, typename IndexTraits>
 bool runBalancingAlgorithm(const BlackoilWellModelGeneric<Scalar, IndexTraits>& wellModel,
-                           Tree<Scalar>& tree, Scalar tol, DeferredLogger& logger)
+                           Tree<Scalar>& tree, Scalar tol, DeferredLogger& logger,
+                           const bool assignTargets = false)
 {
     // Main algorithm entry point
     // Get sub-tree ordering - each "top" node will be balanced independently, 
@@ -1872,9 +1873,11 @@ bool runBalancingAlgorithm(const BlackoilWellModelGeneric<Scalar, IndexTraits>& 
         // Balance this subtree
         balanceGroupTree(tree, nodeName, wellModel.guideRate(), mode, qm, tol, logger);
 
-        // setTargets is intentionally not called here; group target values
-        // (groupName, value, guideRateRatio) are populated by getWellGroupTargetProducer.
-        //setTargets(tree, nodeName);
+        // Without assignTargets the group target values (groupName, value,
+        // guideRateRatio) are left to getWellGroupTargetProducer.
+        if (assignTargets) {
+            setTargets(tree, nodeName);
+        }
 
         // Report completion of this top node's balancing
         if (tree.at(nodeName).type == ProdNodeType::Group && wellModel.comm().rank() == 0) {
@@ -2119,7 +2122,9 @@ void logTree(const Tree<Scalar>& tree, DeferredLogger& logger)
 template<class Scalar, typename IndexTraits>
 void applyTreeToState(const Tree<Scalar>& tree,
                       BlackoilWellModelGeneric<Scalar, IndexTraits>& wellModel,
-                      DeferredLogger& logger)
+                      DeferredLogger& logger,
+                      std::vector<std::string>* decidedWells = nullptr,
+                      const bool writeRates = true)
 {
     auto& wellState  = wellModel.wellState();
     auto& groupState = wellModel.groupState();
@@ -2129,10 +2134,14 @@ void applyTreeToState(const Tree<Scalar>& tree,
             if (!wellState.has(name)) continue;
             auto& ws = wellState.well(name);
             if (!ws.producer) continue;
+            if (decidedWells) {
+                decidedWells->push_back(name);
+            }
 
             // Convert canonical 3-component rates back to active-phase vector
-            const auto activeRates = toActive(node.rates, ws.pu);
-            ws.surface_rates = activeRates;
+            if (writeRates) {
+                ws.surface_rates = toActive(node.rates, ws.pu);
+            }
 
             // Update control mode
             const Well::ProducerCMode oldWellCMode = ws.production_cmode;
@@ -2230,7 +2239,10 @@ bool runGroupTreeBalancer(BlackoilWellModelGeneric<Scalar, IndexTraits>& wellMod
                           int reportStep,
                           Scalar tol,
                           const std::unordered_map<std::string, std::pair<int, Scalar>>& limits,
-                          DeferredLogger& logger)
+                          DeferredLogger& logger,
+                          const bool assignTargets,
+                          std::vector<std::string>* decidedWells,
+                          const bool writeRates)
 {
     // Make early return if limits is empty, which means no wells are active/has positive potentials.
     if (limits.empty()) {
@@ -2246,7 +2258,7 @@ bool runGroupTreeBalancer(BlackoilWellModelGeneric<Scalar, IndexTraits>& wellMod
 
     auto tree = buildTree(wellModel, summaryState, reportStep, limits);
 
-    const bool success = runBalancingAlgorithm(wellModel, tree, tol, logger);
+    const bool success = runBalancingAlgorithm(wellModel, tree, tol, logger, assignTargets);
 
     if (wellModel.comm().rank() == 0) {
         logTree(tree, logger);
@@ -2266,7 +2278,7 @@ bool runGroupTreeBalancer(BlackoilWellModelGeneric<Scalar, IndexTraits>& wellMod
             "Some nodes may not satisfy their constraints.");
     }
 
-    applyTreeToState(tree, wellModel, logger);
+    applyTreeToState(tree, wellModel, logger, decidedWells, writeRates);
 
     if (wellModel.comm().rank() == 0) {
         const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -2291,7 +2303,7 @@ template bool runGroupTreeBalancer<double, BlackOilDefaultFluidSystemIndices>(
     BlackoilWellModelGeneric<double, BlackOilDefaultFluidSystemIndices>&,
     const SummaryState&, int, double,
     const std::unordered_map<std::string, std::pair<int, double>>&,
-    DeferredLogger&);
+    DeferredLogger&, bool, std::vector<std::string>*, bool);
 
 #ifdef FLOW_INSTANTIATE_FLOAT
 
@@ -2299,7 +2311,7 @@ template bool runGroupTreeBalancer<float, BlackOilDefaultFluidSystemIndices>(
     BlackoilWellModelGeneric<float, BlackOilDefaultFluidSystemIndices>&,
     const SummaryState&, int, float,
     const std::unordered_map<std::string, std::pair<int, float>>&,
-    DeferredLogger&);
+    DeferredLogger&, bool, std::vector<std::string>*, bool);
 
 #endif
 

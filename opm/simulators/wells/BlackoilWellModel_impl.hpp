@@ -26,6 +26,7 @@
 // Improve IDE experience
 #ifndef OPM_BLACKOILWELLMODEL_HEADER_INCLUDED
 #include <config.h>
+#include <cstdlib>
 #include <opm/simulators/wells/BlackoilWellModel.hpp>
 #endif
 
@@ -523,15 +524,8 @@ namespace Opm {
         // Potentials and guide rates have been computed above; group state
         // (including GPMAINT targets) has been synced by the call above.
         if (this->wellsActive() && (param_.enable_group_tree_balancer_)) {
-            const auto balancerLimits = prepareWellsForBalancingFromPotentials_(local_deferredLogger);
-            ProdGroupTreeBalancer::runGroupTreeBalancer(
-                *this,
-                this->summaryState(),
-                reportStepIdx,
-                param_.group_tree_balancer_tolerance_,
-                balancerLimits,
-                local_deferredLogger);
-            this->updateAndCommunicateGroupData(reportStepIdx, /*update_wellgrouptarget*/ true);
+            runControllerBalance_(prepareWellsForBalancingFromPotentials_(local_deferredLogger),
+                                  local_deferredLogger);
         }
 
         try {
@@ -1365,7 +1359,8 @@ namespace Opm {
                                        "updateWellControlsAndNetworkIteration() failed: ",
                                        this->terminal_output_, grid().comm());
 
-        if (param_.enable_group_tree_balancer_ && well_group_control_changed) {
+        // The controller re-decides inside updateWellControls instead.
+        if (param_.enable_group_tree_balancer_ && !param_.enable_group_controller_ && well_group_control_changed) {
             const auto& iterCtx = simulator_.problem().iterationContext();
             const int nupcol = this->schedule()[reportStepIdx].nupcol();
             if (iterCtx.withinNupcol(nupcol)) {
@@ -1752,6 +1747,10 @@ namespace Opm {
             }
         }
 
+        if (param_.enable_group_controller_) {
+            return updateWellControlsController_(deferred_logger);
+        }
+
         size_t iter = 0;
         bool changed_well_group = false;
         const Group& fieldGroup = this->schedule().getGroup("FIELD", episodeIdx);
@@ -1820,6 +1819,152 @@ namespace Opm {
         return changed_well_group;
     }
 
+
+    template<typename TypeTag>
+    void
+    BlackoilWellModel<TypeTag>::
+    runControllerBalance_(const std::unordered_map<std::string, std::pair<int, Scalar>>& limits,
+                          DeferredLogger& deferred_logger,
+                          const bool write_rates)
+    {
+        const int reportStepIdx = simulator_.episodeIndex();
+        const bool own = param_.enable_group_controller_;
+        // Diagnostic: keep the controller but let legacy compute the target values.
+        const bool legacy_targets = std::getenv("OPM_CONTROLLER_LEGACY_TARGETS") != nullptr;
+        std::vector<std::string> decided;
+        ProdGroupTreeBalancer::runGroupTreeBalancer(*this,
+                                                    this->summaryState(),
+                                                    reportStepIdx,
+                                                    param_.group_tree_balancer_tolerance_,
+                                                    limits,
+                                                    deferred_logger,
+                                                    /*assignTargets*/ own && !legacy_targets,
+                                                    (own && !legacy_targets) ? &decided : nullptr,
+                                                    write_rates);
+        this->controller_decided_wells_.clear();
+        this->controller_assigned_cmode_.clear();
+        this->controller_assigned_rates_.clear();
+        for (const auto& name : decided) {
+            this->controller_decided_wells_.insert(name);
+            this->controller_assigned_cmode_[name] = this->wellState().well(name).production_cmode;
+            this->controller_assigned_rates_[name] = this->wellState().well(name).surface_rates;
+        }
+        // What legacy does after any switch: prime the well state and primary
+        // variables for the control and target it was just given.
+        OPM_BEGIN_PARALLEL_TRY_CATCH()
+        for (const auto& well : well_container_) {
+            if (this->controller_decided_wells_.count(well->name())) {
+                well->updateWellStateWithTarget(simulator_, this->groupStateHelper(), this->wellState());
+                well->updatePrimaryVariables(this->groupStateHelper());
+            }
+        }
+        OPM_END_PARALLEL_TRY_CATCH("BlackoilWellModel: priming the controller's wells failed: ",
+                                   simulator_.gridView().comm());
+        this->updateAndCommunicateGroupData(reportStepIdx, /*update_wellgrouptarget*/ true);
+    }
+
+    template<typename TypeTag>
+    bool
+    BlackoilWellModel<TypeTag>::
+    controllerGroupLimitViolated_() const
+    {
+        const int reportStepIdx = simulator_.episodeIndex();
+        const auto& pu = this->phaseUsage();
+        constexpr Scalar tol = 0.01;
+        auto rate = [&pu](const std::vector<Scalar>& r, const int canonical) {
+            return pu.phaseIsActive(canonical) ? r[pu.canonicalToActivePhaseIdx(canonical)] : Scalar(0);
+        };
+        for (const auto& name : this->schedule().groupNames(reportStepIdx)) {
+            const auto& group = this->schedule().getGroup(name, reportStepIdx);
+            if (!group.isProductionGroup() || !this->groupState().has_production_rates(name)) {
+                continue;
+            }
+            const auto controls = group.productionControls(this->summaryState());
+            const auto& action = controls.group_limit_action;
+            const bool all_rate = action.allRates == Group::ExceedAction::RATE;
+            const auto& r = this->groupState().production_rates(name);
+            const Scalar oil = rate(r, IndexTraits::oilPhaseIdx);
+            const Scalar wat = rate(r, IndexTraits::waterPhaseIdx);
+            const Scalar gas = rate(r, IndexTraits::gasPhaseIdx);
+            auto over = [&](const Group::ProductionCMode mode, const Group::ExceedAction act,
+                            const Scalar target, const Scalar current) {
+                return group.has_control(mode) && (all_rate || act == Group::ExceedAction::RATE)
+                    && target > Scalar(0) && current > (Scalar(1) + tol) * target;
+            };
+            if (over(Group::ProductionCMode::ORAT, action.oil, controls.oil_target, oil)
+                || over(Group::ProductionCMode::WRAT, action.water, controls.water_target, wat)
+                || over(Group::ProductionCMode::GRAT, action.gas, controls.gas_target, gas)
+                || over(Group::ProductionCMode::LRAT, action.liquid, controls.liquid_target, oil + wat)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    template<typename TypeTag>
+    bool
+    BlackoilWellModel<TypeTag>::
+    updateWellControlsController_(DeferredLogger& deferred_logger)
+    {
+        OPM_TIMEFUNCTION();
+        const int episodeIdx = simulator_.episodeIndex();
+        const auto& comm = simulator_.vanguard().grid().comm();
+        const int nupcol = this->schedule()[episodeIdx].nupcol();
+        const bool may_redecide = simulator_.problem().iterationContext().withinNupcol(nupcol);
+        // A well that cannot honour its target ends up on one of its own limits, here
+        // or inside its solve; that is the feasibility report, and the balancer
+        // re-decides on it at once. Bounded: each pass leaves one more well at a limit.
+        constexpr int max_passes = 4;
+        bool changed_any = false;
+        for (int pass = 0; pass < max_passes; ++pass) {
+            bool changed = false;
+            OPM_BEGIN_PARALLEL_TRY_CATCH()
+                for (const auto& well : well_container_) {
+                    const auto mode = WellInterface<TypeTag>::IndividualOrGroup::Individual;
+                    const bool changed_well = well->updateWellControl(
+                        simulator_, mode, this->groupStateHelper(), this->wellState());
+                    changed = changed || changed_well;
+                    const auto& ws = this->wellState().well(well->indexOfWell());
+                    const auto it = this->controller_assigned_cmode_.find(well->name());
+                    if (it != this->controller_assigned_cmode_.end() && ws.production_cmode != it->second) {
+                        changed = true;
+                    }
+                    // A well delivering more or less than it was assigned is the other
+                    // half of the report: the remainder has to be re-allocated.
+                    const auto ir = this->controller_assigned_rates_.find(well->name());
+                    if (may_redecide && ir != this->controller_assigned_rates_.end()) {
+                        constexpr Scalar rtol = 0.01, floor = 1e-7; // m3/s
+                        for (std::size_t p = 0; p < ir->second.size(); ++p) {
+                            if (std::abs(ws.surface_rates[p] - ir->second[p])
+                                > rtol * std::abs(ir->second[p]) + floor) {
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+            OPM_END_PARALLEL_TRY_CATCH("BlackoilWellModel: updating well controls failed: ",
+                                       simulator_.gridView().comm());
+            changed = comm.sum(static_cast<int>(changed));
+            // Group rates are global, so this agrees on every rank.
+            const bool group_violated = controllerGroupLimitViolated_();
+            changed = changed || group_violated;
+            if (!changed) {
+                break;
+            }
+            changed_any = true;
+            if (!may_redecide && !group_violated) {
+                // Targets are frozen after NUPCOL; only legacy's bookkeeping runs.
+                updateAndCommunicate(episodeIdx);
+                break;
+            }
+            // A re-decision changes the targets only; the well state stays the solve's.
+            // Writing the tree's rates here cost 6 % more Newton on FLOW-CGC.
+            runControllerBalance_(prepareWellsForBalancing_(deferred_logger), deferred_logger,
+                                  /*write_rates*/ false);
+        }
+        this->updateWsolvent(this->schedule().getGroup("FIELD", episodeIdx), episodeIdx, this->nupcolWellState());
+        return changed_any;
+    }
 
     template<typename TypeTag>
     void

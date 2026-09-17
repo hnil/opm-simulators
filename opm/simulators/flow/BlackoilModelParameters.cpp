@@ -128,6 +128,10 @@ BlackoilModelParameters<Scalar>::BlackoilModelParameters()
     group_control_fraction_tolerance_ = Parameters::Get<Parameters::GroupControlFractionTolerance<Scalar>>();
     enable_group_tree_balancer_ = Parameters::Get<Parameters::EnableGroupTreeBalancer>();
     group_tree_balancer_tolerance_ = Parameters::Get<Parameters::GroupTreeBalancerTolerance<Scalar>>();
+    enable_group_controller_ = Parameters::Get<Parameters::EnableGroupController>();
+    if (enable_group_controller_) {
+        enable_group_tree_balancer_ = true;
+    }
 }
 
 template<class Scalar>
@@ -337,6 +341,10 @@ void BlackoilModelParameters<Scalar>::registerParameters()
          "well/group control update loop)");
     Parameters::Register<Parameters::GroupTreeBalancerTolerance<Scalar>>
         ("Relative convergence tolerance for the production group-tree balancer");
+    Parameters::Register<Parameters::EnableGroupController>
+        ("Let the group-tree balancer decide production group control: its allocation "
+         "is the wells' target, legacy's group switching is bypassed, and a well that "
+         "cannot honour its target reports back through its own limits (implies the balancer)");
 
     // if openMP is available, use two threads per mpi rank by default
 #if _OPENMP
