@@ -49,6 +49,7 @@ struct ReducedResult
     int held_at_cliff = 0;    // wells given their cliff rate instead of dying
     int revived = 0;          // wells shut during the solve that the revive pass reopened
     int set_changes = 0;      // iterations after which the tree walk chose differently
+    bool differenced = false; // the elimination step stalled and differences took over
     Scalar residual = 0;
     int off_axis = 0;         // lookups the answer needed off a table axis
     std::vector<Scalar> node_pressure;
@@ -161,6 +162,8 @@ solveReduced(Sys& system,
     out.sets = last_set;
     const Scalar max_step = Scalar{50} * unit::barsa, floor = unit::barsa;
     std::vector<std::pair<std::string, Scalar>> recent;   // set and residual, last few iterates
+    int slow = 0;                                          // iterations since the best residual last fell by 10 %
+    Scalar best = std::numeric_limits<Scalar>::max();
     for (int it = 1; it <= params.max_iterations; ++it) {
         out.iterations = it;
         out.residual = norm(r);
@@ -208,7 +211,7 @@ solveReduced(Sys& system,
             }
         }
         std::vector<Scalar> dx;
-        if (eliminate) {
+        if (eliminate && !out.differenced) {
             dx = reducedStepByElimination(system, r);
             if (dx.empty()) { break; }
         } else {
@@ -306,6 +309,19 @@ solveReduced(Sys& system,
             }
             step *= Scalar{0.5};
         }
+        if (!accepted && eliminate && !out.differenced) {
+            // The elimination step assumes the frozen set's linearisation is
+            // regular. Near a well's touching point it is not: on one
+            // FLOW-FIX system it put the branch's sensitivity to the well's
+            // node at -133 bar/bar where differences give +0.15, and the solve
+            // stalled for 80 iterations. Differences from here on, same point.
+            out.differenced = true;
+            ++out.stalls;
+            if (trace) { std::fprintf(stderr, "[stall] elimination step rejected, differencing from here\n"); }
+            r = system.reducedResidual(p);     // the line search left the system at a trial point
+            ++out.evaluations;
+            continue;
+        }
         if (!accepted) {
             // Nothing along the direction improves: a kink between here and
             // there. Take the step anyway and let the next piece's Jacobian
@@ -315,6 +331,19 @@ solveReduced(Sys& system,
             p = trial(alpha);
             r = system.reducedResidual(p);
             ++out.evaluations;
+        }
+        // Accepted but going nowhere is the same failure as a stall: on the
+        // same FLOW-FIX system the elimination steps alternated between the
+        // cliff's edge and the alive side (residual 0.34, 0.65, 0.34, ...) for
+        // 80 iterations, while differences converge in 6. Progress is measured
+        // against the best residual so far, so an alternation counts.
+        if (eliminate && !out.differenced) {
+            const Scalar now = norm(r);
+            if (now < Scalar{0.9} * best) { best = now; slow = 0; } else { ++slow; }
+            if (slow >= 4) {
+                out.differenced = true;
+                if (trace) { std::fprintf(stderr, "[slow] elimination steps not converging, differencing from here\n"); }
+            }
         }
         const auto set = system.treeSignature();
         if (set != last_set) { ++out.set_changes; out.sets += " " + set; }
