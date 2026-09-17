@@ -123,6 +123,7 @@ BlackoilModelParameters<Scalar>::BlackoilModelParameters()
     network_group_tree_ = Parameters::Get<Parameters::NetworkGroupTree>();
     network_owns_group_control_ = Parameters::Get<Parameters::NetworkOwnsGroupControl>();
     network_stein_start_ = Parameters::Get<Parameters::NetworkSteinStart>();
+    network_owns_individual_controls_ = Parameters::Get<Parameters::NetworkOwnsIndividualControls>();
     well_ipr_at_touching_point_ = Parameters::Get<Parameters::WellIprAtTouchingPoint>();
     network_group_allocation_ = Parameters::Get<Parameters::NetworkGroupAllocation>();
     network_apply_shut_ = Parameters::Get<Parameters::NetworkApplyShut>();
@@ -314,6 +315,10 @@ void BlackoilModelParameters<Scalar>::registerParameters()
          "checks are skipped for those wells, the solve's controls are written back to them, and "
          "a failed solve stops the step instead of falling back. Implies --network-group-tree "
          "(--network-solver=newton or reduced; serial only for now)");
+    Parameters::Register<Parameters::NetworkOwnsIndividualControls>
+        ("With --network-owns-group-control, also skip the individual constraint checks (thp, bhp, "
+         "rate) for the wells the network controls -- in the outer control update and inside the "
+         "well solves -- so only the network solve switches them");
     Parameters::Register<Parameters::NetworkSteinStart>
         ("Start each production network solve that has a group tree from Stein's balancer: its "
          "allocation at the guessed pressures, and the node pressures those rates imply "

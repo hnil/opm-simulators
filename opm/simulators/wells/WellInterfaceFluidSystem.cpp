@@ -177,6 +177,12 @@ checkIndividualConstraints(SingleWellState<Scalar, IndexTraits>& ws,
                            const std::optional<Well::InjectionControls>& inj_controls,
                            const std::optional<Well::ProductionControls>& prod_controls) const
 {
+    // Owned by the network solve, individual limits included: it alone switches
+    // this well, and a target the well cannot meet goes back to it through the
+    // next network solve with this well's refreshed IPR.
+    if (ws.network_controlled && this->param_.network_owns_individual_controls_) {
+        return false;
+    }
     auto rRates = [this](const int fipreg,
                          const int pvtRegion,
                          const std::vector<Scalar>& surface_rates,

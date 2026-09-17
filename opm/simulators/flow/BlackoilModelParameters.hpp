@@ -165,6 +165,7 @@ struct NetworkGroupControl { static constexpr bool value = false; };
 struct NetworkGroupTree { static constexpr bool value = false; };
 struct NetworkOwnsGroupControl { static constexpr bool value = false; };
 struct NetworkSteinStart { static constexpr bool value = false; };
+struct NetworkOwnsIndividualControls { static constexpr bool value = false; };
 struct WellIprAtTouchingPoint { static constexpr bool value = false; };
 struct NetworkGroupAllocation { static constexpr bool value = false; };
 struct NetworkApplyShut { static constexpr bool value = false; };
@@ -390,6 +391,7 @@ public:
     bool network_group_tree_;
     bool network_owns_group_control_;
     bool network_stein_start_;
+    bool network_owns_individual_controls_;
 
     /// Linearise a zero-rate producer's inflow where its shut decision is
     /// made instead of at the state it is in.
