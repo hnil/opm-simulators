@@ -2381,7 +2381,9 @@ namespace {
                     if (std::abs(bhp[w] - need) > dp_tol) { fail("thp well off its tubing curve"); }
                     if (sys.thpPotential(well, p[well.node]) > 0.0
                         && std::abs(qo - sys.thpPotential(well, p[well.node])) > r_tol * qo) { fail("thp well not on the stable crossing"); }
-                } else if (need > bhp[w] + dp_tol) {
+                } else if (need > bhp[w] + dp_tol && qo > 1.0 / 86400.0) {
+                    // A well held at nothing lifts nothing: at q -> 0 the table
+                    // wants a full column, which a zero share never asks for.
                     fail("tubing cannot lift the rate");     // rate/bhp/group control needs the tubing to allow more
                 }
             }
@@ -2413,13 +2415,15 @@ namespace {
                     if (!under) { continue; }
                     for (int ph = 0; ph < NP; ++ph) { on_mode[g] += c[ph] * eff * q[w][ph]; }
                 }
-                if (groups[g].target > 0.0 && on_mode[g] > groups[g].target * (1 + r_tol)) { fail("group above its target"); }
+                // Relative, with a floor of 1 sm3/d: a zero target ("produce
+                // nothing") is otherwise violated by rounding.
+                if (groups[g].target > 0.0 && on_mode[g] > groups[g].target + std::max(r_tol * groups[g].target, 1.0 / 86400.0)) { fail("group above its target"); }
             }
             for (int w = 0; w < sys.numWells(); ++w) {
                 if (controls[w] != 'R') { continue; }
                 bool bound = false;
                 for (int a = sys.wells()[w].group; a >= 0; a = groups[a].parent) {
-                    if (groups[a].target > 0.0 && std::abs(on_mode[a] - groups[a].target) <= r_tol * groups[a].target) { bound = true; break; }
+                    if (groups[a].target > 0.0 && std::abs(on_mode[a] - groups[a].target) <= std::max(r_tol * groups[a].target, 1.0 / 86400.0)) { bound = true; break; }
                 }
                 if (!bound) {
                     std::string near;

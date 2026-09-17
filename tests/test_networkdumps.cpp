@@ -18,6 +18,7 @@
 */
 #include <config.h>
 #include "NetworkSolveTestSupport.hpp"
+#include <opm/simulators/wells/network/NetworkSteinStart.hpp>
 
 // The decks and the dumps: trees built from a deck, generated instances,
 // and every route scored by the judge on the systems MODEL5 dumped.
@@ -1664,9 +1665,12 @@ BOOST_AUTO_TEST_CASE(held_targets_on_the_dumps)
                     on += eff * rate;
                 }
                 ++t.groups_checked;
-                const double off = std::abs(on - groups[g].target) / groups[g].target;
+                // As the judge: relative, but never tighter than 1 sm3/d, so a
+                // zero target is not violated by rounding.
+                const double miss = std::abs(on - groups[g].target);
+                const double off = miss / std::max(groups[g].target, 1.0 / 86400.0);
                 if (off > t.worst) { t.worst = off; t.worst_at = fname + " " + groups[g].name; }
-                if (off > r_tol) {
+                if (miss > std::max(r_tol * groups[g].target, 1.0 / 86400.0)) {
                     ++t.groups_off;
                     if (shown++ < 6) {
                         BOOST_TEST_MESSAGE(fmt::format("  {} {}: {} on its mode from the written targets is {:.4f} of its target",
@@ -1686,6 +1690,135 @@ BOOST_AUTO_TEST_CASE(held_targets_on_the_dumps)
                                        t.groups_off, t.worst, t.worst_at.empty() ? "-" : t.worst_at, w));
         BOOST_CHECK_EQUAL(t.unbound, 0);
         BOOST_CHECK_EQUAL(t.groups_off, 0);
+    }
+}
+
+// The same systems solved twice, the IPR as given: once from the guessed
+// pressures, once from Stein's allocation and the pressures it implies. Stein's
+// balancer needs a GuideRate, hence a Schedule: OPM_NETWORK_DECK names the deck
+// the dumps came from. Also asks whether each answer is the allocation Stein's
+// balancer gives at the answer's own pressures -- the same tree, GCONPROD item 8
+// included.
+BOOST_AUTO_TEST_CASE(stein_start_on_the_dumps)
+{
+    using Sys = DeckTrees::Sys;
+    const char* dir = std::getenv("OPM_NETWORK_DUMP_PROD");
+    const char* inc = std::getenv("OPM_VFP_INCLUDE");
+    const char* deck_path = std::getenv("OPM_NETWORK_DECK");
+    if (dir == nullptr || inc == nullptr || deck_path == nullptr || !std::filesystem::is_directory(dir)) {
+        BOOST_TEST_MESSAGE("OPM_NETWORK_DUMP_PROD / OPM_VFP_INCLUDE / OPM_NETWORK_DECK not set, nothing to run");
+        return;
+    }
+    std::deque<VFPProdTable> tables;
+    VFPProdProperties<double> props;
+    const UnitSystem units{};
+    for (const char* name : {"well_vfp.ecl", "flowl_b_vfp.ecl", "flowl_c_vfp.ecl"}) {
+        const auto path = std::filesystem::path(inc) / name;
+        if (!std::filesystem::exists(path)) { continue; }
+        const auto d = Parser{}.parseFile(path.string());
+        for (const auto& kw : d.getKeywordList("VFPPROD")) {
+            tables.emplace_back(*kw, /*gaslift_opt_active=*/true, units);
+            props.addTable(tables.back());
+        }
+    }
+    const auto deck = Parser{}.parseFile(deck_path);
+    const EclipseState es(deck);
+    const Schedule schedule(deck, es);
+
+    const NetworkSolve::Parameters<double> params{1e-2, 80};
+    auto letters = [](const Sys& sys) {
+        std::string s;
+        for (int w = 0; w < sys.numWells(); ++w) { s += sys.controlLetter(w); }
+        return s;
+    };
+    struct Tally { int n = 0, converged = 0, verified = 0, stein_agrees = 0; long iterations = 0, set_changes = 0; };
+    std::map<std::string, Tally> tally;
+    int stein_failed = 0, systems = 0;
+    std::map<std::string, std::string> flips;      // system -> what the start changed
+
+    auto trace_changes = [](const std::string& trace) {
+        long k = 0; std::string prev;
+        std::istringstream in(trace);
+        for (std::string t; in >> t; ) { if (!prev.empty() && t != prev) { ++k; } prev = t; }
+        return k;
+    };
+
+    for (const auto& e : std::filesystem::directory_iterator(dir)) {
+        if (e.path().extension() != ".txt") { continue; }
+        std::ifstream in(e.path());
+        std::string head; std::getline(in, head);
+        if (head != "production") { continue; }
+        auto [dumped, guess] = NetworkSolve::readProduction<double>(in, props, units);
+        dumped.setAnalyticJacobian(true);
+        if (!dumped.usesGroupTree()) { continue; }
+        ++systems;
+        const std::string fname = e.path().filename().string();
+
+        // The start, computed once on a copy and handed to both routes.
+        auto probe = dumped;
+        GuideRate gr_start{schedule};
+        const auto start = NetworkSolve::steinStart(probe, guess, gr_start, 0);
+        if (!start.ok) { ++stein_failed; }
+
+        for (const std::string route : {"reduced", "full active set + dead rule"}) {
+            for (const bool from_stein : {false, true}) {
+                if (from_stein && !start.ok) { continue; }
+                auto sys = dumped;
+                const auto& p0 = from_stein ? start.node_pressure : guess;
+                bool conv = false; std::vector<double> p, q; long it = 0, changes = 0;
+                if (route == "reduced") {
+                    const auto r = NetworkSolve::solveReduced(sys, p0, params, true);
+                    conv = r.converged; p = r.node_pressure; q = r.well_rate; it = r.iterations; changes = r.set_changes;
+                } else {
+                    sys.setDeadWhenCannotLift(true); sys.resetDead();
+                    if (from_stein) { sys.setStartAllocation(start.well_rate); }
+                    const auto r = NetworkSolve::solve(sys, p0, params, NetworkSolve::FullStep{});
+                    conv = r.converged; p = r.node_pressure; q = r.well_rate; it = r.iterations;
+                    changes = trace_changes(r.control_trace);
+                }
+                const std::string key = route + (from_stein ? "  from Stein" : "  from guess");
+                auto& t = tally[key];
+                ++t.n;
+                if (!conv) {
+                    if (from_stein) { flips[fname] += fmt::format(" [{}: guess {} -> Stein fail]", route, "?"); }
+                    continue;
+                }
+                ++t.converged; t.iterations += it; t.set_changes += changes;
+                const bool ok = verifyAnswer(sys, p, q, letters(sys)).ok;
+                t.verified += ok;
+                // Stein's allocation at this answer's pressures.
+                auto oracle_sys = dumped;
+                GuideRate gr_oracle{schedule};
+                const auto x = oracle_sys.start(p);
+                const auto stein = NetworkSolve::steinAllocation(oracle_sys, x, gr_oracle, 0);
+                if (!stein.empty()) {
+                    double worst = 0.0;
+                    for (int w = 0; w < sys.numWells(); ++w) {
+                        worst = std::max(worst, std::abs(q[w] - stein[w]) / std::max(std::abs(stein[w]), 1.0 / 86400.0));
+                    }
+                    t.stein_agrees += (worst < 0.005);
+                    static int shown = 0;
+                    if (worst >= 0.005 && shown < 4 && route == "reduced" && !from_stein) {
+                        ++shown;
+                        std::string line;
+                        for (int w = 0; w < sys.numWells(); ++w) {
+                            line += fmt::format(" {}={:.0f}/{:.0f}({})", sys.wells()[w].name, q[w] * 86400.0,
+                                                stein[w] * 86400.0, sys.controlLetter(w));
+                        }
+                        std::string binds = sys.treeSignature();
+                        BOOST_TEST_MESSAGE(fmt::format("  {} ours/Stein oil sm3/d:{}  set {}", fname, line, binds));
+                    }
+                }
+            }
+        }
+    }
+    BOOST_TEST_MESSAGE(fmt::format("{} systems with a tree; Stein's balancer rejected {} of them", systems, stein_failed));
+    for (const auto& [key, t] : tally) {
+        BOOST_TEST_MESSAGE(fmt::format("  {:44} of {}: converged {}, verified {}, same as Stein's allocation {}, "
+                                       "iterations/solve {:.2f}, set changes/solve {:.2f}",
+                                       key, t.n, t.converged, t.verified, t.stein_agrees,
+                                       t.converged ? double(t.iterations) / t.converged : 0.0,
+                                       t.converged ? double(t.set_changes) / t.converged : 0.0));
     }
 }
 
