@@ -1822,4 +1822,166 @@ BOOST_AUTO_TEST_CASE(stein_start_on_the_dumps)
     }
 }
 
+// Diagnostic for one dumped system (OPM_NETWORK_SCAN names the file): the reduced
+// solve with the step by elimination and by differences, each thp well against
+// its tubing curve at the answer, the two reduced Jacobians and the assembled
+// one against differences of the full residual, and the reduced residual on a
+// grid over the pressures of the two table nodes (OPM_SCAN_LO/HI/N, bar) --
+// how the system with two wells at zero rate on FLOW-FIX was taken apart.
+BOOST_AUTO_TEST_CASE(scan_reduced_residual)
+{
+    const char* file = std::getenv("OPM_NETWORK_SCAN");
+    const char* inc = std::getenv("OPM_VFP_INCLUDE");
+    if (file == nullptr || inc == nullptr) {
+        BOOST_TEST_MESSAGE("OPM_NETWORK_SCAN / OPM_VFP_INCLUDE not set, nothing to scan");
+        return;
+    }
+    std::deque<VFPProdTable> tables;
+    VFPProdProperties<double> props;
+    const UnitSystem units{};
+    for (const char* name : {"well_vfp.ecl", "flowl_b_vfp.ecl", "flowl_c_vfp.ecl"}) {
+        const auto path = std::filesystem::path(inc) / name;
+        if (!std::filesystem::exists(path)) { continue; }
+        const auto d = Parser{}.parseFile(path.string());
+        for (const auto& kw : d.getKeywordList("VFPPROD")) {
+            tables.emplace_back(*kw, true, units);
+            props.addTable(tables.back());
+        }
+    }
+    std::ifstream in(file);
+    std::string head; std::getline(in, head);
+    auto [sys, guess] = NetworkSolve::readProduction<double>(in, props, units);
+    sys.setAnalyticJacobian(true);
+    // What solveReduced sets on entry.
+    sys.flatTargetAsTree(); sys.setGroupActiveSet(true); sys.setTreeFrozen(false);
+    sys.setExactPotential(true); sys.setDeadWhenCannotLift(true);
+    sys.setCapacityFractions(DeckTrees::Sys::CapacityFractions::Ipr);
+    sys.resetDead(); sys.resetCliffRates();
+    {
+        // The two ways the reduced step is taken, on this system as dumped.
+        const NetworkSolve::Parameters<double> params{1e-2, 80};
+        for (const bool eliminate : {true, false}) {
+            auto s2 = sys;
+            const auto r = NetworkSolve::solveReduced(s2, guess, params, eliminate);
+            std::string ps;
+            for (std::size_t i = 1; i < r.node_pressure.size(); ++i) { ps += fmt::format(" {:.3f}", r.node_pressure[i] / 1e5); }
+            BOOST_TEST_MESSAGE(fmt::format("solveReduced eliminate={}: converged {} in {} it, {} stalls, residual {:.3g}, set {}, p{}",
+                                           eliminate, r.converged, r.iterations, r.stalls, r.residual, s2.treeSignature(), ps));
+            // Each thp well against its tubing curve at the answer, as the judge measures it.
+            for (int w = 0; w < s2.numWells(); ++w) {
+                const auto& well = s2.wells()[w];
+                if (s2.controlLetter(w) != 'T' || well.vfp_table <= 0 || !(well.ipr_b[1] < 0.0)) { continue; }
+                const double qo = r.well_rate[w];
+                const double bhp = (qo - well.ipr_a[1]) / well.ipr_b[1];
+                std::array<double, 3> q{};
+                for (int ph = 0; ph < 3; ++ph) { q[ph] = std::max(well.ipr_a[ph] + well.ipr_b[ph] * bhp, 0.0); }
+                const double need = s2.tableBhp(well.vfp_table, r.node_pressure[well.node], q, well.alq) - well.vfp_dp;
+                const double pot = s2.thpPotential(well, r.node_pressure[well.node]);
+                BOOST_TEST_MESSAGE(fmt::format("    {} q_oil {:.1f} sm3/d, bhp {:.3f} bar, tubing needs {:.3f} bar (off {:+.3f}), crossing at this node pressure {:.1f} sm3/d",
+                                               well.name, qo * 86400.0, bhp / 1e5, need / 1e5, (bhp - need) / 1e5, pot * 86400.0));
+            }
+        }
+    }
+    {
+        // The two reduced Jacobians at a point: elimination from the assembled
+        // full system, and differences of the reduced residual.
+        const double pa = std::getenv("OPM_SCAN_JA") ? std::atof(std::getenv("OPM_SCAN_JA")) : 79.1;
+        const double pb = std::getenv("OPM_SCAN_JB") ? std::atof(std::getenv("OPM_SCAN_JB")) : 79.08;
+        auto s2 = sys;
+        std::vector<double> p(s2.numNodes() + 1, s2.terminalPressure());
+        std::vector<int> tn;
+        for (int n = 1; n <= s2.numNodes(); ++n) { if (s2.nodes()[n].vfp_table != NetworkSolve::NoTable) { tn.push_back(n); } }
+        for (int n = 1; n <= s2.numNodes(); ++n) {
+            const int up = s2.nodes()[n].parent;
+            p[n] = (tn.size() == 2 && n == tn[0]) ? pa * 1e5 : (tn.size() == 2 && n == tn[1]) ? pb * 1e5 : (up <= 0 ? s2.terminalPressure() : p[up]);
+        }
+        const auto r0 = s2.reducedResidual(p);
+        const auto S = NetworkSolve::reducedJacobianByElimination(s2);
+        const int nn = s2.numNodes();
+        std::string el, fd;
+        const double h = 1e-3 * 1e5;
+        for (int i = 0; i < nn; ++i) {
+            el += "\n   elim:"; fd += "\n   diff:";
+            for (int j = 0; j < nn; ++j) {
+                auto pj = p; pj[j + 1] += h;
+                auto s3 = sys;
+                s3.flatTargetAsTree(); s3.setGroupActiveSet(true); s3.setTreeFrozen(false);
+                s3.setExactPotential(true); s3.setDeadWhenCannotLift(true);
+                s3.setCapacityFractions(DeckTrees::Sys::CapacityFractions::Ipr);
+                s3.resetDead(); s3.resetCliffRates();
+                (void)s3.reducedResidual(p);
+                const auto rj = s3.reducedResidual(pj);
+                el += fmt::format(" {:+9.3g}", S(i, j));
+                fd += fmt::format(" {:+9.3g}", (rj[i] - r0[i]) / h);
+            }
+        }
+        // The Schur complement again, from differences of the full residual at
+        // the same state and set, so a wrong assembled derivative and a full
+        // system that linearises differently can be told apart.
+        {
+            s2.setTreeFrozen(true);
+            const auto xs = s2.reducedState();
+            const auto R0 = s2.residual(xs);
+            const int nf = s2.size();
+            NetworkSolve::DenseMatrix<double> Jf(nf);
+            const auto Ja = s2.jacobian(xs);
+            double worst = 0.0; int wi = -1, wj = -1;
+            for (int j = 0; j < nf; ++j) {
+                auto xj = xs;
+                const double hj = std::max(std::abs(xs[j]) * 1e-7, j < nn ? 1.0 : 1e-12);
+                xj[j] += hj;
+                const auto Rj = s2.residual(xj);
+                for (int i = 0; i < nf; ++i) {
+                    Jf(i, j) = (Rj[i] - R0[i]) / hj;
+                    const double d = std::abs(Jf(i, j) - Ja(i, j));
+                    const double sc = std::max({std::abs(Jf(i, j)), std::abs(Ja(i, j)), 1e-300});
+                    if (d / sc > 1e-2 && d > worst) { worst = d; wi = i; wj = j; }
+                }
+            }
+            el += fmt::format("\n   largest assembled-vs-differenced mismatch: row {} col {}: assembled {:+.4g} differenced {:+.4g}   (n={} nodes, size {})",
+                              wi, wj, wi >= 0 ? Ja(wi, wj) : 0.0, wi >= 0 ? Jf(wi, wj) : 0.0, nn, nf);
+            int shown = 0;
+            for (int i = 0; i < nf && shown < 12; ++i) {
+                for (int j = 0; j < nf && shown < 12; ++j) {
+                    const double d = std::abs(Jf(i, j) - Ja(i, j));
+                    const double sc = std::max({std::abs(Jf(i, j)), std::abs(Ja(i, j)), 1e-300});
+                    if (d / sc > 5e-2 && sc > 1e-12) {
+                        el += fmt::format("\n     J({},{}) assembled {:+.4g} differenced {:+.4g}", i, j, Ja(i, j), Jf(i, j));
+                        ++shown;
+                    }
+                }
+            }
+            s2.setTreeFrozen(false);
+        }
+        BOOST_TEST_MESSAGE(fmt::format("Jacobians at {} / {} bar, set {}, rows/cols = nodes 1..{}{}{}", pa, pb, s2.treeSignature(), nn, el, fd));
+    }
+    std::vector<int> free;
+    for (int n = 1; n <= sys.numNodes(); ++n) { if (sys.nodes()[n].vfp_table != NetworkSolve::NoTable) { free.push_back(n); } }
+    if (free.size() != 2) { BOOST_TEST_MESSAGE("needs exactly two table nodes"); return; }
+    const double lo = std::getenv("OPM_SCAN_LO") ? std::atof(std::getenv("OPM_SCAN_LO")) : 70.0;
+    const double hi = std::getenv("OPM_SCAN_HI") ? std::atof(std::getenv("OPM_SCAN_HI")) : 110.0;
+    const int steps = std::getenv("OPM_SCAN_N") ? std::atoi(std::getenv("OPM_SCAN_N")) : 20;
+    // Nodes without a table follow their parent; set every node from the two.
+    auto pressures = [&](double pa, double pb) {
+        std::vector<double> p(sys.numNodes() + 1, sys.terminalPressure());
+        for (int n = 1; n <= sys.numNodes(); ++n) {
+            const int up = sys.nodes()[n].parent;
+            p[n] = (n == free[0]) ? pa : (n == free[1]) ? pb : (up <= 0 ? sys.terminalPressure() : p[up]);
+        }
+        return p;
+    };
+    BOOST_TEST_MESSAGE(fmt::format("rows: p({}) bar, columns: p({}) bar; cell: r at the first node / r at the second (bar), and the well set; r = p - p_computed", sys.nodes()[free[0]].name, sys.nodes()[free[1]].name));
+    for (int i = 0; i <= steps; ++i) {
+        const double pa = lo + (hi - lo) * i / steps;
+        std::string row = fmt::format("{:6.1f} |", pa);
+        for (int j = 0; j <= steps; ++j) {
+            const double pb = lo + (hi - lo) * j / steps;
+            const auto r = sys.reducedResidual(pressures(pa * 1e5, pb * 1e5));
+            std::string set = sys.treeSignature();
+            row += fmt::format(" {:+6.2f}/{:+6.2f}{}", r[free[0] - 1], r[free[1] - 1], set.substr(set.find(':') + 1));
+        }
+        BOOST_TEST_MESSAGE(row);
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()
