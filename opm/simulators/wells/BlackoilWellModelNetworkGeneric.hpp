@@ -233,6 +233,11 @@ public:
     /// Per local well, the hydrostatic correction its tubing table needs;
     /// computed on the typed side, where the well's density lives.
     void setWellVfpDp(const std::string& well, const Scalar dp) { well_vfp_dp_[well] = dp; }
+
+    /// The well's implicit IPR from the last time it had any rate, which is
+    /// what a well at zero rate is handed instead of its singular one.
+    std::map<std::string, std::pair<std::vector<Scalar>, std::vector<Scalar>>>& lastFlowingIpr()
+    { return last_flowing_ipr_; }
     bool networkAutochoke() const { return network_autochoke_; }
     /// Answer the gas lift optimiser's trials from the network instead of
     /// from a well solve at a fixed thp.
@@ -383,6 +388,7 @@ protected:
     /// Per node: branch rates (water, oil, gas) from the last owned solve,
     /// standing in for what computePressures would have reported.
     mutable std::map<std::string, std::array<Scalar, 3>> owned_branch_rates_;
+    std::map<std::string, std::pair<std::vector<Scalar>, std::vector<Scalar>>> last_flowing_ipr_;
     /// Wells the complementarity solve shut earlier in this report step. A
     /// dying well the network shuts, the well model stops, and the pressure
     /// it leaves behind re-opens -- 581 stops on one well in one run.

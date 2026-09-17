@@ -385,6 +385,23 @@ public:
                                           [[maybe_unused]] WellStateType& well_state) const
     { return false; }
 
+    /// The connection-based IPR (updateIPR) written into the well state's
+    /// implicit IPR. For a producer with every rate zero, where linearising
+    /// the well equations is singular -- the mixture is undefined -- and the
+    /// implicit slope comes out tens of millions of times too steep.
+    void setImplicitIprFromConnections(const Simulator& simulator,
+                                       WellStateType& well_state,
+                                       DeferredLogger& deferred_logger) const
+    {
+        this->updateIPR(simulator, deferred_logger);
+        auto& ws = well_state.well(this->index_of_well_);
+        for (int comp_idx = 0; comp_idx < this->num_conservation_quantities_; ++comp_idx) {
+            const int idx = FluidSystem::activeCompToActivePhaseIdx(comp_idx);
+            ws.implicit_ipr_a[idx] = this->ipr_a_[comp_idx];
+            ws.implicit_ipr_b[idx] = this->ipr_b_[comp_idx];
+        }
+    }
+
     static constexpr int numResDofs = Indices::numEq;
     static constexpr int numWellDofs = numResDofs + 1;  // NB will fail for for thermal for now
     using BMatrix = Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, numWellDofs, numResDofs>>;

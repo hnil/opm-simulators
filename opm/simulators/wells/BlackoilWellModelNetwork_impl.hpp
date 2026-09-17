@@ -181,6 +181,43 @@ update(const bool mandatory_network_balance,
                     well->updateIPRImplicit(well_model_.simulator(),
                                             well_model_.groupStateHelper(),
                                             well_model_.wellState());
+                    // At zero rate in every phase that linearisation can be
+                    // singular (MultisegmentWell says as much and leaves the
+                    // fallback commented out): on FLOW-FIX its slope came out
+                    // 5e7 times too steep and no route could solve the network.
+                    // Only a degenerate one is replaced -- steeper than the
+                    // connections allow, since the wellbore can only flatten
+                    // it -- by the well's IPR from the last time it flowed, or
+                    // the connections' where it never has. Replacing every
+                    // zero-rate IPR cost 30 % more Newton on FLOW-EDIT, whose
+                    // MANI-A wells sit at zero for 92 days with usable ones.
+                    if (well->isProducer()) {
+                        auto& ws = well_model_.wellState().well(well->indexOfWell());
+                        const bool zero = std::all_of(ws.surface_rates.begin(), ws.surface_rates.end(),
+                                                      [](const Scalar q) { return q == Scalar{0}; });
+                        auto& cache = this->lastFlowingIpr();
+                        if (!zero) {
+                            cache[well->name()] = {ws.implicit_ipr_a, ws.implicit_ipr_b};
+                        } else {
+                            const auto implicit_a = ws.implicit_ipr_a, implicit_b = ws.implicit_ipr_b;
+                            well->setImplicitIprFromConnections(well_model_.simulator(),
+                                                                well_model_.wellState(),
+                                                                deferred_logger);
+                            auto steepest = [](const std::vector<Scalar>& b) {
+                                Scalar m = 0;
+                                for (const auto v : b) { m = std::max(m, std::abs(v)); }
+                                return m;
+                            };
+                            const bool degenerate = steepest(implicit_b) > Scalar{10} * steepest(ws.implicit_ipr_b);
+                            if (!degenerate) {
+                                ws.implicit_ipr_a = implicit_a;
+                                ws.implicit_ipr_b = implicit_b;
+                            } else if (const auto it = cache.find(well->name()); it != cache.end()) {
+                                ws.implicit_ipr_a = it->second.first;
+                                ws.implicit_ipr_b = it->second.second;
+                            }
+                        }
+                    }
                     // A well at zero rate has just been linearised wherever
                     // its state sits, which for a well that cannot lift is
                     // not where that is decided. Re-take the tangent there.
