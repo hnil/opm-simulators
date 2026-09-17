@@ -224,6 +224,7 @@ public:
     /// flattened target for the wells on group control.
     void useNetworkGroupTree(const bool on) { network_group_tree_ = on; }
     void useNetworkOwnsGroupControl(const bool on) { network_owns_group_control_ = on; }
+    void useNetworkSteinStart(const bool on) { network_stein_start_ = on; }
     bool networkOwnsGroupControl() const { return network_owns_group_control_; }
     void useNetworkGroupAllocation(const bool on) { network_group_allocation_ = on; }
     void useNetworkApplyShut(const bool on) { network_apply_shut_ = on; }
@@ -355,6 +356,7 @@ protected:
     bool network_group_control_ = false;
     bool network_group_tree_ = false;
     bool network_owns_group_control_ = false;
+    bool network_stein_start_ = false;
     bool network_group_allocation_ = false;
     bool network_apply_shut_ = false;
     bool network_autochoke_ = false;

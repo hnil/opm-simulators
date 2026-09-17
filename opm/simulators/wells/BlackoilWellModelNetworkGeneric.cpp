@@ -28,6 +28,7 @@
 #include <opm/input/eclipse/Schedule/VFPProdTable.hpp>
 #include <opm/simulators/wells/network/NetworkInjectionSystem.hpp>
 #include <opm/simulators/wells/network/NetworkProductionSystem.hpp>
+#include <opm/simulators/wells/network/NetworkSteinStart.hpp>
 #include <opm/simulators/wells/network/NetworkReducedSolve.hpp>
 #include <opm/simulators/wells/network/NetworkTubingExtension.hpp>
 
@@ -1151,6 +1152,21 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
     // the node pressures alone.
     const bool any_choke = std::any_of(system.nodes().begin(), system.nodes().end(),
                                        [&](const auto& n) { return system.isChoke(static_cast<int>(&n - system.nodes().data())); });
+    if (this->network_stein_start_ && system.usesGroupTree()) {
+        // The IPR as given: Stein's allocation at the guessed pressures, and
+        // the pressures those rates imply. The full routes also open the wells
+        // at those rates; the reduced route takes only the pressures.
+        GuideRate guide_rate{schedule};
+        const auto st = NetworkSolve::steinStart(system, guess, guide_rate, reportStepIdx);
+        if (st.ok) {
+            guess = st.node_pressure;
+            if (!reduced_solver_) {
+                system.setStartAllocation(st.well_rate);
+            }
+        }
+        OpmLog::debug(fmt::format("Network: Stein start under {} at report step {}: {}",
+                                  root.name(), reportStepIdx, st.ok ? "used" : "balancer rejected the tree"));
+    }
     const auto result = [&]() -> NetworkSolve::Result<Scalar> {
         if (!reduced_solver_ || any_choke) {
             return NetworkSolve::solve(system, guess, kNetworkSolveParams<Scalar>, NetworkSolve::FullStep{});

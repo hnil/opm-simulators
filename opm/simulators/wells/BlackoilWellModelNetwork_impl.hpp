@@ -149,6 +149,7 @@ update(const bool mandatory_network_balance,
         this->useAnalyticJacobian(well_model_.param().network_analytic_jacobian_);
         this->useNetworkGroupControl(well_model_.param().network_group_control_);
         this->useNetworkGroupTree(well_model_.param().network_group_tree_);
+        this->useNetworkSteinStart(well_model_.param().network_stein_start_);
         if (well_model_.param().network_owns_group_control_) {
             if (solver_mode == "fixedpoint") {
                 OPM_DEFLOG_THROW(std::runtime_error,

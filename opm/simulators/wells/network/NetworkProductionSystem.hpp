@@ -564,6 +564,45 @@ public:
     /// The weight the tree splits by, once the adapter knows the deck's.
     void setWellGuide(const int w, const Scalar g) { wells_[w].guide = g; }
 
+    /// Oil rates a start is to open each well at, instead of its own allowance
+    /// at the guessed pressure -- an allocation from outside, e.g. Stein's
+    /// balancer. Empty clears it.
+    void setStartAllocation(std::vector<Scalar> q_oil) { start_oil_ = std::move(q_oil); }
+
+    /// Node pressures that given well oil rates imply: each well's other phases
+    /// where its inflow puts them at the bhp that rate needs, summed up the
+    /// branches, and the tables applied from the terminal down. Index 0 is the
+    /// terminal, as for every pressure vector here.
+    State pressuresFromWellRates(const std::vector<Scalar>& q_oil) const
+    {
+        std::vector<std::array<Scalar, NP>> Q(numNodes() + 1, std::array<Scalar, NP>{});
+        for (int n = 1; n <= numNodes(); ++n) { Q[n] = node_source_[n]; }
+        for (int w = 0; w < numWells(); ++w) {
+            const auto& well = wells_[w];
+            std::array<Scalar, NP> q{};
+            if (!well.shut && well.ipr_b[1] < Scalar{0}) {
+                const Scalar bhp = (q_oil[w] - well.ipr_a[1]) / well.ipr_b[1];
+                for (int ph = 0; ph < NP; ++ph) { q[ph] = std::max(ipr(well, ph, bhp), Scalar{0}); }
+            }
+            for (int ph = 0; ph < NP; ++ph) {
+                Q[well.node][ph] += well.efficiency * (q[ph] + (ph == 2 ? well.lift_gas : Scalar{0}));
+            }
+        }
+        for (int n = numNodes(); n >= 1; --n) {
+            const int up = nodes_[n].parent;
+            if (up >= 1) {
+                for (int ph = 0; ph < NP; ++ph) { Q[up][ph] += nodes_[n].efficiency * Q[n][ph]; }
+            }
+        }
+        State p(numNodes() + 1, terminal_pressure_);
+        for (int n = 1; n <= numNodes(); ++n) {      // parents are added before their children
+            const auto& node = nodes_[n];
+            const Scalar upstream = (node.parent <= 0) ? terminal_pressure_ : p[node.parent];
+            p[n] = hasTable(node) ? tableBhp(node.vfp_table, upstream, Q[n], branch_alq_[n]) : upstream;
+        }
+        return p;
+    }
+
     /// What an answer asks of each well, in the terms the well model takes: a
     /// held well produces its share on the mode of the group whose own target
     /// binds above it; every other well keeps the control the walk left it on.
@@ -2054,6 +2093,8 @@ public:
             }
             if (well.pinned) {
                 q_oil = well.oil_rate_limit;
+            } else if (!start_oil_.empty()) {
+                q_oil = start_oil_[w];
             } else if (complementarity_ && well.q_start > Scalar{0}) {
                 q_oil = well.q_start;
             } else if (hasTubing(well)) {
@@ -2628,6 +2669,7 @@ private:
     Scalar terminal_pressure_ = 0.0;
     Scalar group_target_ = 0.0;
     bool group_tree_ = false;
+    std::vector<Scalar> start_oil_;    // setStartAllocation
     bool group_active_set_ = false;
     bool tree_frozen_ = false;
     CapacityFractions capacity_fractions_ = CapacityFractions::Fixed;

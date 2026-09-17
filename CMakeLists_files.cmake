@@ -1327,6 +1327,7 @@ list (APPEND PUBLIC_HEADER_FILES
   opm/simulators/wells/network/NetworkSolve.hpp
   opm/simulators/wells/network/NetworkLegacySolve.hpp
   opm/simulators/wells/network/NetworkReducedSolve.hpp
+  opm/simulators/wells/network/NetworkSteinStart.hpp
   opm/simulators/wells/network/NetworkTubingExtension.hpp
   opm/simulators/wells/network/NetworkTreeSolve.hpp
   opm/simulators/wells/rescoup/RescoupProxy.hpp

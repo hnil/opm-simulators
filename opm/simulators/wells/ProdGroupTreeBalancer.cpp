@@ -2316,6 +2316,9 @@ template bool runGroupTreeBalancer<double, BlackOilDefaultFluidSystemIndices>(
 
 #ifdef FLOW_INSTANTIATE_FLOAT
 
+template bool balanceTreeForTesting<float>(
+    Tree<float>&, const GuideRate&, float, DeferredLogger&);
+
 template bool runGroupTreeBalancer<float, BlackOilDefaultFluidSystemIndices>(
     BlackoilWellModelGeneric<float, BlackOilDefaultFluidSystemIndices>&,
     const SummaryState&, int, float,
