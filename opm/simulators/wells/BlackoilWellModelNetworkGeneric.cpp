@@ -698,8 +698,9 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
             if (grp.isProductionGroup()) {
                 const auto ctl = grp.productionControls(summary_state);
                 using C = Group::ProductionCMode;
-                if ((ctl.cmode == C::ORAT && ctl.oil_target > 0) || (ctl.cmode == C::LRAT && ctl.liquid_target > 0)
-                    || (ctl.cmode == C::GRAT && ctl.gas_target > 0) || (ctl.cmode == C::WRAT && ctl.water_target > 0)) {
+                const bool rate = ctl.cmode == C::ORAT || ctl.cmode == C::LRAT
+                               || ctl.cmode == C::GRAT || ctl.cmode == C::WRAT;
+                if (rate && grp.has_control(ctl.cmode)) {
                     return true;
                 }
             }
@@ -1037,6 +1038,13 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
                 else if (ctl.cmode == C::LRAT) { node.mode = Sys::Mode::Liquid; node.target = ctl.liquid_target; }
                 else if (ctl.cmode == C::GRAT) { node.mode = Sys::Mode::Gas;    node.target = ctl.gas_target; }
                 else if (ctl.cmode == C::WRAT) { node.mode = Sys::Mode::Water;  node.target = ctl.water_target; }
+                // The system reads a zero target as none. An explicit zero in
+                // the deck means produce nothing, which a vanishing positive
+                // target says; the slacks are scaled absolutely, so it is safe.
+                if (!(node.target > Scalar{0}) && grp.has_control(ctl.cmode)
+                    && (ctl.cmode == C::ORAT || ctl.cmode == C::LRAT || ctl.cmode == C::GRAT || ctl.cmode == C::WRAT)) {
+                    node.target = Scalar{1e-12};
+                }
             } else if (grp.isProductionGroup()) {
                 OpmLog::debug(fmt::format("Network: group {} has producers outside the tree under {}; "
                                           "its target is not applied in the network solve", g, root.name()));
@@ -1047,6 +1055,37 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
             for (const auto& child : grp.groups()) { addTree(child, me); }
         };
         addTree("FIELD", -1);
+        // A satellite group (GSATPROD) produces into its parents without wells
+        // the tree could place, so every target above it is reduced by what it
+        // reports -- the reduction the group logic applies downstream, and
+        // which an owned tree no longer gets.
+        {
+            const auto& gs = well_model_.groupState();
+            const auto& groups = system.groups();
+            for (int g = 0; g < system.numGroups(); ++g) {
+                if (!schedule.getGroup(groups[g].name, reportStepIdx).hasSatelliteProduction()
+                    || !gs.has_production_rates(groups[g].name)) {
+                    continue;
+                }
+                const auto& r = gs.production_rates(groups[g].name);
+                std::array<Scalar, Sys::NP> q{};
+                for (int ph = 0; ph < Sys::NP; ++ph) {
+                    q[ph] = (pos[ph] >= 0 && pos[ph] < static_cast<int>(r.size())) ? r[pos[ph]] : Scalar{0};
+                }
+                Scalar eff = groups[g].efficiency;
+                for (int a = groups[g].parent; a >= 0; a = groups[a].parent) {
+                    if (groups[a].target > Scalar{0}) {
+                        const auto c = Sys::modeWeights(groups[a].mode, groups[a].resv_coeff);
+                        Scalar on = 0;
+                        for (int ph = 0; ph < Sys::NP; ++ph) { on += c[ph] * q[ph]; }
+                        const Scalar reduced = std::max(groups[a].target - eff * on, Scalar{1e-12});
+                        tree_inputs.insert(tree_inputs.end(), {reduced, static_cast<Scalar>(a)});
+                        system.setGroupLimit(a, groups[a].mode, reduced);
+                    }
+                    eff *= groups[a].efficiency;
+                }
+            }
+        }
         for (const auto& [w, name] : tree_wells) {
             system.setWellGroup(w, gidx.at(schedule.getWell(name, reportStepIdx).groupName()));
         }
