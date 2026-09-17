@@ -786,6 +786,7 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
     const bool use_group_target = this->network_group_control_;
     std::map<int, int> pinned_cmode;   // why the pinned wells were pinned
     std::vector<std::pair<int, std::string>> tree_wells;   // index in the system, name
+    std::vector<Scalar> tree_deck_guide;                   // per tree_wells entry; 0 when none
     // Does anything already give the solve something to place? If not, the
     // tree would be declined, and a well on thp control is then worth freeing:
     // its thp is the node pressure, so the network can place it after all.
@@ -868,6 +869,7 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
             w.oil_rate_limit = candidate.oil_rate_limit;
             w.guide = current;
             tree_wells.emplace_back(static_cast<int>(system.numWells()), candidate.name);
+            tree_deck_guide.push_back(e[15]);
         } else if (on_group && use_group_target) {
             // The group has set the total; hand the network that and let it
             // place the split, bounded by each well's own limit.
@@ -900,6 +902,7 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
             if (!tree_wells.empty()
                 && tree_wells.back().first == static_cast<int>(system.numWells())) {
                 tree_wells.pop_back();
+                tree_deck_guide.pop_back();
             }
             continue;                 // producing nothing; not part of the network
         }
@@ -923,13 +926,13 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
         // handing some siblings one and some the other makes the ratio the
         // split is built from meaningless -- it is all of them or none. With
         // none, the guide stays the current rate, which is what it always was.
-        const bool deck_guides = std::all_of(tree_wells.begin(), tree_wells.end(),
-                                             [&](const auto& tw) {
-                                                 return shared[tw.first * kEntries + 15] > Scalar{0};
-                                             });
+        // tree_wells holds system indices and `shared` is by candidate, so the
+        // guide is carried alongside each entry rather than looked up again.
+        const bool deck_guides = std::all_of(tree_deck_guide.begin(), tree_deck_guide.end(),
+                                             [](const Scalar g) { return g > Scalar{0}; });
         if (deck_guides) {
-            for (const auto& [w, name] : tree_wells) {
-                system.setWellGuide(w, shared[w * kEntries + 15]);
+            for (std::size_t k = 0; k < tree_wells.size(); ++k) {
+                system.setWellGuide(tree_wells[k].first, tree_deck_guide[k]);
             }
         }
         OpmLog::debug(fmt::format("Network: the tree under {} splits by {} guide rates",
