@@ -1236,7 +1236,10 @@ tightenModeAndTarget(const ProdGroupTreeNode<Scalar>& node,
     const auto& rates = node.rates;
     const Scalar rateForModeVal = -projectOnMode(rates, mode, node.resvCoeff);
     if (rateForModeVal <= Scalar(0)) {
-        return {mode, targetRate};
+        // No rate to scale, so only the mode's own limit can be checked; without
+        // this a zero-rate group handed more than its limit takes all of it.
+        const auto it = node.Limits.find(mode);
+        return {mode, it != node.Limits.end() ? std::min(targetRate, it->second) : targetRate};
     }
 
     // Scale rates to target and find the most violated limit.

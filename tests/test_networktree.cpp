@@ -930,9 +930,11 @@ BOOST_AUTO_TEST_CASE(a_nested_target_under_a_transparent_group)
                                                                 g5_mine, g5_stein));
     BOOST_CHECK_CLOSE(g5_mine, 500.0, 0.5);
     BOOST_CHECK_CLOSE(rr.well_rate[0] * 86400.0, 2000.0, 0.5);
-    // The balancer, as vendored, hands G5 2000: a group's own limit under a
-    // group without a guide rate is walked through. Recorded, not enforced.
-    BOOST_WARN_LE(g5_stein, 500.0 * 1.005);
+    // The balancer used to hand G5 2000: with no current rate on G5 the
+    // tightening step skipped its own limit, and the mode check only fires
+    // on a different mode's limit.
+    BOOST_CHECK_CLOSE(g5_stein, 500.0, 0.5);
+    BOOST_CHECK_CLOSE(stein[0], 2000.0, 0.5);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
