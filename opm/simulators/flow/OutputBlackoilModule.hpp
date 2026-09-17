@@ -1331,8 +1331,11 @@ private:
                         const double      pv,
                         const IntensiveQuantities& intQuants)
     {
-        const auto& materialLawManager = this->simulator_.problem().materialLawManager();
-        const auto& scaledDrainageInfo = materialLawManager.oilWaterScaledEpsInfoDrainage(globalDofIdx);
+        // eps info is per grid cell; an auxiliary DOF reads its saturation proxy's
+        const auto& problem = this->simulator_.problem();
+        const auto& materialLawManager = problem.materialLawManager();
+        const auto& scaledDrainageInfo = materialLawManager
+            .oilWaterScaledEpsInfoDrainage(problem.saturationFunctionCell(globalDofIdx));
 
         const auto& fs = intQuants.fluidState();
         Scalar sgcr = scaledDrainageInfo.Sgcr;
