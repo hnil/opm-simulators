@@ -185,6 +185,10 @@ public:
         // region - before anything looks at them.  Identity without LGRs.
         this->mapRegionsOntoLeaf_();
 
+        // Before createLocalRegion_ zeroes the non-interior cells: a flow
+        // across the process boundary needs the region of both cells.
+        this->setupInterRegionFlowsOnLeaf_(simulator_.gridView().size(0));
+
         for (auto& region_pair : this->regions_) {
             this->createLocalRegion_(region_pair.second);
         }
