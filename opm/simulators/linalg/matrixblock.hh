@@ -195,15 +195,31 @@ static inline K invertMatrix4(const Matrix<K>& matrix, Matrix<K>& inverse)
         // when its determinant is commensurate with its scale, and keep
         // rejecting exactly what was rejected before otherwise, so nothing that
         // previously inverted changes behaviour.
-        K scale = 0.0;
+        // Scale per row, not by the block maximum: rows carry different units (an
+        // energy row is ~1e5 times a mass row), so a single scale reads a water-filled
+        // fracture cell's small oil and gas rows as singularity.  det/prod(row max) is
+        // the determinant of the row-equilibrated block.
+        // Columns likewise (pressure against saturations): equilibrate the columns of
+        // the row-scaled block too.
+        K rowMax[4] = {0.0, 0.0, 0.0, 0.0};
+        K rowScaleProduct = 1.0;
         for (int i = 0; i < 4; ++i) {
             for (int j = 0; j < 4; ++j) {
-                scale = std::max(scale, std::abs(matrix[i][j]));
+                rowMax[i] = std::max(rowMax[i], std::abs(matrix[i][j]));
             }
+            rowScaleProduct *= rowMax[i];
         }
+        K colScaleProduct = 1.0;
+        for (int j = 0; j < 4 && rowScaleProduct != 0.0; ++j) {
+            K colMax = 0.0;
+            for (int i = 0; i < 4; ++i) {
+                colMax = std::max(colMax, std::abs(matrix[i][j]) / rowMax[i]);
+            }
+            colScaleProduct *= colMax;
+        }
+        const K scaleProduct = rowScaleProduct * colScaleProduct;
 
-        const K scale4 = (scale * scale) * (scale * scale);
-        if (!(std::abs(det) >= 1e-14 * scale4) || scale4 == 0.0) {
+        if (!(std::abs(det) >= 1e-14 * scaleProduct) || scaleProduct == 0.0) {
             inverse = std::numeric_limits<K>::quiet_NaN();
             throw NumericalProblem("Singular matrix");
         }

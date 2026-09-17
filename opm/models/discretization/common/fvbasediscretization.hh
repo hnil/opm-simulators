@@ -543,6 +543,8 @@ public:
         // sum up the volumes of the grid partitions
         gridTotalVolume_ = gridView_.comm().sum(gridTotalVolume_);
 
+        dofTotalVolumeOld_ = dofTotalVolume_;
+
         linearizer_->init(simulator_);
         for (unsigned threadId = 0; threadId < ThreadManager::maxThreads(); ++threadId) {
             localLinearizer_[threadId].init(simulator_);
@@ -1253,6 +1255,20 @@ public:
     { return dofTotalVolume_[globalIdx]; }
 
     /*!
+     * \brief The volume of a degree of freedom at the start of the time step.
+     *
+     * Differs from dofTotalVolume() only for auxiliary DOFs whose volume changed
+     * during the step; the storage term weighs the old mass with it.
+     */
+    Scalar dofTotalVolumeOld(unsigned globalIdx) const
+    { return dofTotalVolumeOld_[globalIdx]; }
+
+    //! Set the start-of-step volume, e.g. for an auxiliary DOF created mid-run whose
+    //! start-of-step state was set equal to its current one.
+    void setDofTotalVolumeOld(unsigned globalIdx, Scalar volume)
+    { dofTotalVolumeOld_[globalIdx] = volume; }
+
+    /*!
      * \brief Re-read the volumes of the auxiliary degrees of freedom from their modules.
      *
      * A module whose degrees of freedom change size during the run -- a fracture whose
@@ -1557,6 +1573,7 @@ public:
 
         // make the current solution the previous one.
         solution(/*timeIdx=*/1) = solution(/*timeIdx=*/0);
+        dofTotalVolumeOld_ = dofTotalVolume_;
 
         // shift the storage cache by one position in the history
         asImp_().shiftStorageCache(/*numSlots=*/1);
@@ -2156,6 +2173,7 @@ protected:
 
     Scalar gridTotalVolume_;
     std::vector<Scalar> dofTotalVolume_;
+    std::vector<Scalar> dofTotalVolumeOld_;
     std::vector<bool> isLocalDof_;
 
     mutable std::array<GlobalEqVector, historySize> storageCache_;

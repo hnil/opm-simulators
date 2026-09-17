@@ -44,6 +44,10 @@
 #include <numbers>
 
 #include <fmt/format.h>
+#include <sstream>
+#include <iostream>
+#include <iomanip>
+#include <cstdlib>
 
 namespace Opm
 {
@@ -2543,6 +2547,40 @@ namespace Opm
             auto report = getWellConvergence(groupStateHelper, Base::B_avg_, relax_convergence);
 
             converged = report.converged();
+            // Opt-in trace (OPM_WELL_TRACE=<well name>): inner-iteration residuals,
+            // primary variables and, on the first/last iteration, every perforation.
+            {
+                static const char* const traceWell = std::getenv("OPM_WELL_TRACE");
+                if ((traceWell != nullptr) && (this->name() == traceWell)) {
+                    const auto& ws = well_state.well(this->index_of_well_);
+                    std::ostringstream os;
+                    os << std::setprecision(6) << "WELLTRACE-IT " << this->name() << " it=" << it
+                       << " conv=" << converged << " bhp=" << ws.bhp / 1e5 << " res=[";
+                    for (const auto& blk : this->linSys_.residual()) for (const auto& v : blk) os << v << ' ';
+                    os << "] pv=[";
+                    for (int i = 0; i < this->primary_variables_.numWellEq(); ++i) os << this->primary_variables_.value(i) << ' ';
+                    os << "] fails=";
+                    for (const auto& f : report.wellFailures()) os << static_cast<int>(f.type()) << ':' << f.phase() << ' ';
+                    std::cout << os.str() << std::endl;
+                    if (it == 0 || it + 1 >= max_iter || converged) {
+                        const auto nperf = ws.perf_data.cell_index.size();
+                        const auto np = (nperf > 0) ? ws.perf_data.phase_rates.size() / nperf : 0;
+                        const auto nGrid = simulator.model().numGridDof();
+                        for (std::size_t perf = 0; perf < nperf; ++perf) {
+                            const int cell = ws.perf_data.cell_index[perf];
+                            const auto& fs = simulator.model().intensiveQuantities(cell, 0).fluidState();
+                            std::ostringstream ps;
+                            ps << std::setprecision(6) << "WELLTRACE-PERF " << this->name() << " it=" << it << " perf=" << perf
+                               << " cell=" << cell << (static_cast<unsigned>(cell) >= nGrid ? " aux" : " grid")
+                               << " pcell=" << getValue(fs.pressure(FluidSystem::waterPhaseIdx)) / 1e5
+                               << " pperf=" << ws.perf_data.pressure[perf] / 1e5 << " rates=[";
+                            for (std::size_t p = 0; p < np; ++p) ps << ws.perf_data.phase_rates[perf * np + p] * 86400.0 << ' ';
+                            ps << "] sw=" << getValue(fs.saturation(FluidSystem::waterPhaseIdx));
+                            std::cout << ps.str() << std::endl;
+                        }
+                    }
+                }
+            }
             if (converged) {
                 // if equations are sufficiently linear they might converge in less than min_its_after_switch
                 // in this case, make sure all constraints are satisfied before returning
