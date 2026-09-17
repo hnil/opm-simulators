@@ -55,6 +55,7 @@ SingleWellState(const std::string& name_,
     , perf_data(perf_input.size(), !is_producer, pu.numActivePhases())
     , trivial_group_target(false)
     , use_group_target_fallback(false)
+    , network_controlled(false)
 {
     for (std::size_t perf = 0; perf < perf_input.size(); perf++) {
         this->perf_data.cell_index[perf] = perf_input[perf].cell_index;
@@ -417,6 +418,7 @@ bool SingleWellState<Scalar, IndexTraits>::operator==(const SingleWellState& rhs
            this->group_target == rhs.group_target &&
            this->group_target_fallback == rhs.group_target_fallback &&
            this->use_group_target_fallback == rhs.use_group_target_fallback &&
+           this->network_controlled == rhs.network_controlled &&
            this->was_shut_before_action_applied == rhs.was_shut_before_action_applied;
 }
 

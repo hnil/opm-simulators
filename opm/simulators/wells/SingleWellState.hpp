@@ -90,6 +90,7 @@ public:
         serializer(group_target);
         serializer(group_target_fallback);
         serializer(use_group_target_fallback);
+        serializer(network_controlled);
         serializer(was_shut_before_action_applied);
     }
 
@@ -160,6 +161,9 @@ public:
     std::optional<GroupTarget> group_target;
     std::optional<GroupTarget> group_target_fallback;
     bool use_group_target_fallback;
+    /// Its control is decided by the network solve (--network-owns-group-control);
+    /// the group checks and the group target update leave it alone.
+    bool network_controlled{false};
     SegmentState<Scalar> segments;
     Events events;
     WellInjectorCMode injection_cmode{WellInjectorCMode::CMODE_UNDEFINED};

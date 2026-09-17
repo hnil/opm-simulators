@@ -550,6 +550,13 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
     using Sys = NetworkSolve::ProductionSystem<Scalar>;
 
     auto giveUp = [&](const std::string& why) {
+        if (this->network_owns_group_control_) {
+            // Owning the decision means there is nothing underneath to fall
+            // back to; a silent relaxed answer would hide every failure.
+            OPM_THROW_NOLOG(NumericalProblem,
+                            fmt::format("Network: the production network solve owns group control "
+                                        "but failed at report step {}: {}", reportStepIdx, why));
+        }
         OpmLog::debug(fmt::format("Network: solving the production network simultaneously is not "
                                   "possible at report step {} ({}); using the relaxed update.",
                                   reportStepIdx, why));
@@ -677,6 +684,31 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
         int node, vfp_table;
         Scalar bhp_limit, oil_rate_limit, efficiency;
         bool node_adds_lift_gas, node_is_choke, under_glo;
+        bool group_controllable;
+    };
+    // What the deck allows, not what legacy currently has the well on: the
+    // well is available for group control and a group above it has a rate
+    // target the tree reads (the modes addTree takes).
+    const auto groupControllable = [&](const Well& well) {
+        if (!well.isAvailableForGroupControl()) {
+            return false;
+        }
+        for (std::string g = well.groupName(); !g.empty(); ) {
+            const auto& grp = schedule.getGroup(g, reportStepIdx);
+            if (grp.isProductionGroup()) {
+                const auto ctl = grp.productionControls(summary_state);
+                using C = Group::ProductionCMode;
+                if ((ctl.cmode == C::ORAT && ctl.oil_target > 0) || (ctl.cmode == C::LRAT && ctl.liquid_target > 0)
+                    || (ctl.cmode == C::GRAT && ctl.gas_target > 0) || (ctl.cmode == C::WRAT && ctl.water_target > 0)) {
+                    return true;
+                }
+            }
+            if (grp.parent() == g) {
+                break;
+            }
+            g = grp.parent();
+        }
+        return false;
     };
     std::vector<Candidate> candidates;
     for (const auto& name : schedule.wellNames(reportStepIdx)) {
@@ -703,7 +735,8 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
                               static_cast<Scalar>(controls.oil_rate),
                               static_cast<Scalar>(well.getEfficiencyFactor(/*network=*/true)),
                               network.node(well.groupName()).add_gas_lift_gas(),
-                              network.node(well.groupName()).as_choke(), under_glo});
+                              network.node(well.groupName()).as_choke(), under_glo,
+                              groupControllable(well)});
     }
     if (candidates.empty()) {
         return giveUp("no producers hang off it");
@@ -809,8 +842,9 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
         }
         const auto& candidate = candidates[i];
         typename Sys::Well w;
+        const bool owned = this->network_owns_group_control_ && candidate.group_controllable;
         if (e[1] <= Scalar{0}) {
-            if (!shut_rows) {
+            if (!shut_rows && !owned) {
                 return giveUp(fmt::format("{} has no usable inflow performance", candidate.name));
             }
             // No inflow performance: the well model has it at zero rate. It
@@ -821,6 +855,12 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
             w.bhp_limit = candidate.bhp_limit;
             w.efficiency = candidate.efficiency * e[10];
             w.shut = true;
+            if (owned) {
+                // Counted as present, so its group keeps its target; it takes no share.
+                w.guide = e[15];
+                tree_wells.emplace_back(static_cast<int>(system.numWells()), candidate.name);
+                tree_deck_guide.push_back(e[15]);
+            }
             system.addWell(std::move(w));
             continue;
         }
@@ -862,7 +902,8 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
             if (!(current > Scalar{0}) && e[13] > Scalar{0}) {
                 w.dead_above = e[13];
             }
-        } else if (on_group && this->network_group_tree_) {
+        } else if ((this->network_owns_group_control_ ? candidate.group_controllable : on_group)
+                   && this->network_group_tree_) {
             // The tree decides its share; its own limits stay its own.
             // The guide is overwritten by the deck's below, if the deck gives
             // one to every well in the tree.
@@ -896,7 +937,11 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
             w.pinned = true;          // a source; not offered thp
             ++pinned_cmode[static_cast<int>(e[14])];
         }
-        if (!(current > Scalar{0}) && !w.in_group && !candidate.node_is_choke) {
+        // Under ownership a tree well at zero rate stays: dropping it hides it
+        // from the network, which then revives it -- the shut/revive oscillation.
+        const bool owned_tree_well = this->network_owns_group_control_ && !tree_wells.empty()
+            && tree_wells.back().first == static_cast<int>(system.numWells());
+        if (!(current > Scalar{0}) && !w.in_group && !candidate.node_is_choke && !owned_tree_well) {
             // tree_wells already holds the index this well would have had;
             // left there, setWellGroup writes one past the wells.
             if (!tree_wells.empty()
@@ -910,6 +955,20 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
     }
     if (use_group_target && group_target > Scalar{0}) {
         system.setGroupTarget(group_target);
+    }
+    if (this->network_owns_group_control_) {
+        // Set before the cached-answer return below, so a repeat call still
+        // keeps the group checks off the wells the solve controls.
+        std::set<std::string> in_tree;
+        for (const auto& tw : tree_wells) {
+            in_tree.insert(tw.second);
+        }
+        auto& well_state = well_model_.wellState();
+        for (const auto& c : candidates) {
+            if (well_state.has(c.name)) {
+                well_state.well(c.name).network_controlled = in_tree.count(c.name) > 0;
+            }
+        }
     }
     // With every well a pinned source and nothing to place, the system is the
     // relaxed evaluation with extra steps -- and a different path through the
@@ -997,7 +1056,7 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
     const bool anything_to_decide = system.grouped() || system.usesGroupTree()
         || std::any_of(system.wells().begin(), system.wells().end(),
                        [](const auto& w) { return !w.pinned; });
-    if (!anything_to_decide) {
+    if (!anything_to_decide && !this->network_owns_group_control_) {
         std::string modes;
         for (const auto& [cmode, n] : pinned_cmode) {
             modes += fmt::format("{}{} on {}", modes.empty() ? "" : ", ", n,
@@ -1134,6 +1193,71 @@ newtonProductionNodePressures(const Network::ExtNetwork& network,
     for (int w = 0; w < system.numWells(); ++w) {
         if (system.control(w) == NetworkSolve::ProductionSystem<Scalar>::Control::Shut) {
             this->network_shut_.insert(system.wells()[w].name);
+        }
+    }
+    if (this->network_owns_group_control_) {
+        // The controls written back, so the well solve assembles what the
+        // network solved for. A held well goes on GRUP with its share as the
+        // group target -- the one the well model's group control row reads --
+        // on the mode of the group whose own target binds above it. Shut goes
+        // through the shut hand-over in updatePressures.
+        using Ctrl = typename Sys::Control;
+        using Mode = typename Sys::Mode;
+        using GC = Group::ProductionCMode;
+        const auto held = system.heldTargets(result.well_rate);
+        auto& well_state = well_model_.wellState();
+        int n_held = 0, n_own = 0, n_unbound = 0;
+        for (int w = 0; w < system.numWells(); ++w) {
+            const auto& well = system.wells()[w];
+            if (!well_state.has(well.name)) {
+                continue;
+            }
+            auto& ws = well_state.well(well.name);
+            if (!ws.network_controlled || ws.status != WellStatus::OPEN) {
+                continue;
+            }
+            const auto& t = held[w];
+            switch (t.control) {
+            case Ctrl::Tree: {
+                if (t.group < 0) {
+                    ++n_unbound;
+                    break;
+                }
+                const GC cmode = t.mode == Mode::Gas    ? GC::GRAT
+                               : t.mode == Mode::Water  ? GC::WRAT
+                               : t.mode == Mode::Liquid ? GC::LRAT
+                               : t.mode == Mode::Resv   ? GC::RESV : GC::ORAT;
+                ws.production_cmode = Well::ProducerCMode::GRUP;
+                ws.group_target.emplace();
+                ws.group_target->group_name = system.groups()[t.group].name;
+                ws.group_target->target_value = t.value;
+                ws.group_target->production_cmode = cmode;
+                ws.group_target_fallback = std::nullopt;
+                ws.use_group_target_fallback = false;
+                ++n_held;
+                break;
+            }
+            case Ctrl::Thp:     ws.production_cmode = Well::ProducerCMode::THP; ++n_own; break;
+            case Ctrl::Bhp:     ws.production_cmode = Well::ProducerCMode::BHP; ++n_own; break;
+            case Ctrl::OilRate:
+            case Ctrl::Tied:    ws.production_cmode = Well::ProducerCMode::ORAT; ++n_own; break;
+            default:            break;
+            }
+        }
+        OpmLog::debug(fmt::format("Network: controls written back under {} at report step {}: "
+                                  "{} held on their share, {} on their own control{}",
+                                  root.name(), reportStepIdx, n_held, n_own,
+                                  n_unbound ? fmt::format(", {} held with no binding group", n_unbound)
+                                            : std::string{}));
+        // Branch rates for the output: legacy's computePressures is not run
+        // for a network the solve owns, and it was what filled them.
+        auto probe = system;
+        (void)probe.reducedResidual(result.node_pressure);
+        const auto& x = probe.reducedState();
+        for (std::size_t n = 1; n < order.size(); ++n) {
+            const int nn = static_cast<int>(n);
+            this->owned_branch_rates_[order[n]] = {x[probe.qIdx(nn, 0)], x[probe.qIdx(nn, 1)],
+                                                   x[probe.qIdx(nn, 2)]};
         }
     }
     // The allocation written back. The tree in the solve decided which wells
@@ -1351,11 +1475,14 @@ updatePressures(const int reportStepIdx,
                     gs.update_well_group_thp(name, p_up);
                 }
             }
-            result = this->computePressures(network.network.get(),
-                                            *well_model_.getVFPProperties().getProd(),
-                                            well_model_.schedule().getUnits(),
-                                            reportStepIdx,
-                                            well_model_.comm());
+            const bool owned = this->network_owns_group_control_ && this->newton_solver_;
+            if (!owned) {
+                result = this->computePressures(network.network.get(),
+                                                *well_model_.getVFPProperties().getProd(),
+                                                well_model_.schedule().getUnits(),
+                                                reportStepIdx,
+                                                well_model_.comm());
+            }
             if (this->newton_solver_) {
                 // A network with several roots is a forest of independent trees
                 // -- every node has one parent, so they share nothing. Solve
@@ -1376,6 +1503,21 @@ updatePressures(const int reportStepIdx,
                             }
                         }
                     }
+                }
+            }
+            if (owned) {
+                // Branch data from the solve's own branch rates; the drops are
+                // filled from the node pressures by refreshBranchPressureDrops.
+                // Production positive, surface SI, as computePressures reports.
+                for (const auto& [name, pressure] : result.node_pressures) {
+                    const auto it = this->owned_branch_rates_.find(name);
+                    const bool has_up = network.network.get().uptree_branch(name).has_value();
+                    if (it == this->owned_branch_rates_.end() || !has_up) {
+                        result.branch_data.emplace(name, data::BranchData{0.0, 0.0, 0.0, 0.0});
+                        continue;
+                    }
+                    const auto& q = it->second;          // water, oil, gas
+                    result.branch_data.emplace(name, data::BranchData{0.0, q[1], q[0], q[2]});
                 }
             }
         } else {
@@ -1532,7 +1674,10 @@ updatePressures(const int reportStepIdx,
                 // The environment switch is kept as an override for the runs
                 // that were measured with it; the parameter is the way in.
                 static const bool apply_shut_env = std::getenv("OPM_NETWORK_APPLY_SHUT") != nullptr;
-                if ((this->network_apply_shut_ || apply_shut_env) && this->reduced_solver_) {
+                // Owning group control hands the shut over on either route: the
+                // solve stored its system, and the decision is its to make.
+                if (((this->network_apply_shut_ || apply_shut_env) && this->reduced_solver_)
+                    || this->network_owns_group_control_) {
                     bool dead = false;
                     for (const auto& [root, tree] : last_production_solve_) {
                         const int w = tree.system ? tree.system->wellIndex(well->name()) : -1;

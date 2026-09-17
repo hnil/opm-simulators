@@ -149,6 +149,19 @@ update(const bool mandatory_network_balance,
         this->useAnalyticJacobian(well_model_.param().network_analytic_jacobian_);
         this->useNetworkGroupControl(well_model_.param().network_group_control_);
         this->useNetworkGroupTree(well_model_.param().network_group_tree_);
+        if (well_model_.param().network_owns_group_control_) {
+            if (solver_mode == "fixedpoint") {
+                OPM_DEFLOG_THROW(std::runtime_error,
+                                 "--network-owns-group-control needs --network-solver=newton or reduced",
+                                 deferred_logger);
+            }
+            if (well_model_.comm().size() > 1) {
+                OPM_DEFLOG_THROW(std::runtime_error,
+                                 "--network-owns-group-control is serial only for now", deferred_logger);
+            }
+            this->useNetworkOwnsGroupControl(true);
+            this->useNetworkGroupTree(true);
+        }
         this->useNetworkGroupAllocation(well_model_.param().network_group_allocation_);
         this->useNetworkApplyShut(well_model_.param().network_apply_shut_);
         this->useNetworkAutochoke(well_model_.param().network_autochoke_);

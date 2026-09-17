@@ -128,6 +128,12 @@ checkGroupConstraints(const GroupStateHelperType& groupStateHelper,
     const int well_index = well_.indexOfWell();
     auto& ws = well_state.well(well_index);
 
+    // The network solve decided this well's control against the whole tree;
+    // switching it again here from one group's view is the double decision.
+    if (ws.network_controlled) {
+        return false;
+    }
+
     if (well.isInjector()) {
         const auto currentControl = ws.injection_cmode;
 

@@ -223,6 +223,8 @@ public:
     /// The deck's group tree in the production solve, instead of one
     /// flattened target for the wells on group control.
     void useNetworkGroupTree(const bool on) { network_group_tree_ = on; }
+    void useNetworkOwnsGroupControl(const bool on) { network_owns_group_control_ = on; }
+    bool networkOwnsGroupControl() const { return network_owns_group_control_; }
     void useNetworkGroupAllocation(const bool on) { network_group_allocation_ = on; }
     void useNetworkApplyShut(const bool on) { network_apply_shut_ = on; }
     void useNetworkAutochoke(const bool on) { network_autochoke_ = on; }
@@ -352,6 +354,7 @@ protected:
     bool analytic_jacobian_ = false;
     bool network_group_control_ = false;
     bool network_group_tree_ = false;
+    bool network_owns_group_control_ = false;
     bool network_group_allocation_ = false;
     bool network_apply_shut_ = false;
     bool network_autochoke_ = false;
@@ -367,6 +370,9 @@ protected:
         std::shared_ptr<const NetworkSolve::ProductionSystem<Scalar>> system;
     };
     mutable std::map<std::string, SolvedTree> last_production_solve_;
+    /// Per node: branch rates (water, oil, gas) from the last owned solve,
+    /// standing in for what computePressures would have reported.
+    mutable std::map<std::string, std::array<Scalar, 3>> owned_branch_rates_;
     /// Wells the complementarity solve shut earlier in this report step. A
     /// dying well the network shuts, the well model stops, and the pressure
     /// it leaves behind re-opens -- 581 stops on one well in one run.

@@ -559,6 +559,56 @@ public:
     void setWellGroup(const int w, const int g) { wells_[w].group = g; }
     /// The weight the tree splits by, once the adapter knows the deck's.
     void setWellGuide(const int w, const Scalar g) { wells_[w].guide = g; }
+
+    /// What an answer asks of each well, in the terms the well model takes: a
+    /// held well produces its share on the mode of the group whose own target
+    /// binds above it; every other well keeps the control the walk left it on.
+    struct HeldTarget
+    {
+        Control control = Control::Thp;
+        int group = -1;          // the binding group; -1 unless held and found
+        Mode mode = Mode::None;
+        Scalar value = 0;        // the well's own rate on `mode`, WEFAC not applied
+    };
+
+    /// `well_oil_rate` is the answer's oil rate per well. The other phases are
+    /// taken where the well's inflow puts them at the bhp that oil rate needs.
+    std::vector<HeldTarget> heldTargets(const std::vector<Scalar>& well_oil_rate) const
+    {
+        std::vector<HeldTarget> out(wells_.size());
+        for (int w = 0; w < numWells(); ++w) {
+            auto& t = out[w];
+            t.control = controls_[w];
+            if (controls_[w] != Control::Tree) {
+                continue;
+            }
+            // A Share bind passes its parent's limit down unchanged, so the
+            // limit a held well is on is the nearest Own above it.
+            int g = wells_[w].group;
+            while (g >= 0 && group_bind_[g] != GroupBind::Own) {
+                g = groups_[g].parent;
+            }
+            if (g < 0) {
+                continue;
+            }
+            const auto& well = wells_[w];
+            const auto c = modeWeights(groups_[g].mode, groups_[g].resv_coeff);
+            const Scalar q_oil = well_oil_rate[w];
+            Scalar on = 0;
+            if (well.ipr_b[1] < Scalar{0}) {
+                const Scalar bhp = (q_oil - well.ipr_a[1]) / well.ipr_b[1];
+                for (int ph = 0; ph < NP; ++ph) {
+                    on += c[ph] * std::max(well.ipr_a[ph] + well.ipr_b[ph] * bhp, Scalar{0});
+                }
+            } else {
+                on = c[1] * q_oil;
+            }
+            t.group = g;
+            t.mode = groups_[g].mode;
+            t.value = on;
+        }
+        return out;
+    }
     /// Change a group's own limit after the tree is built, for a sweep.
     void setGroupLimit(const int g, const Mode m, const Scalar target)
     {

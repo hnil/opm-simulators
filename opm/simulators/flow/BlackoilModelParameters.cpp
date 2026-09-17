@@ -121,6 +121,7 @@ BlackoilModelParameters<Scalar>::BlackoilModelParameters()
     network_analytic_jacobian_ = Parameters::Get<Parameters::NetworkAnalyticJacobian>();
     network_group_control_ = Parameters::Get<Parameters::NetworkGroupControl>();
     network_group_tree_ = Parameters::Get<Parameters::NetworkGroupTree>();
+    network_owns_group_control_ = Parameters::Get<Parameters::NetworkOwnsGroupControl>();
     well_ipr_at_touching_point_ = Parameters::Get<Parameters::WellIprAtTouchingPoint>();
     network_group_allocation_ = Parameters::Get<Parameters::NetworkGroupAllocation>();
     network_apply_shut_ = Parameters::Get<Parameters::NetworkApplyShut>();
@@ -305,6 +306,13 @@ void BlackoilModelParameters<Scalar>::registerParameters()
         ("Give the production network solve the deck's group tree -- GRUPTREE and GCONPROD "
          "targets -- so it allocates the wells on group control itself, instead of one "
          "flattened target (--network-solver=newton or reduced)");
+    Parameters::Register<Parameters::NetworkOwnsGroupControl>
+        ("Let the production network solve decide group control on its own: every well the "
+         "deck makes available for group control under a group with a target is placed by the "
+         "solve, whatever control it is on now; the legacy network evaluation and the group "
+         "checks are skipped for those wells, the solve's controls are written back to them, and "
+         "a failed solve stops the step instead of falling back. Implies --network-group-tree "
+         "(--network-solver=newton or reduced; serial only for now)");
     Parameters::Register<Parameters::NetworkApplyShut>
         ("Hand the network solve's shut decision to the well: a well its tubing cannot lift "
          "is marked not operable, and the well model does not decide the same thing again "
