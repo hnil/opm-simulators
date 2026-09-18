@@ -384,6 +384,18 @@ std::unique_ptr<Matrix> blockJacobiAdjacency(const Grid& grid,
                 useWellConn_ = Parameters::Get<Parameters::MatrixAddWellContributions>();
                 // setup sparsity pattern for jacobi matrix for preconditioner (only used for openclSolver)
             }
+            // cprw's coarse system fixes its cell<->well entries at creation.
+            if (!useWellConn_) {
+                const std::size_t sig = this->wellConnectionSignature_();
+                int changed = (sig != wellConnSignature_) ? 1 : 0;
+                wellConnSignature_ = sig;
+                if (!parameters_[activeSolverNum_].is_nldd_local_solver_) {
+                    changed = simulator_.gridView().comm().max(changed);
+                }
+                if (changed) {
+                    force_recreate_ = true;
+                }
+            }
             rhs_ = &b;
 
             // TODO: check all solvers, not just one.
@@ -518,6 +530,21 @@ std::unique_ptr<Matrix> blockJacobiAdjacency(const Grid& grid,
 #if HAVE_MPI
         using Comm = Dune::OwnerOverlapCopyCommunication<int, int>;
 #endif
+
+        // Hash of the perforated cells of all open wells on this rank.
+        std::size_t wellConnectionSignature_() const
+        {
+            std::size_t sig = 0;
+            if constexpr (requires { simulator_.problem().wellModel().localNonshutWells(); }) {
+                for (const auto& well : simulator_.problem().wellModel().localNonshutWells()) {
+                    for (const int c : well->cells()) {
+                        sig = sig * 1000003u + static_cast<std::size_t>(c) + 1;
+                    }
+                    sig = sig * 1000003u + 7;
+                }
+            }
+            return sig;
+        }
 
         bool checkConvergence(const Dune::InverseOperatorResult& result) const
         {
@@ -766,6 +793,7 @@ std::unique_ptr<Matrix> blockJacobiAdjacency(const Grid& grid,
         std::size_t matrixNonzeroes_ = 0;
         //! Pattern version last prepared for (see IstlSparseMatrixAdapter).
         std::size_t preparedPatternVersion_ = 0;
+        std::size_t wellConnSignature_ = 0;
     }; // end ISTLSolver
 
 } // namespace Opm
