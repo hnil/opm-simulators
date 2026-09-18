@@ -44,6 +44,7 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <cassert>
 #include <chrono>
 #include <cmath>
@@ -2152,7 +2153,9 @@ void applyTreeToState(const Tree<Scalar>& tree,
             }
 
             // Convert canonical 3-component rates back to active-phase vector
-            if (writeRates) {
+            // Diagnostic: OPM_BALANCER_NO_RATE_WRITE keeps the decision and leaves the well state's rates.
+            static const bool no_rate_write = std::getenv("OPM_BALANCER_NO_RATE_WRITE") != nullptr;
+            if (writeRates && !no_rate_write) {
                 ws.surface_rates = toActive(node.rates, ws.pu);
             }
 
