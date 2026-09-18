@@ -624,16 +624,6 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                 if (t.group < 0) {
                     break;
                 }
-                // A share within 2 % of the well's own allowance is its own limit: the
-                // well solve cannot hold a group target that close to a limit of its
-                // own (it oscillates between the two and may derail), and the
-                // difference is inside the IPR's error anyway.
-                if (well.oil_rate_limit > Scalar{0}
-                    && rr.well_rate[w] >= (Scalar{1} - Scalar{0.02}) * well.oil_rate_limit) {
-                    const auto om = own_limit_mode.find(well.name);
-                    ws.production_cmode = om != own_limit_mode.end() ? om->second : Well::ProducerCMode::ORAT;
-                    break;
-                }
                 const GC cmode = t.mode == Mode::Gas    ? GC::GRAT
                                : t.mode == Mode::Water  ? GC::WRAT
                                : t.mode == Mode::Liquid ? GC::LRAT
@@ -651,19 +641,9 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
             case Ctrl::Thp:
             case Ctrl::OilRate:
             case Ctrl::Tied: {
-                // At the corner where the tubing's capacity and the well's own rate limit
-                // coincide, the linear IPR's error straddles the choice; the well solve's
-                // own answer is the truth there and its control is kept.
-                const Scalar cap = well.vfp_table > 0 ? system.thpPotential(well, rr.node_pressure[well.node]) : Scalar{-1};
-                const bool corner = cap > Scalar{0} && well.oil_rate_limit > Scalar{0}
-                    && std::abs(cap - well.oil_rate_limit) <= Scalar{0.02} * well.oil_rate_limit
-                    && (ws.production_cmode == Well::ProducerCMode::THP
-                        || ws.production_cmode == Well::ProducerCMode::ORAT);
-                if (!corner) {
-                    const auto om = own_limit_mode.find(well.name);
-                    ws.production_cmode = t.control == Ctrl::Thp ? Well::ProducerCMode::THP
-                        : (om != own_limit_mode.end() ? om->second : Well::ProducerCMode::ORAT);
-                }
+                const auto om = own_limit_mode.find(well.name);
+                ws.production_cmode = t.control == Ctrl::Thp ? Well::ProducerCMode::THP
+                    : (om != own_limit_mode.end() ? om->second : Well::ProducerCMode::ORAT);
                 break;
             }
             case Ctrl::Bhp:     ws.production_cmode = Well::ProducerCMode::BHP;  break;
