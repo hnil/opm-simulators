@@ -596,6 +596,12 @@ protected:
     // Controls, rates and node pressures of the last decision, rounded: a decision
     // that repeats is not a change, whatever triggered it.
     std::string controller_decision_signature_{};
+    // What the controller spent, cumulative over the run, logged after every step.
+    struct ControllerStats {
+        long decisions = 0, route_iterations = 0, route_evaluations = 0, set_changes = 0, lookups = 0;
+        long calls = 0, passes = 0, well_solves = 0, cap_hits = 0, judge_rejections = 0;
+        double worst_deviation = 0;
+    } controller_stats_;
     std::map<std::string, std::pair<std::vector<Scalar>, std::vector<Scalar>>> controller_last_flowing_ipr_{};
 
     std::vector<int> local_shut_wells_{};

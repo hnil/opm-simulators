@@ -677,6 +677,15 @@ namespace Opm {
     timeStepSucceeded(const double simulationTime, const double dt)
     {
         this->closed_this_step_.clear();
+        if (param_.enable_group_controller_ && this->controller_stats_.calls > 0) {
+            const auto& st = this->controller_stats_;
+            OpmLog::debug(fmt::format("Controller totals at day {:.1f}: {} calls, {} passes, {} decisions by the route "
+                                      "({} iterations, {} evaluations, {} set changes, {} lookups), {} well solves, "
+                                      "{} cap hits, {} judge rejections, worst deviation {:.1f} %",
+                                      simulationTime / 86400.0, st.calls, st.passes, st.decisions, st.route_iterations,
+                                      st.route_evaluations, st.set_changes, st.lookups, st.well_solves, st.cap_hits,
+                                      this->controller_judge_rejections_, 100.0 * st.worst_deviation));
+        }
 
         // time step is finished and we are not any more at the beginning of an report step
         this->report_step_starts_ = false;
@@ -1934,6 +1943,8 @@ namespace Opm {
         this->controller_network_owned_ = false;
         const int max_passes = network_route ? 6 : 4;
         const std::string sig_before = this->controller_decision_signature_;
+        int passes = 0, well_solves = 0;
+        std::string ended = "nothing to decide";
         for (int pass = 0; pass < max_passes; ++pass) {
             bool changed = (pass == 0 && network_route);
             OPM_BEGIN_PARALLEL_TRY_CATCH()
@@ -1979,8 +1990,10 @@ namespace Opm {
             const bool group_violated = controllerGroupLimitViolated_();
             changed = changed || group_violated;
             if (!changed) {
+                ended = pass == 0 ? "nothing to decide" : "no trigger";
                 break;
             }
+            ++passes;
             if (!may_redecide && !group_violated && !network_route) {
                 // Targets are frozen after NUPCOL; only legacy's bookkeeping runs.
                 changed_any = true;
@@ -2002,6 +2015,7 @@ namespace Opm {
                 for (const auto& well : well_container_) {
                     if (this->controller_decided_wells_.count(well->name())) {
                         well->prepareWellBeforeAssembling(simulator_, dt, this->groupStateHelper(), this->wellState());
+                        ++well_solves;
                     }
                 }
                 OPM_END_PARALLEL_TRY_CATCH("BlackoilWellModel: solving the controller's wells failed: ",
@@ -2009,8 +2023,30 @@ namespace Opm {
                 this->updateAndCommunicateGroupData(episodeIdx, /*update_wellgrouptarget*/ true);
             }
             if (!moved) {
-                break;      // the decision stands
+                ended = "decision stands";
+                break;
             }
+            ended = pass + 1 == max_passes ? "cap reached, decision still moving" : "moved";
+        }
+        // How far the solved wells sit from what they were assigned: the closing
+        // check of decision against well solve, reported, not enforced.
+        if (passes > 0) {
+            const int oil = this->phaseUsage().canonicalToActivePhaseIdx(IndexTraits::oilPhaseIdx);
+            double worst = 0; std::string worst_well;
+            for (const auto& [name, q] : this->controller_assigned_rates_) {
+                if (!this->wellState().has(name) || oil < 0 || oil >= static_cast<int>(q.size())) continue;
+                const double a = std::abs(q[oil]), s = std::abs(this->wellState().well(name).surface_rates[oil]);
+                const double d = std::abs(s - a) / std::max(a, 1e-7);
+                if (d > worst) { worst = d; worst_well = name; }
+            }
+            auto& st = this->controller_stats_;
+            ++st.calls; st.passes += passes; st.well_solves += well_solves;
+            if (ended.rfind("cap", 0) == 0) ++st.cap_hits;
+            st.worst_deviation = std::max(st.worst_deviation, worst);
+            deferred_logger.debug(fmt::format("Controller: step {} iteration {}: {} passes, {} well solves, {}; "
+                                              "solved wells off their assignment by at most {:.1f} % ({})",
+                                              episodeIdx, simulator_.problem().iterationContext().iteration(), passes,
+                                              well_solves, ended, 100.0 * worst, worst_well));
         }
         // Only a decision that moved is a change; a rate off its assignment by the
         // IPR's error is not, or the step would never be allowed to converge.

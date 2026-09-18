@@ -538,9 +538,17 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
             deferred_logger.debug(fmt::format("Controller: the judge rejects the network answer under {} at report step {}:{}",
                                               root.name(), reportStepIdx, what));
         }
-        deferred_logger.debug(fmt::format("Controller: network route under {} at report step {}: {} iterations, set {}, judge {}{}",
-                                          root.name(), reportStepIdx, rr.iterations, letters, verdict.ok ? "ok" : "REJECTS",
+        deferred_logger.debug(fmt::format("Controller: network route under {} at report step {}: {} iterations, {} evaluations, "
+                                          "{} set changes, {} lookups, set {}, judge {}{}",
+                                          root.name(), reportStepIdx, rr.iterations, rr.evaluations, rr.set_changes,
+                                          system.lookups(), letters, verdict.ok ? "ok" : "REJECTS",
                                           rr.stalls || rr.cliffs ? fmt::format(" ({} stalls, {} cliffs)", rr.stalls, rr.cliffs) : ""));
+        auto& st = this->controller_stats_;
+        ++st.decisions;
+        st.route_iterations += rr.iterations;
+        st.route_evaluations += rr.evaluations;
+        st.set_changes += rr.set_changes;
+        st.lookups += system.lookups();
         for (std::size_t n = 0; n < order.size(); ++n) {
             new_pressures[order[n]] = rr.node_pressure[n];
         }
