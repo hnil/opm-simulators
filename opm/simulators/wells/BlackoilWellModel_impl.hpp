@@ -1710,6 +1710,16 @@ namespace Opm {
             // the well_group_control_changed info is already communicated
             report.setWellGroupTargetsViolated(this->lastReport().well_group_control_changed);
             report.setNetworkNotYetBalancedForceAnotherNewtonIteration(network_needs_more_balancing_force_another_newton_iteration_);
+            if (this->terminal_output_ && std::getenv("OPM_FACILITY_CHECK") != nullptr) {
+                std::string failed;
+                for (const auto& f : report.wellFailures()) {
+                    failed += fmt::format(" {}(type {} phase {})", f.wellName(), static_cast<int>(f.type()), f.phase());
+                }
+                OpmLog::debug(fmt::format("Facility check: convergence: control changed {}, network forces another {}, "
+                                          "well failures{}", this->lastReport().well_group_control_changed,
+                                          network_needs_more_balancing_force_another_newton_iteration_,
+                                          failed.empty() ? " none" : failed));
+            }
         }
 
         if (this->terminal_output_) {

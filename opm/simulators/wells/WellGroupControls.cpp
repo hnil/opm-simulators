@@ -212,9 +212,12 @@ getGroupProductionControl(const Group& group,
     const auto& summaryState = groupStateHelper.summaryState();
     const auto& schedule = groupStateHelper.schedule();
     const auto& well_state = groupStateHelper.wellState();
+    // The group controller's target stands on its own, whatever the group state's controls say.
+    const auto& ws_own = well_state.well(well_.indexOfWell());
+    const bool own_target = ws_own.controller_decided && ws_own.group_target.has_value();
     const Group::ProductionCMode& currentGroupControl = group_state.production_control(group.name());
-    if (currentGroupControl == Group::ProductionCMode::FLD ||
-        currentGroupControl == Group::ProductionCMode::NONE) {
+    if (!own_target && (currentGroupControl == Group::ProductionCMode::FLD ||
+                        currentGroupControl == Group::ProductionCMode::NONE)) {
         if (!group.productionGroupControlAvailable()) {
             // We cannot go any further up the hierarchy. This could
             // be the FIELD group, or any group for which this has
@@ -240,7 +243,7 @@ getGroupProductionControl(const Group& group,
 
     const auto& well = well_.wellEcl();
 
-    if (!group.isProductionGroup()) {
+    if (!own_target && !group.isProductionGroup()) {
         // use bhp as control eq and let the updateControl code find a valid control
         const auto& controls = well.productionControls(summaryState);
         control_eq = bhp - controls.bhp_limit;
@@ -282,9 +285,11 @@ getGroupProductionTargetRate(const Group& group,
     const auto& well_state = groupStateHelper.wellState();
     const auto& group_state = groupStateHelper.groupState();
     const auto& schedule = groupStateHelper.schedule();
+    const auto& ws_own = well_state.well(well_.indexOfWell());
+    const bool own_target = ws_own.controller_decided && ws_own.group_target.has_value();
     const Group::ProductionCMode& currentGroupControl = group_state.production_control(group.name());
-    if (currentGroupControl == Group::ProductionCMode::FLD ||
-        currentGroupControl == Group::ProductionCMode::NONE) {
+    if (!own_target && (currentGroupControl == Group::ProductionCMode::FLD ||
+                        currentGroupControl == Group::ProductionCMode::NONE)) {
         if (!group.productionGroupControlAvailable()) {
             return 1.0;
         } else {
@@ -296,7 +301,7 @@ getGroupProductionTargetRate(const Group& group,
         }
     }
 
-    if (!group.isProductionGroup()) {
+    if (!own_target && !group.isProductionGroup()) {
         return 1.0;
     }
 

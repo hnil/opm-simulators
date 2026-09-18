@@ -32,6 +32,7 @@
 #include <opm/input/eclipse/Schedule/ScheduleState.hpp>
 #include <opm/input/eclipse/Schedule/VFPProdTable.hpp>
 
+#include <opm/simulators/wells/WellHelpers.hpp>
 #include <opm/simulators/wells/network/NetworkJudge.hpp>
 #include <opm/simulators/wells/network/NetworkProductionSystem.hpp>
 #include <opm/simulators/wells/network/NetworkReducedSolve.hpp>
@@ -227,6 +228,8 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
     std::map<std::string, Well::ProducerCMode> assigned_cmode;
     std::map<std::string, std::vector<Scalar>> assigned_rates;
     std::map<std::string, bool> dead_now;
+    std::set<std::string> route_groups, switched;
+    std::map<std::string, Group::ProductionCMode> holding;
     int n_judged_wrong = 0;
 
     for (const auto& root_ref : network.roots()) {
@@ -336,6 +339,13 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
             w.name = name;
             w.node = index.at(well.groupName());
             w.vfp_table = controls.vfp_table_number;
+            if (w.vfp_table > 0) {
+                // The table's datum is not the well's reference depth.
+                const auto& wi = this->getWell(name);
+                w.vfp_dp = wellhelpers::computeHydrostaticCorrection(
+                    wi.refDepth(), this->getVFPProperties().getProd()->getTable(w.vfp_table).getDatumDepth(),
+                    wi.refDensity(), wi.gravity());
+            }
             w.bhp_limit = static_cast<Scalar>(controls.bhp_limit);
             w.efficiency = static_cast<Scalar>(well.getEfficiencyFactor(/*network=*/true)) * ws.efficiency_scaling_factor;
             w.alq = ws.alq_state.get();
@@ -596,6 +606,9 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
         }
         // The controls and targets.
         const auto held = system.heldTargets(rr.well_rate);
+        for (const auto& g : system.groups()) {
+            route_groups.insert(g.name);
+        }
         for (int w = 0; w < system.numWells(); ++w) {
             const auto& well = system.wells()[w];
             if (well.pinned || !this->wellState().has(well.name)) {
@@ -604,6 +617,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
             auto& ws = this->wellState().well(well.name);
             const auto& t = held[w];
             using GC = Group::ProductionCMode;
+            const auto cmode_before = ws.production_cmode;
             switch (t.control) {
             case Ctrl::Tree:
             case Ctrl::Grup: {
@@ -629,6 +643,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                 ws.group_target->group_name = system.groups()[t.group].name;
                 ws.group_target->target_value = t.value;
                 ws.group_target->production_cmode = cmode;
+                holding[ws.group_target->group_name] = cmode;
                 ws.group_target_fallback = std::nullopt;
                 ws.use_group_target_fallback = false;
                 break;
@@ -656,6 +671,9 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
             default:            break;
             }
             decided.insert(well.name);
+            if (ws.production_cmode != cmode_before) {
+                switched.insert(well.name);
+            }
             assigned_cmode[well.name] = ws.production_cmode;
             dead_now[well.name] = t.control == Ctrl::Shut && !well.shut;
             // The other phases where the inflow puts them at the bhp this oil rate needs.
@@ -676,6 +694,25 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
         const auto it = dead_now.find(wp->name());
         wp->setNetworkDead(it != dead_now.end() && it->second);
     }
+    // The group state's controls say what was decided: the holding groups their mode,
+    // the groups under one FLD, the rest NONE. Output and legacy's bookkeeping read them.
+    for (const auto& g : route_groups) {
+        if (!schedule.hasGroup(g, reportStepIdx) || !schedule.getGroup(g, reportStepIdx).isProductionGroup()) {
+            continue;
+        }
+        auto cmode = Group::ProductionCMode::NONE;
+        if (const auto it = holding.find(g); it != holding.end()) {
+            cmode = it->second;
+        } else {
+            for (std::string up = g; up != "FIELD" && cmode == Group::ProductionCMode::NONE; ) {
+                up = schedule.getGroup(up, reportStepIdx).parent();
+                if (holding.count(up)) {
+                    cmode = Group::ProductionCMode::FLD;
+                }
+            }
+        }
+        this->groupState().production_control(g, cmode);
+    }
     // Emit: node pressures and the thp limits they impose, then the wells.
     this->network_.setOwnedNodePressures(new_pressures);
     this->controller_decided_wells_ = decided;
@@ -683,8 +720,10 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
     this->controller_assigned_cmode_ = assigned_cmode;
     this->controller_assigned_rates_ = assigned_rates;
     OPM_BEGIN_PARALLEL_TRY_CATCH()
+    // As legacy: a well is primed for a control it was switched to, and otherwise left
+    // as its solve left it. Priming every time keeps the step from ever converging.
     for (const auto& well : well_container_) {
-        if (decided.count(well->name())) {
+        if (switched.count(well->name())) {
             well->updateWellStateWithTarget(simulator_, this->groupStateHelper(), this->wellState());
             well->updatePrimaryVariables(this->groupStateHelper());
         }
