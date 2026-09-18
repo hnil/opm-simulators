@@ -413,6 +413,11 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
         if (system.numWells() == 0) {
             return giveUp(fmt::format("no producers under {}", root.name()));
         }
+        // Every deck limit of every group in the tree, and the satellite production counted
+        // on it: the route holds one limit per group, chosen again from its own answer.
+        std::map<std::string, int> gidx;
+        std::map<int, std::vector<std::pair<Mode, Scalar>>> group_limits;
+        std::map<int, std::array<Scalar, Sys::NP>> satellite_on;
         // The deck's group tree, parents first.
         if (!tree_wells.empty()) {
             const bool deck_guides = std::all_of(tree_wells.begin(), tree_wells.end(),
@@ -422,7 +427,6 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                     system.setWellGuide(t.index, t.deck_guide);
                 }
             }
-            std::map<std::string, int> gidx;
             std::map<std::string, Scalar> wguide;
             std::set<std::string> here;
             for (const auto& t : tree_wells) {
@@ -454,6 +458,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                 }
                 return true;
             };
+            std::vector<std::pair<Mode, Scalar>> pending_limits;
             std::function<void(const std::string&, int)> addTree = [&](const std::string& g, const int parent) {
                 const auto& grp = schedule.getGroup(g, reportStepIdx);
                 typename Sys::Group node;
@@ -477,11 +482,13 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                     const auto& act = ctl.group_limit_action;
                     const bool all_rate = act.allRates == Group::ExceedAction::RATE;
                     Scalar worst = -1;
+                    std::vector<std::pair<Mode, Scalar>> limits_here;
                     auto consider = [&](const C m, const Group::ExceedAction a, const Scalar limit, const Mode mode, const Scalar rate) {
                         if (!grp.has_control(m) || !(all_rate || a == Group::ExceedAction::RATE)) return;
                         const Scalar ratio = limit > Scalar{0} ? rate / limit : (m == ctl.cmode ? Scalar{1e30} : Scalar{-1});
                         const Scalar score = m == ctl.cmode ? std::max(ratio, Scalar{0}) + Scalar{1e-9} : ratio;
                         if (score > worst) { worst = score; node.mode = mode; node.target = limit; }
+                        if (limit > Scalar{0}) { limits_here.emplace_back(mode, limit); }
                     };
                     consider(C::ORAT, act.oil, ctl.oil_target, Mode::Oil, now[1]);
                     consider(C::WRAT, act.water, ctl.water_target, Mode::Water, now[0]);
@@ -492,8 +499,11 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                         && (ctl.cmode == C::ORAT || ctl.cmode == C::LRAT || ctl.cmode == C::GRAT || ctl.cmode == C::WRAT)) {
                         node.target = Scalar{1e-12};
                     }
+                    pending_limits = std::move(limits_here);
                 }
                 const int me = system.addGroup(std::move(node));
+                if (pending_limits.size() > 1) { group_limits[me] = std::move(pending_limits); }
+                pending_limits.clear();
                 gidx[g] = me;
                 for (const auto& child : grp.groups()) { addTree(child, me); }
             };
@@ -514,6 +524,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                     }
                     Scalar eff = groups[g].efficiency;
                     for (int a = groups[g].parent; a >= 0; a = groups[a].parent) {
+                        for (int ph = 0; ph < Sys::NP; ++ph) { satellite_on[a][ph] += eff * q[ph]; }
                         if (groups[a].target > Scalar{0}) {
                             const auto c = Sys::modeWeights(groups[a].mode, groups[a].resv_coeff);
                             Scalar on = 0;
@@ -545,8 +556,64 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
             }
         }
         const NetworkSolve::Parameters<Scalar> params{Scalar{1e-2}, 50};
-        const auto rr = NetworkSolve::solveReduced(system, guess, params, /*eliminate=*/true,
-                                                   NetworkSolve::CliffRule::Die);
+        auto rr = NetworkSolve::solveReduced(system, guess, params, /*eliminate=*/true,
+                                             NetworkSolve::CliffRule::Die);
+        // A group with several limits holds the one its own answer violates most: solve,
+        // look at every limit, switch and solve again. Bounded; a repeat ends it.
+        int limit_switches = 0;
+        for (int round = 0; rr.converged && round < 4 && !group_limits.empty(); ++round) {
+            std::map<int, std::array<Scalar, Sys::NP>> produced = satellite_on;
+            for (int w = 0; w < system.numWells(); ++w) {
+                const auto& well = system.wells()[w];
+                const Scalar q_oil = rr.well_rate[w];
+                const auto gi = gidx.find(schedule.getWell(well.name, reportStepIdx).groupName());
+                if (!(q_oil > Scalar{0}) || !(well.ipr_b[1] < Scalar{0}) || gi == gidx.end()) {
+                    continue;
+                }
+                const Scalar bhp = (q_oil - well.ipr_a[1]) / well.ipr_b[1];
+                Scalar eff = well.efficiency;
+                for (int a = gi->second; a >= 0; a = system.groups()[a].parent) {
+                    for (int ph = 0; ph < Sys::NP; ++ph) {
+                        produced[a][ph] += eff * std::max(well.ipr_a[ph] + well.ipr_b[ph] * bhp, Scalar{0});
+                    }
+                    eff *= system.groups()[a].efficiency;
+                }
+            }
+            bool switched = false;
+            for (const auto& [g, limits] : group_limits) {
+                const auto& grp = system.groups()[g];
+                Scalar worst = Scalar{1} + Scalar{1e-3};
+                const std::pair<Mode, Scalar>* take = nullptr;
+                for (const auto& lim : limits) {
+                    const auto c = Sys::modeWeights(lim.first, grp.resv_coeff);
+                    Scalar on = 0;
+                    for (int ph = 0; ph < Sys::NP; ++ph) { on += c[ph] * produced[g][ph]; }
+                    if (lim.first != grp.mode && on / lim.second > worst) {
+                        worst = on / lim.second;
+                        take = &lim;
+                    }
+                }
+                if (take != nullptr) {
+                    const auto c = Sys::modeWeights(take->first, grp.resv_coeff);
+                    Scalar sat = 0;
+                    if (const auto it = satellite_on.find(g); it != satellite_on.end()) {
+                        for (int ph = 0; ph < Sys::NP; ++ph) { sat += c[ph] * it->second[ph]; }
+                    }
+                    system.setGroupLimit(g, take->first, std::max(take->second - sat, Scalar{1e-12}));
+                    switched = true;
+                    ++limit_switches;
+                }
+            }
+            if (!switched) {
+                break;
+            }
+            rr = NetworkSolve::solveReduced(system, rr.node_pressure, params, /*eliminate=*/true,
+                                            NetworkSolve::CliffRule::Die);
+        }
+        if (limit_switches > 0) {
+            deferred_logger.debug(fmt::format("Controller: {} group limit switches inside the decision under {}",
+                                              limit_switches, root.name()));
+        }
         if (!rr.converged) {
             return giveUp(fmt::format("the reduced route did not converge under {} in {} iterations, residual {:.3g}",
                                       root.name(), rr.iterations, rr.residual));
