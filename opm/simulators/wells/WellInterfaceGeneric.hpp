@@ -116,6 +116,11 @@ public:
     void setWsolvent(const Scalar wsolvent);
     void setDynamicThpLimit(const Scalar thp_limit);
     std::optional<Scalar> getDynamicThpLimit() const;
+
+    /// The network route found this well unable to lift at its node pressure;
+    /// while set the well is not operable, so the shut decision is made once.
+    void setNetworkDead(const bool dead) { network_dead_ = dead; }
+    bool networkDead() const { return network_dead_; }
     void setDynamicThpLimit(const std::optional<Scalar> thp_limit);
     void updatePerforatedCell(std::vector<bool>& is_cell_perforated);
 
@@ -471,6 +476,7 @@ protected:
     Scalar gravity_;
     Scalar wsolvent_;
     std::optional<Scalar> dynamic_thp_limit_;
+    bool network_dead_ = false;
 
     // recording the multiplier calculate from the keyword WINJMULT during the time step
     mutable std::vector<Scalar> inj_multiplier_;

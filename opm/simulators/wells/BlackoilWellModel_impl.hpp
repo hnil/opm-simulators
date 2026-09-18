@@ -1327,10 +1327,13 @@ namespace Opm {
         // Note that well controls are allowed to change during updateNetwork
         // and in prepareWellsBeforeAssembling during well solves.
         bool well_group_control_changed = updateWellControls(local_deferredLogger);
-        const auto [more_inner_network_update, network_imbalance] =
-                this->network_.update(mandatory_network_balance,
-                                      local_deferredLogger,
-                                      relax_network_tolerance);
+        // The controller's network route owns the node pressures this iteration.
+        const bool owned_network = param_.enable_group_controller_ && this->controller_network_owned_;
+        const auto [more_inner_network_update, network_imbalance] = owned_network
+            ? std::tuple<bool, Scalar>{false, Scalar{0}}
+            : this->network_.update(mandatory_network_balance,
+                                    local_deferredLogger,
+                                    relax_network_tolerance);
 #ifdef RESERVOIR_COUPLING_ENABLED
         if (this->isReservoirCouplingMaster()) {
             this->rescoupHelper_.maybeExchangeNetworkOuterIterationWithSlaves(more_inner_network_update);
@@ -1842,6 +1845,7 @@ namespace Opm {
                                                     (own && !legacy_targets) ? &decided : nullptr,
                                                     write_rates);
         this->controller_decided_wells_.clear();
+        controllerMarkDecided_();
         this->controller_assigned_cmode_.clear();
         this->controller_assigned_rates_.clear();
         for (const auto& name : decided) {
@@ -1856,6 +1860,7 @@ namespace Opm {
             this->controller_assigned_cmode_[name] = this->wellState().well(name).production_cmode;
             this->controller_assigned_rates_[name] = this->wellState().well(name).surface_rates;
         }
+        controllerMarkDecided_();
         // What legacy does after any switch: prime the well state and primary
         // variables for the control and target it was just given.
         OPM_BEGIN_PARALLEL_TRY_CATCH()
@@ -1921,18 +1926,36 @@ namespace Opm {
         // A well that cannot honour its target ends up on one of its own limits, here
         // or inside its solve; that is the feasibility report, and the balancer
         // re-decides on it at once. Bounded: each pass leaves one more well at a limit.
-        constexpr int max_passes = 4;
         bool changed_any = false;
+        // With a network the node pressures move every iteration: decide every time,
+        // NUPCOL or not, as legacy's network update does.
+        const bool network_route = param_.enable_group_controller_network_
+            && this->schedule()[episodeIdx].network().active();
+        this->controller_network_owned_ = false;
+        const int max_passes = network_route ? 6 : 4;
+        const std::string sig_before = this->controller_decision_signature_;
         for (int pass = 0; pass < max_passes; ++pass) {
-            bool changed = false;
+            bool changed = (pass == 0 && network_route);
             OPM_BEGIN_PARALLEL_TRY_CATCH()
                 for (const auto& well : well_container_) {
                     const auto mode = WellInterface<TypeTag>::IndividualOrGroup::Individual;
-                    const bool changed_well = well->updateWellControl(
+                    bool changed_well = well->updateWellControl(
                         simulator_, mode, this->groupStateHelper(), this->wellState());
-                    changed = changed || changed_well;
-                    const auto& ws = this->wellState().well(well->indexOfWell());
+                    auto& ws = this->wellState().well(well->indexOfWell());
                     const auto it = this->controller_assigned_cmode_.find(well->name());
+                    if (changed_well && this->controller_network_owned_
+                        && it != this->controller_assigned_cmode_.end()
+                        && (ws.production_cmode == Well::ProducerCMode::THP
+                            || ws.production_cmode == Well::ProducerCMode::BHP)) {
+                        // The network route holds this well's tubing and bhp rows at the
+                        // same node pressure; its own thp check reads a thp only a solve
+                        // updates. The decision stands.
+                        ws.production_cmode = it->second;
+                        well->updateWellStateWithTarget(simulator_, this->groupStateHelper(), this->wellState());
+                        well->updatePrimaryVariables(this->groupStateHelper());
+                        changed_well = false;
+                    }
+                    changed = changed || changed_well;
                     if (it != this->controller_assigned_cmode_.end() && ws.production_cmode != it->second) {
                         changed = true;
                     }
@@ -1958,17 +1981,40 @@ namespace Opm {
             if (!changed) {
                 break;
             }
-            changed_any = true;
-            if (!may_redecide && !group_violated) {
+            if (!may_redecide && !group_violated && !network_route) {
                 // Targets are frozen after NUPCOL; only legacy's bookkeeping runs.
+                changed_any = true;
                 updateAndCommunicate(episodeIdx);
                 break;
             }
             // A re-decision changes the targets only; the well state stays the solve's.
             // Writing the tree's rates here cost 6 % more Newton on FLOW-CGC.
-            runControllerBalance_(prepareWellsForBalancing_(deferred_logger), deferred_logger,
-                                  /*write_rates*/ false);
+            controllerDecide_(deferred_logger, /*write_rates*/ false);
+            const std::string sig = controllerDecisionSignature_();
+            const bool moved = sig != this->controller_decision_signature_;
+            this->controller_decision_signature_ = sig;
+            if (this->controller_network_owned_) {
+                // The route's IPRs are linearised at the wells' current states: solve
+                // the decided wells on their new controls before deciding again, as the
+                // network sub-iterations do, so decision and linearisation settle together.
+                const double dt = simulator_.timeStepSize();
+                OPM_BEGIN_PARALLEL_TRY_CATCH()
+                for (const auto& well : well_container_) {
+                    if (this->controller_decided_wells_.count(well->name())) {
+                        well->prepareWellBeforeAssembling(simulator_, dt, this->groupStateHelper(), this->wellState());
+                    }
+                }
+                OPM_END_PARALLEL_TRY_CATCH("BlackoilWellModel: solving the controller's wells failed: ",
+                                           simulator_.gridView().comm());
+                this->updateAndCommunicateGroupData(episodeIdx, /*update_wellgrouptarget*/ true);
+            }
+            if (!moved) {
+                break;      // the decision stands
+            }
         }
+        // Only a decision that moved is a change; a rate off its assignment by the
+        // IPR's error is not, or the step would never be allowed to converge.
+        changed_any = changed_any || (this->controller_decision_signature_ != sig_before);
         this->updateWsolvent(this->schedule().getGroup("FIELD", episodeIdx), episodeIdx, this->nupcolWellState());
         return changed_any;
     }

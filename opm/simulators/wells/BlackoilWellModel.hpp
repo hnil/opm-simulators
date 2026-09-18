@@ -291,6 +291,24 @@ template<class Scalar> class WellContributions;
                                        DeferredLogger& deferred_logger,
                                        bool write_rates = true);
 
+            /// The decide step: the network route where a production network is active
+            /// and it succeeds, otherwise the balancer.
+            void controllerDecide_(DeferredLogger& deferred_logger, bool write_rates);
+
+            /// Controls, rates (3 digits) and node pressures (0.1 bar) of the decision.
+            std::string controllerDecisionSignature_() const;
+
+            /// The well-state flag that keeps the well solves' group checks off decided wells.
+            void controllerMarkDecided_();
+
+            /// The implicit IPR of every open producer, with the zero-rate guard.
+            void controllerRefreshIpr_(DeferredLogger& deferred_logger);
+
+            /// One system per network root: IPR, node and group rows, solved by the
+            /// reduced route, judged, and written as node pressures, controls and
+            /// targets. False if the route does not apply or did not converge.
+            bool controllerNetworkDecide_(DeferredLogger& deferred_logger);
+
             /// A production group's current rates exceed one of its own limits by more
             /// than 1 %: the group-level feasibility report.
             bool controllerGroupLimitViolated_() const;
@@ -838,5 +856,6 @@ template<class Scalar> class WellContributions;
 } // namespace Opm
 
 #include "BlackoilWellModel_impl.hpp"
+#include "BlackoilWellModelController_impl.hpp"
 
 #endif // OPM_BLACKOILWELLMODEL_HEADER_INCLUDED

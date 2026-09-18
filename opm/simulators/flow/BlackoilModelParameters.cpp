@@ -129,6 +129,7 @@ BlackoilModelParameters<Scalar>::BlackoilModelParameters()
     enable_group_tree_balancer_ = Parameters::Get<Parameters::EnableGroupTreeBalancer>();
     group_tree_balancer_tolerance_ = Parameters::Get<Parameters::GroupTreeBalancerTolerance<Scalar>>();
     enable_group_controller_ = Parameters::Get<Parameters::EnableGroupController>();
+    enable_group_controller_network_ = Parameters::Get<Parameters::EnableGroupControllerNetwork>();
     if (enable_group_controller_) {
         enable_group_tree_balancer_ = true;
     }
@@ -345,6 +346,9 @@ void BlackoilModelParameters<Scalar>::registerParameters()
         ("Let the group-tree balancer decide production group control: its allocation "
          "is the wells' target, legacy's group switching is bypassed, and a well that "
          "cannot honour its target reports back through its own limits (implies the balancer)");
+    Parameters::Register<Parameters::EnableGroupControllerNetwork>
+        ("Under the group controller, decide a production network with the reduced route: "
+         "IPR, node and group rows in one system, judged before it is applied");
 
     // if openMP is available, use two threads per mpi rank by default
 #if _OPENMP

@@ -90,6 +90,7 @@ public:
         serializer(group_target);
         serializer(group_target_fallback);
         serializer(use_group_target_fallback);
+        serializer(controller_decided);
         serializer(was_shut_before_action_applied);
         serializer(weldraw_max_rate);
         serializer(weldraw_cmode);
@@ -164,6 +165,10 @@ public:
     std::optional<GroupTarget> group_target;
     std::optional<GroupTarget> group_target_fallback;
     bool use_group_target_fallback;
+
+    /// Its control was decided by the group controller against the whole tree;
+    /// no group check switches it again from one group's view.
+    bool controller_decided{false};
     SegmentState<Scalar> segments;
     Events events;
     WellInjectorCMode injection_cmode{WellInjectorCMode::CMODE_UNDEFINED};

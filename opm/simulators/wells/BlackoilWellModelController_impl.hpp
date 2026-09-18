@@ -1,0 +1,681 @@
+/*
+  Copyright 2026 Equinor ASA.
+
+  This file is part of the Open Porous Media project (OPM).
+
+  OPM is free software: you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation, either version 3 of the License, or
+  (at your option) any later version.
+
+  OPM is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  GNU General Public License for more details.
+
+  You should have received a copy of the GNU General Public License
+  along with OPM.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
+#ifndef OPM_BLACKOILWELLMODEL_CONTROLLER_IMPL_HEADER_INCLUDED
+#define OPM_BLACKOILWELLMODEL_CONTROLLER_IMPL_HEADER_INCLUDED
+
+// The group controller's decide step with a production network: every
+// well's IPR, the node pressures and the group tree in one system, solved
+// by the reduced route, scored by the judge, and handed to the wells as
+// controls and targets. Without a network the balancer decides instead.
+
+#include <opm/input/eclipse/Schedule/Group/GSatProd.hpp>
+#include <opm/input/eclipse/Schedule/Network/Branch.hpp>
+#include <opm/input/eclipse/Schedule/Network/ExtNetwork.hpp>
+#include <opm/input/eclipse/Schedule/Network/Node.hpp>
+#include <opm/input/eclipse/Schedule/ScheduleState.hpp>
+#include <opm/input/eclipse/Schedule/VFPProdTable.hpp>
+
+#include <opm/simulators/wells/network/NetworkJudge.hpp>
+#include <opm/simulators/wells/network/NetworkProductionSystem.hpp>
+#include <opm/simulators/wells/network/NetworkReducedSolve.hpp>
+
+#include <fmt/format.h>
+
+#include <algorithm>
+#include <cstdlib>
+#include <fstream>
+#include <array>
+#include <functional>
+#include <map>
+#include <optional>
+#include <set>
+#include <string>
+#include <vector>
+
+namespace Opm {
+
+template<typename TypeTag>
+void
+BlackoilWellModel<TypeTag>::
+controllerDecide_(DeferredLogger& deferred_logger, const bool write_rates)
+{
+    if (param_.enable_group_controller_network_ && controllerNetworkDecide_(deferred_logger)) {
+        this->controller_network_owned_ = true;
+        return;
+    }
+    this->controller_network_owned_ = false;
+    runControllerBalance_(prepareWellsForBalancing_(deferred_logger), deferred_logger, write_rates);
+}
+
+template<typename TypeTag>
+std::string
+BlackoilWellModel<TypeTag>::
+controllerDecisionSignature_() const
+{
+    std::string sig;
+    for (const auto& [name, cmode] : this->controller_assigned_cmode_) {
+        Scalar q = 0;
+        if (const auto it = this->controller_assigned_rates_.find(name); it != this->controller_assigned_rates_.end()) {
+            for (const auto v : it->second) { q += std::abs(v); }
+        }
+        sig += fmt::format("{}:{}:{:.3g};", name, static_cast<int>(cmode), q * 86400.0);
+    }
+    for (const auto& [node, p] : this->network_.nodePressures()) {
+        sig += fmt::format("{}={:.1f};", node, p / 1e5);
+    }
+    return sig;
+}
+
+template<typename TypeTag>
+void
+BlackoilWellModel<TypeTag>::
+controllerMarkDecided_()
+{
+    for (const auto& well : well_container_) {
+        this->wellState().well(well->indexOfWell()).controller_decided =
+            this->controller_decided_wells_.count(well->name()) > 0;
+    }
+}
+
+template<typename TypeTag>
+void
+BlackoilWellModel<TypeTag>::
+controllerRefreshIpr_(DeferredLogger& deferred_logger)
+{
+    // The system needs every well's rate response to its own bhp: the implicit
+    // IPR, which the well solve keeps only where its own logic needs it. At zero
+    // rate that linearisation can be singular; only a degenerate one -- steeper
+    // than the connections allow -- is replaced, by the IPR from the last time
+    // the well flowed, or the connections' where it never has.
+    auto& cache = this->controller_last_flowing_ipr_;
+    for (const auto& well : well_container_) {
+        if (!well->wellEcl().predictionMode() || !well->isProducer()) {
+            continue;
+        }
+        auto& ws = this->wellState().well(well->indexOfWell());
+        if (ws.status != WellStatus::OPEN) {
+            continue;
+        }
+        well->updateIPRImplicit(simulator_, this->groupStateHelper(), this->wellState());
+        const bool zero = std::all_of(ws.surface_rates.begin(), ws.surface_rates.end(),
+                                      [](const Scalar q) { return q == Scalar{0}; });
+        if (!zero) {
+            cache[well->name()] = {ws.implicit_ipr_a, ws.implicit_ipr_b};
+            continue;
+        }
+        const auto implicit_a = ws.implicit_ipr_a, implicit_b = ws.implicit_ipr_b;
+        well->setImplicitIprFromConnections(simulator_, this->wellState(), deferred_logger);
+        auto steepest = [](const std::vector<Scalar>& b) {
+            Scalar m = 0;
+            for (const auto v : b) { m = std::max(m, std::abs(v)); }
+            return m;
+        };
+        const bool degenerate = steepest(implicit_b) > Scalar{10} * steepest(ws.implicit_ipr_b);
+        if (!degenerate) {
+            ws.implicit_ipr_a = implicit_a;
+            ws.implicit_ipr_b = implicit_b;
+        } else if (const auto it = cache.find(well->name()); it != cache.end()) {
+            ws.implicit_ipr_a = it->second.first;
+            ws.implicit_ipr_b = it->second.second;
+        }
+    }
+}
+
+template<typename TypeTag>
+bool
+BlackoilWellModel<TypeTag>::
+controllerNetworkDecide_(DeferredLogger& deferred_logger)
+{
+    OPM_TIMEFUNCTION();
+    using Sys = NetworkSolve::ProductionSystem<Scalar>;
+    using Ctrl = typename Sys::Control;
+    using Mode = typename Sys::Mode;
+    const int reportStepIdx = simulator_.episodeIndex();
+    const auto& schedule = this->schedule();
+    const auto& network = schedule[reportStepIdx].network();
+    if (!network.active()) {
+        return false;
+    }
+    if (this->comm().size() > 1) {
+        OPM_DEFLOG_THROW(std::runtime_error,
+                         "The group controller's network route is serial only for now", deferred_logger);
+    }
+    auto giveUp = [&](const std::string& why) {
+        deferred_logger.debug(fmt::format("Controller: the network route is not taken at report step {} ({}); "
+                                          "the balancer decides and legacy balances the network", reportStepIdx, why));
+        return false;
+    };
+    const auto& units = schedule.getUnits();
+    const auto& summary_state = this->summaryState();
+    const auto& pu = this->phaseUsage();
+    // Water, oil, gas -- the order VFPPROD wants -- as positions in the active-phase arrays.
+    const std::array<int, Sys::NP> pos{
+        pu.canonicalToActivePhaseIdx(IndexTraits::waterPhaseIdx),
+        pu.canonicalToActivePhaseIdx(IndexTraits::oilPhaseIdx),
+        pu.canonicalToActivePhaseIdx(IndexTraits::gasPhaseIdx)};
+    if (std::any_of(pos.begin(), pos.end(), [](const int p) { return p < 0; })) {
+        return giveUp("the network needs all three phases");
+    }
+    controllerRefreshIpr_(deferred_logger);
+
+    // What the deck allows, not what legacy has the well on: available for group
+    // control with a rate target somewhere above it.
+    const auto groupControllable = [&](const Well& well) {
+        if (!well.isAvailableForGroupControl()) {
+            return false;
+        }
+        for (std::string g = well.groupName(); !g.empty(); ) {
+            const auto& grp = schedule.getGroup(g, reportStepIdx);
+            if (grp.isProductionGroup()) {
+                const auto ctl = grp.productionControls(summary_state);
+                using C = Group::ProductionCMode;
+                const bool rate = ctl.cmode == C::ORAT || ctl.cmode == C::LRAT
+                               || ctl.cmode == C::GRAT || ctl.cmode == C::WRAT;
+                if (rate && grp.has_control(ctl.cmode)) {
+                    return true;
+                }
+            }
+            if (grp.parent() == g) {
+                break;
+            }
+            g = grp.parent();
+        }
+        return false;
+    };
+    // The deck's guide rate on the mode of the nearest targeted group above the well.
+    const auto deckGuide = [&](const std::string& name) -> Scalar {
+        const auto& gr = this->guideRate();
+        if (!gr.has(name) && !gr.hasPotentials(name)) {
+            return Scalar{0};
+        }
+        const auto& helper = this->groupStateHelper();
+        auto target = GuideRateModel::Target::OIL;
+        for (std::string g = schedule.getWell(name, reportStepIdx).groupName(); !g.empty(); ) {
+            const auto& grp = schedule.getGroup(g, reportStepIdx);
+            if (grp.isProductionGroup()) {
+                const auto cmode = grp.productionControls(summary_state).cmode;
+                if (cmode != Group::ProductionCMode::NONE && cmode != Group::ProductionCMode::FLD) {
+                    target = helper.getProductionGuideTargetModeFromControlMode(cmode);
+                    break;
+                }
+            }
+            if (grp.parent() == g) { break; }
+            g = grp.parent();
+        }
+        return static_cast<Scalar>(gr.get(name, target, helper.getWellRateVector(name)));
+    };
+
+    std::map<std::string, Scalar> new_pressures;
+    std::set<std::string> decided;
+    std::map<std::string, Well::ProducerCMode> assigned_cmode;
+    std::map<std::string, std::vector<Scalar>> assigned_rates;
+    std::map<std::string, bool> dead_now;
+    int n_judged_wrong = 0;
+
+    for (const auto& root_ref : network.roots()) {
+        const auto& root = root_ref.get();
+        if (!root.terminal_pressure().has_value()) {
+            return giveUp(fmt::format("{} has no terminal pressure", root.name()));
+        }
+        const Scalar terminal = *root.terminal_pressure();
+        Sys system(*this->getVFPProperties().getProd(), units);
+        system.setTerminalPressure(terminal);
+        // Nodes, parents before children.
+        std::map<std::string, int> index;
+        std::vector<std::string> order{root.name()};
+        system.addNode(NetworkSolve::Node{order.front(), -1, NetworkSolve::NoTable}, Scalar{0});
+        index[order.front()] = 0;
+        for (std::size_t at = 0; at < order.size(); ++at) {
+            for (const auto& branch : network.downtree_branches(order[at])) {
+                const auto& child = branch.downtree_node();
+                if (index.count(child)) {
+                    continue;
+                }
+                index[child] = static_cast<int>(order.size());
+                order.push_back(child);
+                const auto& child_node = network.node(child);
+                if (child_node.terminal_pressure().has_value()) {
+                    return giveUp(fmt::format("{} is a fixed-pressure node below the root", child));
+                }
+                if (child_node.as_choke()) {
+                    return giveUp(fmt::format("{} is an autochoke node", child));
+                }
+                Scalar alq = 0.0;
+                if (branch.vfp_table().has_value()) {
+                    const auto& table = this->getVFPProperties().getProd()->getTable(*branch.vfp_table());
+                    alq = branch.alq_value(VFPProdTable::ALQDimension(table.getALQType(), units)).value_or(0.0);
+                }
+                NetworkSolve::Node node{child, static_cast<int>(at),
+                                        branch.vfp_table().value_or(NetworkSolve::NoTable)};
+                node.efficiency = child_node.efficiency();
+                system.addNode(std::move(node), alq);
+                // Satellite production: a rate with no well behind it.
+                const auto& grp = schedule.getGroup(child, reportStepIdx);
+                if (grp.hasSatelliteProduction()) {
+                    const auto& gsat = schedule[reportStepIdx].satelliteProduction;
+                    if (gsat.has(child)) {
+                        const auto r = gsat.get(child).getRates(summary_state);
+                        std::array<Scalar, Sys::NP> source{
+                            static_cast<Scalar>(r[GSatProd::Rate::Water]),
+                            static_cast<Scalar>(r[GSatProd::Rate::Oil]),
+                            static_cast<Scalar>(r[GSatProd::Rate::Gas])};
+                        if (child_node.add_gas_lift_gas()) {
+                            source[2] += static_cast<Scalar>(r[GSatProd::Rate::GLift]);
+                        }
+                        system.setNodeSource(index.at(child), source);
+                    }
+                }
+            }
+        }
+        // The wells under it.
+        struct TreeWell { int index; std::string name; Scalar deck_guide; };
+        std::vector<TreeWell> tree_wells;
+        std::vector<std::string> own_control;     // in the system, free on their own limits
+        std::map<std::string, Well::ProducerCMode> own_limit_mode;   // which own limit the allowance is
+        // Every own rate limit as the oil rate at which it binds on the well's
+        // linear IPR, and the smallest of them; exact for the line.
+        auto allowance = [&](const typename Sys::Well& w, const Well::ProductionControls& c) {
+            Scalar best = c.hasControl(Well::ProducerCMode::ORAT) && c.oil_rate > 0 ? static_cast<Scalar>(c.oil_rate) : Scalar{0};
+            Well::ProducerCMode mode = Well::ProducerCMode::ORAT;
+            auto consider = [&](const Well::ProducerCMode m, const Scalar limit, const int ph_a, const int ph_b) {
+                if (!c.hasControl(m) || !(limit > 0)) return;
+                // rate on the limit's phases q = A + B*bhp; bhp where it equals the limit; oil there.
+                const Scalar A = w.ipr_a[ph_a] + (ph_b >= 0 ? w.ipr_a[ph_b] : Scalar{0});
+                const Scalar B = w.ipr_b[ph_a] + (ph_b >= 0 ? w.ipr_b[ph_b] : Scalar{0});
+                if (!(B < Scalar{0})) return;
+                const Scalar bhp = (limit - A) / B;
+                const Scalar oil = std::max(w.ipr_a[1] + w.ipr_b[1] * bhp, Scalar{0});
+                if (!(best > Scalar{0}) || oil < best) { best = oil; mode = m; }
+            };
+            consider(Well::ProducerCMode::WRAT, static_cast<Scalar>(c.water_rate), 0, -1);
+            consider(Well::ProducerCMode::GRAT, static_cast<Scalar>(c.gas_rate), 2, -1);
+            consider(Well::ProducerCMode::LRAT, static_cast<Scalar>(c.liquid_rate), 0, 1);
+            return std::pair{best, mode};
+        };
+        for (const auto& name : schedule.wellNames(reportStepIdx)) {
+            const auto& well = schedule.getWell(name, reportStepIdx);
+            if (!well.isProducer() || !well.predictionMode() || !index.count(well.groupName())) {
+                continue;
+            }
+            if (schedule.getGroup(well.groupName(), reportStepIdx).hasSatelliteProduction()) {
+                continue;
+            }
+            if (schedule[reportStepIdx].glo().has_well(name)) {
+                return giveUp(fmt::format("{} is under gas lift optimisation", name));
+            }
+            if (!this->wellState().has(name)) {
+                continue;
+            }
+            const auto& ws = this->wellState().well(name);
+            if (ws.status != WellStatus::OPEN) {
+                continue;
+            }
+            const auto controls = well.productionControls(summary_state);
+            const bool usable = static_cast<int>(ws.implicit_ipr_b.size()) >= pu.numActivePhases()
+                && ws.implicit_ipr_b[pos[1]] > Scalar{0};
+            const Scalar current = std::max(-ws.surface_rates[pos[1]], Scalar{0});
+            const bool owned = groupControllable(well);
+            typename Sys::Well w;
+            w.name = name;
+            w.node = index.at(well.groupName());
+            w.vfp_table = controls.vfp_table_number;
+            w.bhp_limit = static_cast<Scalar>(controls.bhp_limit);
+            w.efficiency = static_cast<Scalar>(well.getEfficiencyFactor(/*network=*/true)) * ws.efficiency_scaling_factor;
+            w.alq = ws.alq_state.get();
+            w.node_adds_lift_gas = network.node(well.groupName()).add_gas_lift_gas();
+            if (w.node_adds_lift_gas) {
+                w.lift_gas = w.alq;
+            }
+            if (!usable) {
+                if (!owned) {
+                    continue;             // at zero rate on its own control; not part of it
+                }
+                // No inflow: shut in the system, counted so its group keeps its target.
+                w.shut = true;
+                w.guide = deckGuide(name);
+                tree_wells.push_back({static_cast<int>(system.numWells()), name, w.guide});
+                system.addWell(std::move(w));
+                continue;
+            }
+            for (int ph = 0; ph < Sys::NP; ++ph) {
+                // The well state holds q = b*bhp - a with production negative;
+                // the system wants production positive, falling with bhp.
+                w.ipr_a[ph] = ws.implicit_ipr_a[pos[ph]];
+                w.ipr_b[ph] = -ws.implicit_ipr_b[pos[ph]];
+            }
+            w.q_start = current;
+            if (owned) {
+                const auto [allow, mode] = allowance(w, controls);
+                w.oil_rate_limit = allow;
+                own_limit_mode[name] = mode;
+                w.guide = current;
+                tree_wells.push_back({static_cast<int>(system.numWells()), name, deckGuide(name)});
+            } else if (w.vfp_table > 0 && ws.production_cmode == Well::ProducerCMode::THP) {
+                // Its thp is the node pressure: the network places it.
+                const auto [allow, mode] = allowance(w, controls);
+                w.oil_rate_limit = allow;
+                own_limit_mode[name] = mode;
+                w.guide = std::max(current, w.oil_rate_limit);
+                own_control.push_back(name);
+            } else {
+                if (!(current > Scalar{0})) {
+                    continue;
+                }
+                w.oil_rate_limit = current;   // a source at what it does now
+                w.guide = current;
+                w.pinned = true;
+            }
+            system.addWell(std::move(w));
+        }
+        if (system.numWells() == 0) {
+            return giveUp(fmt::format("no producers under {}", root.name()));
+        }
+        // The deck's group tree, parents first.
+        if (!tree_wells.empty()) {
+            const bool deck_guides = std::all_of(tree_wells.begin(), tree_wells.end(),
+                                                 [](const TreeWell& t) { return t.deck_guide > Scalar{0}; });
+            if (deck_guides) {
+                for (const auto& t : tree_wells) {
+                    system.setWellGuide(t.index, t.deck_guide);
+                }
+            }
+            std::map<std::string, int> gidx;
+            std::map<std::string, Scalar> wguide;
+            std::set<std::string> here;
+            for (const auto& t : tree_wells) {
+                wguide[t.name] = system.wells()[t.index].guide;
+                here.insert(t.name);
+            }
+            std::function<Scalar(const std::string&)> subtreeGuide = [&](const std::string& g) {
+                const auto& grp = schedule.getGroup(g, reportStepIdx);
+                Scalar sum = 0;
+                for (const auto& child : grp.groups()) { sum += subtreeGuide(child); }
+                for (const auto& wn : grp.wells()) {
+                    if (const auto it = wguide.find(wn); it != wguide.end()) { sum += it->second; }
+                }
+                return sum;
+            };
+            std::function<bool(const std::string&)> allHere = [&](const std::string& g) {
+                const auto& grp = schedule.getGroup(g, reportStepIdx);
+                for (const auto& child : grp.groups()) { if (!allHere(child)) { return false; } }
+                for (const auto& wn : grp.wells()) {
+                    const auto& well = schedule.getWell(wn, reportStepIdx);
+                    // A well the well model has stopped produces nothing; the target
+                    // applies to the rest. Only a producing well outside the system
+                    // (another network, another rank) takes the target away.
+                    const bool open = this->wellState().has(wn)
+                        && this->wellState().well(wn).status == WellStatus::OPEN;
+                    if (well.isProducer() && well.predictionMode() && open && !here.count(wn)) {
+                        return false;
+                    }
+                }
+                return true;
+            };
+            std::function<void(const std::string&, int)> addTree = [&](const std::string& g, const int parent) {
+                const auto& grp = schedule.getGroup(g, reportStepIdx);
+                typename Sys::Group node;
+                node.name = g;
+                node.parent = parent;
+                node.efficiency = grp.getGroupEfficiencyFactor(/*network=*/true);
+                node.guide = subtreeGuide(g);
+                node.available = grp.productionGroupControlAvailable();
+                if (grp.isProductionGroup() && allHere(g)) {
+                    const auto ctl = grp.productionControls(summary_state);
+                    using C = Group::ProductionCMode;
+                    // One target per group in the system: of the deck's limits, the one
+                    // most binding at the group's current rates. The controller's group
+                    // check re-decides when another one takes over.
+                    const auto& gs = this->groupState();
+                    std::array<Scalar, Sys::NP> now{};   // water, oil, gas
+                    if (gs.has_production_rates(g)) {
+                        const auto& r = gs.production_rates(g);
+                        for (int ph = 0; ph < Sys::NP; ++ph) { now[ph] = pos[ph] < static_cast<int>(r.size()) ? r[pos[ph]] : Scalar{0}; }
+                    }
+                    const auto& act = ctl.group_limit_action;
+                    const bool all_rate = act.allRates == Group::ExceedAction::RATE;
+                    Scalar worst = -1;
+                    auto consider = [&](const C m, const Group::ExceedAction a, const Scalar limit, const Mode mode, const Scalar rate) {
+                        if (!grp.has_control(m) || !(all_rate || a == Group::ExceedAction::RATE)) return;
+                        const Scalar ratio = limit > Scalar{0} ? rate / limit : (m == ctl.cmode ? Scalar{1e30} : Scalar{-1});
+                        const Scalar score = m == ctl.cmode ? std::max(ratio, Scalar{0}) + Scalar{1e-9} : ratio;
+                        if (score > worst) { worst = score; node.mode = mode; node.target = limit; }
+                    };
+                    consider(C::ORAT, act.oil, ctl.oil_target, Mode::Oil, now[1]);
+                    consider(C::WRAT, act.water, ctl.water_target, Mode::Water, now[0]);
+                    consider(C::GRAT, act.gas, ctl.gas_target, Mode::Gas, now[2]);
+                    consider(C::LRAT, act.liquid, ctl.liquid_target, Mode::Liquid, now[0] + now[1]);
+                    // An explicit zero target means produce nothing; the system reads zero as none.
+                    if (!(node.target > Scalar{0}) && grp.has_control(ctl.cmode)
+                        && (ctl.cmode == C::ORAT || ctl.cmode == C::LRAT || ctl.cmode == C::GRAT || ctl.cmode == C::WRAT)) {
+                        node.target = Scalar{1e-12};
+                    }
+                }
+                const int me = system.addGroup(std::move(node));
+                gidx[g] = me;
+                for (const auto& child : grp.groups()) { addTree(child, me); }
+            };
+            addTree("FIELD", -1);
+            // Satellite production reduces every target above it.
+            {
+                const auto& gs = this->groupState();
+                const auto& groups = system.groups();
+                for (int g = 0; g < system.numGroups(); ++g) {
+                    if (!schedule.getGroup(groups[g].name, reportStepIdx).hasSatelliteProduction()
+                        || !gs.has_production_rates(groups[g].name)) {
+                        continue;
+                    }
+                    const auto& r = gs.production_rates(groups[g].name);
+                    std::array<Scalar, Sys::NP> q{};
+                    for (int ph = 0; ph < Sys::NP; ++ph) {
+                        q[ph] = (pos[ph] < static_cast<int>(r.size())) ? r[pos[ph]] : Scalar{0};
+                    }
+                    Scalar eff = groups[g].efficiency;
+                    for (int a = groups[g].parent; a >= 0; a = groups[a].parent) {
+                        if (groups[a].target > Scalar{0}) {
+                            const auto c = Sys::modeWeights(groups[a].mode, groups[a].resv_coeff);
+                            Scalar on = 0;
+                            for (int ph = 0; ph < Sys::NP; ++ph) { on += c[ph] * q[ph]; }
+                            system.setGroupLimit(a, groups[a].mode, std::max(groups[a].target - eff * on, Scalar{1e-12}));
+                        }
+                        eff *= groups[a].efficiency;
+                    }
+                }
+            }
+            for (const auto& t : tree_wells) {
+                system.setWellGroup(t.index, gidx.at(schedule.getWell(t.name, reportStepIdx).groupName()));
+            }
+            system.setGroupTree(true);
+            system.setGroupActiveSet(true);
+        }
+        system.setAnalyticJacobian(true);
+        system.setComplementarity(false);
+        system.finish();
+        if (!tree_wells.empty()) {
+            system.finishGroups();
+        }
+        // From the node pressures the network last had.
+        std::vector<Scalar> guess(order.size(), terminal);
+        const auto& previous = this->network_.nodePressures();
+        for (std::size_t n = 0; n < order.size(); ++n) {
+            if (const auto it = previous.find(order[n]); it != previous.end() && it->second > Scalar{0}) {
+                guess[n] = it->second;
+            }
+        }
+        const NetworkSolve::Parameters<Scalar> params{Scalar{1e-2}, 50};
+        const auto rr = NetworkSolve::solveReduced(system, guess, params, /*eliminate=*/true,
+                                                   NetworkSolve::CliffRule::Die);
+        if (!rr.converged) {
+            return giveUp(fmt::format("the reduced route did not converge under {} in {} iterations, residual {:.3g}",
+                                      root.name(), rr.iterations, rr.residual));
+        }
+        // The judge: every row, before anything is written.
+        std::string letters;
+        for (int w = 0; w < system.numWells(); ++w) {
+            letters += system.controlLetter(w);
+        }
+        const auto verdict = NetworkSolve::verifyAnswer(system, rr.node_pressure, rr.well_rate, letters);
+        if (!verdict.ok) {
+            ++n_judged_wrong;
+            std::string what;
+            for (const auto& [k, n] : verdict.violations) { what += fmt::format(" {}x{}", n, k); }
+            deferred_logger.debug(fmt::format("Controller: the judge rejects the network answer under {} at report step {}:{}",
+                                              root.name(), reportStepIdx, what));
+        }
+        deferred_logger.debug(fmt::format("Controller: network route under {} at report step {}: {} iterations, set {}, judge {}{}",
+                                          root.name(), reportStepIdx, rr.iterations, letters, verdict.ok ? "ok" : "REJECTS",
+                                          rr.stalls || rr.cliffs ? fmt::format(" ({} stalls, {} cliffs)", rr.stalls, rr.cliffs) : ""));
+        for (std::size_t n = 0; n < order.size(); ++n) {
+            new_pressures[order[n]] = rr.node_pressure[n];
+        }
+        // OPM_CONTROLLER_TRACE: one line per well per decision; OPM_CONTROLLER_DUMP=<prefix>:
+        // every system written for the bench to replay.
+        static const bool trace = std::getenv("OPM_CONTROLLER_TRACE") != nullptr;
+        static const char* dump_prefix = std::getenv("OPM_CONTROLLER_DUMP");
+        if (trace) {
+            deferred_logger.debug(fmt::format("CTRLTRACE step={} it={} tree={} groups={} wells={} letters={}",
+                reportStepIdx, simulator_.problem().iterationContext().iteration(),
+                system.usesGroupTree() ? 1 : 0, system.numGroups(), system.numWells(), letters));
+            for (int g = 0; g < system.numGroups(); ++g) {
+                const auto& grp = system.groups()[g];
+                deferred_logger.debug(fmt::format("CTRLTRACE step={} it={} group {} parent={} target={:.4g} mode={} guide={:.4g} avail={}",
+                    reportStepIdx, simulator_.problem().iterationContext().iteration(), grp.name, grp.parent,
+                    grp.target * 86400.0, static_cast<int>(grp.mode), grp.guide * 86400.0, grp.available ? 1 : 0));
+            }
+            for (int w = 0; w < system.numWells(); ++w) {
+                const auto& well = system.wells()[w];
+                const Scalar p = rr.node_pressure[well.node];
+                deferred_logger.debug(fmt::format(
+                    "CTRLTRACE step={} it={} {} {} q={:.1f} qstart={:.1f} limit={:.1f} p={:.3f} "
+                    "ipr_oil=({:.4g},{:.4g}) thp_pot={:.1f} bhp_lim={:.2f}{}",
+                    reportStepIdx, simulator_.problem().iterationContext().iteration(), well.name,
+                    system.controlLetter(w), rr.well_rate[w] * 86400.0, well.q_start * 86400.0,
+                    well.oil_rate_limit * 86400.0, p / 1e5, well.ipr_a[1] * 86400.0, well.ipr_b[1] * 86400.0 * 1e5,
+                    well.vfp_table > 0 ? system.thpPotential(well, p) * 86400.0 : -1.0, well.bhp_limit / 1e5,
+                    well.pinned ? " pinned" : ""));
+                // The gas side: the line, the system's gas at its oil answer, the well's current gas.
+                const Scalar qo = rr.well_rate[w];
+                const Scalar bhp_w = (qo > Scalar{0} && well.ipr_b[1] < Scalar{0}) ? (qo - well.ipr_a[1]) / well.ipr_b[1] : well.bhp_limit;
+                const Scalar gas_sys = std::max(well.ipr_a[2] + well.ipr_b[2] * bhp_w, Scalar{0});
+                const Scalar gas_now = this->wellState().has(well.name)
+                    ? -this->wellState().well(well.name).surface_rates[pos[2]] : Scalar{0};
+                deferred_logger.debug(fmt::format("CTRLTRACE step={} it={} {} gas: ipr=({:.4g},{:.4g}) bhp={:.2f} gas_sys={:.0f} gas_now={:.0f} shut={}",
+                    reportStepIdx, simulator_.problem().iterationContext().iteration(), well.name,
+                    well.ipr_a[2] * 86400.0, well.ipr_b[2] * 86400.0 * 1e5, bhp_w / 1e5, gas_sys * 86400.0, gas_now * 86400.0, well.shut ? 1 : 0));
+            }
+        }
+        if (dump_prefix) {
+            std::ofstream out(fmt::format("{}_ctrl_{}.txt", dump_prefix, this->controller_dumps_written_++));
+            if (out) { NetworkSolve::write(system, guess, out); }
+        }
+        // The controls and targets.
+        const auto held = system.heldTargets(rr.well_rate);
+        for (int w = 0; w < system.numWells(); ++w) {
+            const auto& well = system.wells()[w];
+            if (well.pinned || !this->wellState().has(well.name)) {
+                continue;
+            }
+            auto& ws = this->wellState().well(well.name);
+            const auto& t = held[w];
+            using GC = Group::ProductionCMode;
+            switch (t.control) {
+            case Ctrl::Tree:
+            case Ctrl::Grup: {
+                if (t.group < 0) {
+                    break;
+                }
+                const GC cmode = t.mode == Mode::Gas    ? GC::GRAT
+                               : t.mode == Mode::Water  ? GC::WRAT
+                               : t.mode == Mode::Liquid ? GC::LRAT
+                               : t.mode == Mode::Resv   ? GC::RESV : GC::ORAT;
+                ws.production_cmode = Well::ProducerCMode::GRUP;
+                ws.group_target.emplace();
+                ws.group_target->group_name = system.groups()[t.group].name;
+                ws.group_target->target_value = t.value;
+                ws.group_target->production_cmode = cmode;
+                ws.group_target_fallback = std::nullopt;
+                ws.use_group_target_fallback = false;
+                break;
+            }
+            case Ctrl::Thp:
+            case Ctrl::OilRate:
+            case Ctrl::Tied: {
+                // At the corner where the tubing's capacity and the well's own rate limit
+                // coincide, the linear IPR's error straddles the choice; the well solve's
+                // own answer is the truth there and its control is kept.
+                const Scalar cap = well.vfp_table > 0 ? system.thpPotential(well, rr.node_pressure[well.node]) : Scalar{-1};
+                const bool corner = cap > Scalar{0} && well.oil_rate_limit > Scalar{0}
+                    && std::abs(cap - well.oil_rate_limit) <= Scalar{0.02} * well.oil_rate_limit
+                    && (ws.production_cmode == Well::ProducerCMode::THP
+                        || ws.production_cmode == Well::ProducerCMode::ORAT);
+                if (!corner) {
+                    const auto om = own_limit_mode.find(well.name);
+                    ws.production_cmode = t.control == Ctrl::Thp ? Well::ProducerCMode::THP
+                        : (om != own_limit_mode.end() ? om->second : Well::ProducerCMode::ORAT);
+                }
+                break;
+            }
+            case Ctrl::Bhp:     ws.production_cmode = Well::ProducerCMode::BHP;  break;
+            case Ctrl::Shut:    break;    // handed over below through the dead flag
+            default:            break;
+            }
+            decided.insert(well.name);
+            assigned_cmode[well.name] = ws.production_cmode;
+            dead_now[well.name] = t.control == Ctrl::Shut && !well.shut;
+            // The other phases where the inflow puts them at the bhp this oil rate needs.
+            std::vector<Scalar> q(ws.surface_rates.size(), Scalar{0});
+            const Scalar q_oil = rr.well_rate[w];
+            if (q_oil > Scalar{0} && well.ipr_b[1] < Scalar{0}) {
+                const Scalar bhp = (q_oil - well.ipr_a[1]) / well.ipr_b[1];
+                for (int ph = 0; ph < Sys::NP; ++ph) {
+                    q[pos[ph]] = -std::max(well.ipr_a[ph] + well.ipr_b[ph] * bhp, Scalar{0});
+                }
+            }
+            assigned_rates[well.name] = q;
+        }
+    }
+    // The shut decision handed to the wells: dead while the system holds it shut,
+    // and cleared for every other well so a stopped one may be revived.
+    for (const auto& wp : well_container_) {
+        const auto it = dead_now.find(wp->name());
+        wp->setNetworkDead(it != dead_now.end() && it->second);
+    }
+    // Emit: node pressures and the thp limits they impose, then the wells.
+    this->network_.setOwnedNodePressures(new_pressures);
+    this->controller_decided_wells_ = decided;
+    controllerMarkDecided_();
+    this->controller_assigned_cmode_ = assigned_cmode;
+    this->controller_assigned_rates_ = assigned_rates;
+    OPM_BEGIN_PARALLEL_TRY_CATCH()
+    for (const auto& well : well_container_) {
+        if (decided.count(well->name())) {
+            well->updateWellStateWithTarget(simulator_, this->groupStateHelper(), this->wellState());
+            well->updatePrimaryVariables(this->groupStateHelper());
+        }
+    }
+    OPM_END_PARALLEL_TRY_CATCH("BlackoilWellModel: priming the controller's wells failed: ",
+                               simulator_.gridView().comm());
+    this->updateAndCommunicateGroupData(reportStepIdx, /*update_wellgrouptarget*/ true);
+    this->controller_judge_rejections_ += n_judged_wrong;
+    return true;
+}
+
+} // namespace Opm
+
+#endif // OPM_BLACKOILWELLMODEL_CONTROLLER_IMPL_HEADER_INCLUDED

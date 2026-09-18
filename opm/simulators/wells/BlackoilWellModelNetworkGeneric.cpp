@@ -261,6 +261,28 @@ updatePressures(const int reportStepIdx,
 
 template<typename Scalar, typename IndexTraits>
 void BlackoilWellModelNetworkGeneric<Scalar, IndexTraits>::
+setOwnedNodePressures(const std::map<std::string, Scalar>& values)
+{
+    for (const auto& [name, p] : values) {
+        node_pressures_[name] = p;
+    }
+    for (auto& well : well_model_.genericWells()) {
+        if (well->isProducer() && well->wellEcl().predictionMode()
+            && well->wellEcl().vfp_table_number() > 0) {
+            const auto it = node_pressures_.find(well->wellEcl().groupName());
+            if (it != node_pressures_.end()) {
+                this->imposeWellThpLimit(*well, it->second);
+                auto& ws = well_model_.wellState()[well->indexOfWell()];
+                if (ws.production_cmode == Well::ProducerCMode::THP) {
+                    ws.thp = well->getTHPConstraint(well_model_.summaryState());
+                }
+            }
+        }
+    }
+}
+
+template<typename Scalar, typename IndexTraits>
+void BlackoilWellModelNetworkGeneric<Scalar, IndexTraits>::
 assignNodeAndBranchValues(std::map<std::string, data::NodeData>& nodevalues,
                           std::map<std::string, data::BranchData>& branchvalues,
                           std::map<std::string, data::BranchData>& converged_branchvalues,

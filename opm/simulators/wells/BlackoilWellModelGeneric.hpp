@@ -590,6 +590,13 @@ protected:
     std::set<std::string> controller_decided_wells_{};
     std::map<std::string, Well::ProducerCMode> controller_assigned_cmode_{};
     std::map<std::string, std::vector<Scalar>> controller_assigned_rates_{};
+    bool controller_network_owned_{false};
+    int controller_judge_rejections_{0};
+    int controller_dumps_written_{0};
+    // Controls, rates and node pressures of the last decision, rounded: a decision
+    // that repeats is not a change, whatever triggered it.
+    std::string controller_decision_signature_{};
+    std::map<std::string, std::pair<std::vector<Scalar>, std::vector<Scalar>>> controller_last_flowing_ipr_{};
 
     std::vector<int> local_shut_wells_{};
 

@@ -159,6 +159,12 @@ checkGroupConstraints(const GroupStateHelperType& groupStateHelper,
         }
     }
 
+    // The controller decided this well's control against the whole tree;
+    // switching it here from one group's view is the double decision.
+    if (ws.controller_decided) {
+        return false;
+    }
+
     if (well.isProducer( )) {
         const auto currentControl = ws.production_cmode;
 

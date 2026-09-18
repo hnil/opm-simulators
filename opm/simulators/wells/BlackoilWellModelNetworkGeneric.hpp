@@ -64,6 +64,10 @@ public:
     void setNodePressures(const std::map<std::string, Scalar>& values)
     { node_pressures_ = values; }
 
+    /// Node pressures decided elsewhere (the group controller's network route):
+    /// taken as they are, and the thp limits they impose put on the wells.
+    void setOwnedNodePressures(const std::map<std::string, Scalar>& values);
+
     void setFromRestart(const std::optional<std::map<std::string, double>>& restart_pressures);
 
     //! \brief Initialize wells according to network configuration.

@@ -1252,6 +1252,7 @@ list (APPEND PUBLIC_HEADER_FILES
   opm/simulators/wells/ALQState.hpp
   opm/simulators/wells/BlackoilWellModel.hpp
   opm/simulators/wells/BlackoilWellModel_impl.hpp
+  opm/simulators/wells/BlackoilWellModelController_impl.hpp
   opm/simulators/wells/BlackoilWellModelConstraints.hpp
   opm/simulators/wells/BlackoilWellModelGasLift.hpp
   opm/simulators/wells/BlackoilWellModelGasLift_impl.hpp

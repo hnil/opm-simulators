@@ -951,6 +951,10 @@ namespace Opm
         const auto& summary_state = simulator.vanguard().summaryState();
         bool converged = true;
         auto& ws = well_state.well(this->index_of_well_);
+        // The network route decided: no reopening attempt of its own.
+        if (this->wellIsStopped() && this->networkDead()) {
+            return solveWellWithZeroRate(simulator, dt, groupStateHelper, well_state);
+        }
         // if well is stopped, check if we can reopen with explicit fraction
         if (this->wellIsStopped()) {
             this->openWell();
@@ -1052,6 +1056,11 @@ namespace Opm
         // update operability
         this->operability_status_.can_obtain_bhp_with_thp_limit = !this->wellIsStopped();
         this->operability_status_.obey_thp_limit_under_bhp_limit = !this->wellIsStopped();
+        if (this->networkDead()) {
+            // The network route's shut decision stands over the well's own check.
+            this->operability_status_.can_obtain_bhp_with_thp_limit = false;
+            this->operability_status_.obey_thp_limit_under_bhp_limit = false;
+        }
         return converged;
     }
 

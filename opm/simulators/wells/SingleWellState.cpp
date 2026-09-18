@@ -419,6 +419,7 @@ bool SingleWellState<Scalar, IndexTraits>::operator==(const SingleWellState& rhs
            this->group_target == rhs.group_target &&
            this->group_target_fallback == rhs.group_target_fallback &&
            this->use_group_target_fallback == rhs.use_group_target_fallback &&
+           this->controller_decided == rhs.controller_decided &&
            this->was_shut_before_action_applied == rhs.was_shut_before_action_applied &&
            this->weldraw_max_rate == rhs.weldraw_max_rate &&
            this->weldraw_cmode == rhs.weldraw_cmode;
