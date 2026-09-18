@@ -600,6 +600,16 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                 if (t.group < 0) {
                     break;
                 }
+                // A share within 2 % of the well's own allowance is its own limit: the
+                // well solve cannot hold a group target that close to a limit of its
+                // own (it oscillates between the two and may derail), and the
+                // difference is inside the IPR's error anyway.
+                if (well.oil_rate_limit > Scalar{0}
+                    && rr.well_rate[w] >= (Scalar{1} - Scalar{0.02}) * well.oil_rate_limit) {
+                    const auto om = own_limit_mode.find(well.name);
+                    ws.production_cmode = om != own_limit_mode.end() ? om->second : Well::ProducerCMode::ORAT;
+                    break;
+                }
                 const GC cmode = t.mode == Mode::Gas    ? GC::GRAT
                                : t.mode == Mode::Water  ? GC::WRAT
                                : t.mode == Mode::Liquid ? GC::LRAT
