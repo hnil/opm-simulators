@@ -481,6 +481,10 @@ list (APPEND TEST_SOURCE_FILES
   tests/test_dilu.cpp
   tests/test_group_higher_constraints.cpp
   tests/test_prodgrouptreebalancer.cpp
+  tests/test_networkdumps.cpp
+  tests/test_networkinjection.cpp
+  tests/test_networksolve.cpp
+  tests/test_networktree.cpp
   tests/test_equil.cpp
   tests/test_extraconvergenceoutputthread.cpp
   tests/test_extractMatrix.cpp
@@ -713,6 +717,7 @@ list (APPEND TEST_DATA_FILES
   tests/GROUP_HIGHER_CONSTRAINTS_NETWORK.DATA
   tests/INJECTION_TOPUP_PHASE_VALIDATION.DATA
   tests/GLIFT1.DATA
+  tests/GROUPTREE.DATA
   tests/RC-01_MAST_PRED.DATA
   tests/include/flowl_b_vfp.ecl
   tests/include/flowl_c_vfp.ecl
@@ -1282,6 +1287,16 @@ list (APPEND PUBLIC_HEADER_FILES
   opm/simulators/wells/GroupStateHelper.hpp
   opm/simulators/wells/ProdGroupTreeBalancer.hpp
   opm/simulators/wells/ProdGroupTreeNode.hpp
+  opm/simulators/wells/network/NetworkInjectionSystem.hpp
+  opm/simulators/wells/network/NetworkJudge.hpp
+  opm/simulators/wells/network/NetworkLegacySolve.hpp
+  opm/simulators/wells/network/NetworkNodePressureUpdater.hpp
+  opm/simulators/wells/network/NetworkProductionSystem.hpp
+  opm/simulators/wells/network/NetworkReducedSolve.hpp
+  opm/simulators/wells/network/NetworkSolve.hpp
+  opm/simulators/wells/network/NetworkSteinStart.hpp
+  opm/simulators/wells/network/NetworkTreeSolve.hpp
+  opm/simulators/wells/network/NetworkTubingExtension.hpp
   opm/simulators/wells/GuideRateHandler.hpp
   opm/simulators/wells/MSWellHelpers.hpp
   opm/simulators/wells/MultisegmentWell.hpp
