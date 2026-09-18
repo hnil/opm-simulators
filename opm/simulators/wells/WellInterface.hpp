@@ -266,6 +266,12 @@ public:
                                       const std::optional<bool> group_control = std::nullopt) const;
 
     enum class IndividualOrGroup { Individual, Group, Both };
+    /// The control legacy's constraint check would switch this well to, if any.
+    /// Only the given well state is written; the well and its switch log are not.
+    std::optional<std::string> legacyWouldSwitch(const Simulator& simulator,
+                                                 const GroupStateHelperType& groupStateHelper,
+                                                 WellStateType& well_state) const;
+
     bool updateWellControl(const Simulator& simulator,
                            const IndividualOrGroup iog,
                            const GroupStateHelperType& groupStateHelper,

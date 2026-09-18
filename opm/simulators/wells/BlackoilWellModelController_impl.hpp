@@ -552,6 +552,8 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
         for (std::size_t n = 0; n < order.size(); ++n) {
             new_pressures[order[n]] = rr.node_pressure[n];
         }
+        // The route never touches the root's entry: it is the terminal pressure.
+        new_pressures[order.front()] = terminal;
         // OPM_CONTROLLER_TRACE: one line per well per decision; OPM_CONTROLLER_DUMP=<prefix>:
         // every system written for the bench to replay.
         static const bool trace = std::getenv("OPM_CONTROLLER_TRACE") != nullptr;

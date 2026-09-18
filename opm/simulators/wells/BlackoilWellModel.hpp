@@ -313,6 +313,10 @@ template<class Scalar> class WellContributions;
             /// than 1 %: the group-level feasibility report.
             bool controllerGroupLimitViolated_() const;
 
+            /// Diagnostic: score the state handed to the linearisation as a facility
+            /// solution, by the physics and by what one more legacy pass would change.
+            void facilityCheck_(DeferredLogger& deferred_logger);
+
             void updateAndCommunicate(const int reportStepIdx);
 
             bool updateGroupControls(const Group& group,
@@ -857,5 +861,6 @@ template<class Scalar> class WellContributions;
 
 #include "BlackoilWellModel_impl.hpp"
 #include "BlackoilWellModelController_impl.hpp"
+#include "BlackoilWellModelFacilityCheck_impl.hpp"
 
 #endif // OPM_BLACKOILWELLMODEL_HEADER_INCLUDED

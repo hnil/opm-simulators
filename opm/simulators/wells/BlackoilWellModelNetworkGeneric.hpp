@@ -68,6 +68,10 @@ public:
     /// taken as they are, and the thp limits they impose put on the wells.
     void setOwnedNodePressures(const std::map<std::string, Scalar>& values);
 
+    /// Largest distance [Pa] between the stored node pressures and the ones the
+    /// network gives for the group state's current leaf rates, and its node.
+    std::pair<Scalar, std::string> pressureImbalance(const int reportStepIdx) const;
+
     void setFromRestart(const std::optional<std::map<std::string, double>>& restart_pressures);
 
     //! \brief Initialize wells according to network configuration.

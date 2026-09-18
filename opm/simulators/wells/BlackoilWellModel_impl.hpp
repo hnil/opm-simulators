@@ -677,6 +677,17 @@ namespace Opm {
     timeStepSucceeded(const double simulationTime, const double dt)
     {
         this->closed_this_step_.clear();
+        if (auto& fc = this->facility_check_stats_; fc.has_last) {
+            ++fc.steps;
+            fc.step_physics_ok += fc.last_physics_ok;
+            fc.step_legacy_ok += fc.last_legacy_ok;
+            fc.has_last = false;
+            OpmLog::debug(fmt::format("Facility check totals at day {:.1f}: {} hand-overs, physics ok {}, legacy ok {}, "
+                                      "both {}, physics ok but legacy would act {} | last hand-over of {} steps: "
+                                      "physics ok {}, legacy ok {}",
+                                      simulationTime / 86400.0, fc.checks, fc.physics_ok, fc.legacy_ok, fc.both_ok,
+                                      fc.physics_only, fc.steps, fc.step_physics_ok, fc.step_legacy_ok));
+        }
         if (param_.enable_group_controller_ && this->controller_stats_.calls > 0) {
             const auto& st = this->controller_stats_;
             OpmLog::debug(fmt::format("Controller totals at day {:.1f}: {} calls, {} passes, {} decisions by the route "
@@ -1239,6 +1250,9 @@ namespace Opm {
         }
 
         assembleWellEqWithoutIteration(dt);
+        if (std::getenv("OPM_FACILITY_CHECK") != nullptr) {
+            facilityCheck_(local_deferredLogger);
+        }
         // Pre-compute cell rates to we don't have to do this for every cell during linearization...
         updateCellRates();
 

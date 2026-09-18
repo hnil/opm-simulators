@@ -602,6 +602,12 @@ protected:
         long calls = 0, passes = 0, well_solves = 0, cap_hits = 0, judge_rejections = 0;
         double worst_deviation = 0;
     } controller_stats_;
+    // OPM_FACILITY_CHECK: how often the hand-over was a facility solution.
+    struct FacilityCheckStats {
+        long checks = 0, physics_ok = 0, legacy_ok = 0, both_ok = 0, physics_only = 0;
+        long steps = 0, step_physics_ok = 0, step_legacy_ok = 0;
+        bool has_last = false, last_physics_ok = false, last_legacy_ok = false;
+    } facility_check_stats_;
     std::map<std::string, std::pair<std::vector<Scalar>, std::vector<Scalar>>> controller_last_flowing_ipr_{};
 
     std::vector<int> local_shut_wells_{};

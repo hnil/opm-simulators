@@ -490,6 +490,31 @@ namespace Opm
     }
 
     template<typename TypeTag>
+    std::optional<std::string>
+    WellInterface<TypeTag>::
+    legacyWouldSwitch(const Simulator& simulator,
+                      const GroupStateHelperType& groupStateHelper,
+                      WellStateType& well_state) const
+    {
+        if (this->stoppedOrZeroRateTarget(groupStateHelper)) {
+            return std::nullopt;
+        }
+        auto& ws = well_state.well(this->index_of_well_);
+        const bool inj = this->well_ecl_.isInjector();
+        const std::string from = inj ? WellInjectorCMode2String(ws.injection_cmode)
+                                     : WellProducerCMode2String(ws.production_cmode);
+        const bool changed = this->checkConstraints(groupStateHelper,
+                                                    simulator.vanguard().schedule(),
+                                                    simulator.vanguard().summaryState(),
+                                                    well_state);
+        if (!changed) {
+            return std::nullopt;
+        }
+        return from + "->" + (inj ? WellInjectorCMode2String(ws.injection_cmode)
+                                  : WellProducerCMode2String(ws.production_cmode));
+    }
+
+    template<typename TypeTag>
     void
     WellInterface<TypeTag>::
     updateWeldrawMaxRate(const Simulator& simulator,

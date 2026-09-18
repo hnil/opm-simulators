@@ -164,6 +164,9 @@ public:
             }
         }
 
+        /// Drop what was logged so far: for a probe whose messages must not reach the log.
+        void discard() { logger_.clearMessages(); }
+
         // Delete copy operations and move assignment
         ScopedLoggerGuard(const ScopedLoggerGuard&) = delete;
         ScopedLoggerGuard& operator=(const ScopedLoggerGuard&) = delete;

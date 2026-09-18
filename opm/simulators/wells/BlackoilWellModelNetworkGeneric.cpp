@@ -260,6 +260,30 @@ updatePressures(const int reportStepIdx,
 }
 
 template<typename Scalar, typename IndexTraits>
+std::pair<Scalar, std::string> BlackoilWellModelNetworkGeneric<Scalar, IndexTraits>::
+pressureImbalance(const int reportStepIdx) const
+{
+    const auto& network = well_model_.schedule()[reportStepIdx].network();
+    std::pair<Scalar, std::string> worst{Scalar{0}, ""};
+    if (!network.active() || !this->active()) {
+        return worst;
+    }
+    const auto computed = this->computePressures(network,
+                                                 *well_model_.getVFPProperties().getProd(),
+                                                 well_model_.schedule().getUnits(),
+                                                 reportStepIdx,
+                                                 well_model_.comm()).first;
+    for (const auto& [name, p] : computed) {
+        const auto it = node_pressures_.find(name);
+        const Scalar diff = it == node_pressures_.end() ? std::abs(p) : std::abs(p - it->second);
+        if (diff > worst.first) {
+            worst = {diff, name};
+        }
+    }
+    return worst;
+}
+
+template<typename Scalar, typename IndexTraits>
 void BlackoilWellModelNetworkGeneric<Scalar, IndexTraits>::
 setOwnedNodePressures(const std::map<std::string, Scalar>& values)
 {
