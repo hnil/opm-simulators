@@ -369,6 +369,18 @@ std::unique_ptr<Matrix> blockJacobiAdjacency(const Grid& grid,
                 matrixRows_ = M.N();
                 matrixNonzeroes_ = M.nonzeroes();
             }
+            // cprw's coarse system fixes its cell<->well entries at creation.
+            if (!useWellConn_) {
+                const std::size_t sig = this->wellConnectionSignature_();
+                int changed = (sig != wellConnSignature_) ? 1 : 0;
+                wellConnSignature_ = sig;
+                if (!parameters_[activeSolverNum_].is_nldd_local_solver_) {
+                    changed = simulator_.gridView().comm().max(changed);
+                }
+                if (changed) {
+                    force_recreate_ = true;
+                }
+            }
 
             // update matrix entries for solvers.
             if (firstcall || matrix_changed) {
@@ -513,6 +525,21 @@ std::unique_ptr<Matrix> blockJacobiAdjacency(const Grid& grid,
 #if HAVE_MPI
         using Comm = Dune::OwnerOverlapCopyCommunication<int, int>;
 #endif
+
+        // Hash of the perforated cells of all open wells on this rank.
+        std::size_t wellConnectionSignature_() const
+        {
+            std::size_t sig = 0;
+            if constexpr (requires { simulator_.problem().wellModel().localNonshutWells(); }) {
+                for (const auto& well : simulator_.problem().wellModel().localNonshutWells()) {
+                    for (const int c : well->cells()) {
+                        sig = sig * 1000003u + static_cast<std::size_t>(c) + 1;
+                    }
+                    sig = sig * 1000003u + 7;
+                }
+            }
+            return sig;
+        }
 
         bool checkConvergence(const Dune::InverseOperatorResult& result) const
         {
@@ -740,6 +767,7 @@ std::unique_ptr<Matrix> blockJacobiAdjacency(const Grid& grid,
         std::size_t matrixNonzeroes_ = 0;
         //! Pattern version last prepared for (see IstlSparseMatrixAdapter).
         std::size_t preparedPatternVersion_ = 0;
+        std::size_t wellConnSignature_ = 0;
     }; // end ISTLSolver
 
 } // namespace Opm
