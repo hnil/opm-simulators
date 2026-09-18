@@ -602,6 +602,10 @@ protected:
         long calls = 0, passes = 0, well_solves = 0, cap_hits = 0, judge_rejections = 0;
         double worst_deviation = 0;
     } controller_stats_;
+    // Explicit guide rates: the deck's values as read at the first decision of a time
+    // step, held for the rest of it. Keyed by the step's start time and length.
+    std::map<std::string, Scalar> controller_step_guides_{};
+    std::pair<double, double> controller_step_guides_key_{-1.0, -1.0};
     // OPM_FACILITY_CHECK: how often the hand-over was a facility solution.
     struct FacilityCheckStats {
         long checks = 0, physics_ok = 0, legacy_ok = 0, both_ok = 0, physics_only = 0;

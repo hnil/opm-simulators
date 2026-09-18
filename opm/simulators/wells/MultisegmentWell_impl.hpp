@@ -27,6 +27,8 @@
 #include <opm/simulators/wells/MultisegmentWell.hpp>
 #endif
 
+#include <opm/simulators/wells/FacilityCounters.hpp>
+
 #include <opm/common/Exceptions.hpp>
 #include <opm/common/OpmLog/OpmLog.hpp>
 
@@ -1863,6 +1865,7 @@ namespace Opm
                                    WellStateType& well_state,
                                    const bool solving_with_zero_rate)
     {
+        ++FacilityCounters::get().well_linearisations;
         if (!this->isOperableAndSolvable() && !this->wellIsStopped()) return;
 
         auto& deferred_logger = groupStateHelper.deferredLogger();

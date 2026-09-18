@@ -200,8 +200,20 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
         }
         return false;
     };
+    // Diagnostic: OPM_CONTROLLER_IMPLICIT_GUIDES reads the guide rates afresh at every decision.
+    static const bool explicit_guides = std::getenv("OPM_CONTROLLER_IMPLICIT_GUIDES") == nullptr;
+    if (const std::pair<double, double> key{simulator_.time(), simulator_.timeStepSize()};
+        key != this->controller_step_guides_key_) {
+        this->controller_step_guides_key_ = key;
+        this->controller_step_guides_.clear();
+    }
     // The deck's guide rate on the mode of the nearest targeted group above the well.
     const auto deckGuide = [&](const std::string& name) -> Scalar {
+        if (explicit_guides) {
+            if (const auto it = this->controller_step_guides_.find(name); it != this->controller_step_guides_.end()) {
+                return it->second;
+            }
+        }
         const auto& gr = this->guideRate();
         if (!gr.has(name) && !gr.hasPotentials(name)) {
             return Scalar{0};
@@ -220,7 +232,11 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
             if (grp.parent() == g) { break; }
             g = grp.parent();
         }
-        return static_cast<Scalar>(gr.get(name, target, helper.getWellRateVector(name)));
+        const auto value = static_cast<Scalar>(gr.get(name, target, helper.getWellRateVector(name)));
+        if (explicit_guides && value > Scalar{0}) {
+            this->controller_step_guides_[name] = value;
+        }
+        return value;
     };
 
     std::map<std::string, Scalar> new_pressures;

@@ -29,6 +29,8 @@
 #include <opm/simulators/wells/BlackoilWellModelNetwork.hpp>
 #endif
 
+#include <opm/simulators/wells/FacilityCounters.hpp>
+
 #include <opm/common/TimingMacros.hpp>
 #include <opm/common/utility/numeric/RootFinders.hpp>
 
@@ -116,6 +118,7 @@ update(const bool mandatory_network_balance,
             well_model_.param().network_max_pressure_update_in_bars_ * unit::barsa;
         bool more_network_sub_update = false;
         for (int i = 0; i < max_number_of_sub_iterations; i++) {
+            ++FacilityCounters::get().network_sub_iterations;
             const auto local_network_imbalance =
                 this->updatePressures(episodeIdx,
                                       network_pressure_update_damping_factor,

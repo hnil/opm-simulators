@@ -28,6 +28,8 @@
 #include <opm/simulators/wells/WellInterface.hpp>
 #endif
 
+#include <opm/simulators/wells/FacilityCounters.hpp>
+
 #include <opm/common/Exceptions.hpp>
 
 #include <opm/input/eclipse/Schedule/ScheduleTypes.hpp>
@@ -922,6 +924,8 @@ namespace Opm
             deferred_logger.warning("INNER_ITERATION_FAILED", msg);
             converged = false;
         }
+        ++FacilityCounters::get().well_solves;
+        FacilityCounters::get().well_solves_failed += !converged;
         if (converged) {
             // Add debug info for switched controls
             if (ws.production_cmode != pmode_orig || ws.injection_cmode != imode_orig) {

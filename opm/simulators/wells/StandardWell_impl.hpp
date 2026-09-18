@@ -28,6 +28,8 @@
 #include <opm/simulators/wells/StandardWell.hpp>
 #endif
 
+#include <opm/simulators/wells/FacilityCounters.hpp>
+
 #include <opm/common/Exceptions.hpp>
 
 #include <opm/input/eclipse/Units/Units.hpp>
@@ -347,6 +349,7 @@ namespace Opm
                                    WellStateType& well_state,
                                    const bool solving_with_zero_rate)
     {
+        ++FacilityCounters::get().well_linearisations;
         // TODO: only_wells should be put back to save some computation
         // for example, the matrices B C does not need to update if only_wells
         if (!this->isOperableAndSolvable() && !this->wellIsStopped()) return;

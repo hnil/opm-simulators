@@ -1275,6 +1275,7 @@ list (APPEND PUBLIC_HEADER_FILES
   opm/simulators/wells/ConnFracStatistics.hpp
   opm/simulators/wells/ConnFractureData.hpp
   opm/simulators/wells/EconomicLimitsMessage.hpp
+  opm/simulators/wells/FacilityCounters.hpp
   opm/simulators/wells/FractionCalculator.hpp
   opm/simulators/wells/GasLiftCommon.hpp
   opm/simulators/wells/GasLiftGroupInfo.hpp

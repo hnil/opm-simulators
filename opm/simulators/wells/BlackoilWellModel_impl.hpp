@@ -30,6 +30,8 @@
 #include <opm/simulators/wells/BlackoilWellModel.hpp>
 #endif
 
+#include <opm/simulators/wells/FacilityCounters.hpp>
+
 #include <opm/grid/utility/cartesianToCompressed.hpp>
 
 #include <opm/input/eclipse/Schedule/Network/Balance.hpp>
@@ -677,6 +679,13 @@ namespace Opm {
     timeStepSucceeded(const double simulationTime, const double dt)
     {
         this->closed_this_step_.clear();
+        if (std::getenv("OPM_FACILITY_CHECK") != nullptr) {
+            const auto& c = FacilityCounters::get();
+            OpmLog::debug(fmt::format("Facility cost totals at day {:.1f}: {} outer iterations, {} network sub-iterations, "
+                                      "{} well solves ({} failed), {} well linearisations",
+                                      simulationTime / 86400.0, c.outer_iterations, c.network_sub_iterations,
+                                      c.well_solves, c.well_solves_failed, c.well_linearisations));
+        }
         if (auto& fc = this->facility_check_stats_; fc.has_last) {
             ++fc.steps;
             fc.step_physics_ok += fc.last_physics_ok;
@@ -1337,6 +1346,7 @@ namespace Opm {
                                           DeferredLogger& local_deferredLogger)
     {
         OPM_TIMEFUNCTION();
+        ++FacilityCounters::get().outer_iterations;
         const int reportStepIdx = simulator_.episodeIndex();
 
 #ifdef RESERVOIR_COUPLING_ENABLED
@@ -1404,8 +1414,11 @@ namespace Opm {
         }
 
         // update guide rates
-        if (alq_updated || BlackoilWellModelGuideRates(*this).
-                              guideRateUpdateIsNeeded(reportStepIdx)) {
+        // Under the group controller the guide rates are the time step's: no update in the iterations.
+        static const bool implicit_guides = std::getenv("OPM_CONTROLLER_IMPLICIT_GUIDES") != nullptr;
+        const bool frozen_guides = param_.enable_group_controller_ && !implicit_guides;
+        if (alq_updated || (!frozen_guides && BlackoilWellModelGuideRates(*this).
+                              guideRateUpdateIsNeeded(reportStepIdx))) {
             const double simulationTime = simulator_.time();
             // NOTE: For reservoir coupling: Slave group potentials are only communicated
             //    at the start of the time step, see beginTimeStep(). Here, we assume those
