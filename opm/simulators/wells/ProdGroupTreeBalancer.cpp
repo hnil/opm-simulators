@@ -632,6 +632,38 @@ Tree<Scalar> buildTree(const BlackoilWellModelGeneric<Scalar, IndexTraits>& well
         }
     }
     
+    if (wellRates != nullptr) {
+        // The groups' rates came from the group state; with the wells' rates supplied
+        // they have to be the sums of those, or the tree contradicts itself.
+        for (auto& [name, node] : tree) {
+            if (node.type == ProdNodeType::Group && !node.isSatellite) {
+                node.rates = {};
+            }
+        }
+        for (const auto& [name, leaf] : tree) {
+            if (leaf.type != ProdNodeType::Well && !leaf.isSatellite) {
+                continue;
+            }
+            Scalar eff = leaf.efficiencyFactor;
+            for (std::string up = leaf.parent; !up.empty(); ) {
+                const auto it = tree.find(up);
+                if (it == tree.end()) {
+                    break;
+                }
+                for (int c = 0; c < 3; ++c) {
+                    it->second.rates[c] += eff * leaf.rates[c];
+                }
+                eff *= it->second.efficiencyFactor;
+                up = it->second.parent;
+            }
+        }
+        for (auto& [name, node] : tree) {
+            if (node.type == ProdNodeType::Group) {
+                node.initialRates = node.rates;
+            }
+        }
+    }
+
     // Top-down pass: propagate effective group control modes, compute guide rates,
     // propagate preferred control, and detect transparent groups.
     propagateGuideRatesAndMode(tree, guideRate, "FIELD",
@@ -1258,6 +1290,22 @@ tightenModeAndTarget(const ProdGroupTreeNode<Scalar>& node,
     const auto& rates = node.rates;
     const Scalar rateForModeVal = -projectOnMode(rates, mode, node.resvCoeff);
     if (rateForModeVal <= Scalar(0)) {
+        // Producing, but nothing on this mode (a dry well under a gas target): the
+        // target cannot hold it, so it sits where its own limits put it - the one
+        // nearest to binding at the rates it has, scaled down if it is exceeded.
+        Scalar nearest = Scalar(0);
+        Well::ProducerCMode own = mode;
+        for (const auto& [limitMode, limit] : node.Limits) {
+            const Scalar ratio = limit > Scalar(0) ? -projectOnMode(rates, limitMode, node.resvCoeff) / limit : Scalar(0);
+            if (ratio > nearest) {
+                nearest = ratio;
+                own = limitMode;
+            }
+        }
+        if (nearest > Scalar(0)) {
+            const Scalar current = -projectOnMode(rates, own, node.resvCoeff);
+            return {own, current / std::max(nearest, Scalar(1))};
+        }
         // No rate to scale, so only the mode's own limit can be checked; without
         // this a zero-rate group handed more than its limit takes all of it.
         const auto it = node.Limits.find(mode);
@@ -2327,9 +2375,26 @@ Tree<Scalar> decideTree(const BlackoilWellModelGeneric<Scalar, IndexTraits>& wel
                         bool& valid)
 {
     auto tree = buildTree(wellModel, summaryState, reportStep, limits, &wellRates);
+    const auto input = tree;
     const bool ok = runBalancingAlgorithm(wellModel.guideRate(), wellModel.comm().rank(),
                                           tree, tol, logger, /*assignTargets*/ true);
     valid = ok && checkTreeValidity(tree, "FIELD", tol, logger);
+    if (!valid && std::getenv("OPM_BALANCER_DUMP_INVALID") != nullptr) {
+        for (const auto& [name, n] : input) {
+            std::string lim;
+            for (const auto& [m, v] : n.Limits) { lim += fmt::format(" {}={:.6g}", static_cast<int>(m), v * 86400.0); }
+            logger.debug(fmt::format("TREEIN {} type {} parent '{}' avail {} limitedAncestor {} category {} mode {} "
+                                     "preferred {} guide {} rates {:.6g}/{:.6g}/{:.6g} eff {} satellite {} limits{} "
+                                     "gt({} {} {:.6g} gr {:.6g})", name, static_cast<int>(n.type), n.parent,
+                                     n.availableForGroupControl, n.hasLimitedAncestor,
+                                     static_cast<int>(n.modeCategory), static_cast<int>(n.mode),
+                                     static_cast<int>(n.preferredMode), n.hasGuideRate, -n.rates[0] * 86400.0,
+                                     -n.rates[1] * 86400.0, -n.rates[2] * 86400.0, n.efficiencyFactor,
+                                     n.isSatellite, lim, n.groupTarget.groupName,
+                                     static_cast<int>(n.groupTarget.ctrlMode), n.groupTarget.value * 86400.0,
+                                     n.groupTarget.guideRate * 86400.0));
+        }
+    }
     return tree;
 }
 

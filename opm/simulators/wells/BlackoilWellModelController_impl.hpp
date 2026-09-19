@@ -650,6 +650,33 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                         reportStepIdx, static_cast<Scalar>(param_.group_tree_balancer_tolerance_), capacity,
                         rates, quiet, valid);
                     if (!valid) {
+                        // Say why, once more with a logger that is kept.
+                        std::string what;
+                        for (const auto& [name, r] : rates) {
+                            what += fmt::format(" {}: capacity sum {:.4g}, at o/w/g {:.4g}/{:.4g}/{:.4g};", name,
+                                                capacity.at(name).second * 86400.0, r[0] * 86400.0, r[1] * 86400.0,
+                                                r[2] * 86400.0);
+                        }
+                        deferred_logger.debug(fmt::format("Controller: the balancer's tree is not valid (sweep {}):{}",
+                                                          sweep, what));
+                        bool again = false;
+                        const auto bad = ProdGroupTreeBalancer::decideTree(
+                            static_cast<const BlackoilWellModelGeneric<Scalar, IndexTraits>&>(*this), summary_state,
+                            reportStepIdx, static_cast<Scalar>(param_.group_tree_balancer_tolerance_), capacity,
+                            rates, deferred_logger, again);
+                        for (const auto& [name, node] : bad) {
+                            deferred_logger.debug(fmt::format(
+                                "Controller:   {} {} category {} mode {} o/w/g {:.4g}/{:.4g}/{:.4g} limits{}", name,
+                                node.type == ProdNodeType::Well ? "well" : "group", static_cast<int>(node.modeCategory),
+                                static_cast<int>(node.mode), -node.rates[0] * 86400.0, -node.rates[1] * 86400.0,
+                                -node.rates[2] * 86400.0, [&node] {
+                                    std::string l;
+                                    for (const auto& [m, v] : node.Limits) {
+                                        l += fmt::format(" {}={:.4g}", static_cast<int>(m), v * 86400.0);
+                                    }
+                                    return l;
+                                }()));
+                        }
                         return false;
                     }
                     Scalar moved = 0;

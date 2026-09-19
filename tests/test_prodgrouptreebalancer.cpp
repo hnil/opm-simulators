@@ -226,3 +226,41 @@ BOOST_AUTO_TEST_CASE(assign_targets_writes_the_allocation)
     BOOST_CHECK(f.tree.at("PLAT").modeCategory == Opm::ProdNodeModeCategory::None);
     BOOST_CHECK(f.tree.at("W1").groupTarget.ctrlMode == Group::ProductionCMode::NONE);
 }
+
+// A well with no gas under a gas target: the target cannot hold it, so it stays
+// where its own limits put it and the gas producer beside it carries the target.
+// The balancer used to take the gas target as the dry well's own and zero it.
+BOOST_AUTO_TEST_CASE(a_well_without_the_target_phase_is_not_zeroed)
+{
+    Fixture f("GRUPTREE\n 'PLAT' 'FIELD' /\n 'G1' 'PLAT' /\n 'G2' 'PLAT' /\n 'M2' 'G2' /\n/\n"
+              "WELSPECS\n 'W1' 'G1' 1 1 7000 'OIL' /\n 'W2' 'M2' 2 1 7000 'OIL' /\n/\n"
+              "COMPDAT\n 'W1' 1 1 1 2 'OPEN' 1* 1* 0.2 /\n 'W2' 2 1 1 2 'OPEN' 1* 1* 0.2 /\n/\n"
+              "WCONPROD\n 'W1' 'OPEN' 'GRUP' 2000 4* 100 /\n 'W2' 'OPEN' 'GRUP' 1000 4* 100 /\n/\n"
+              "GCONPROD\n 'PLAT' 'GRAT' 2* 200000 1* 'RATE' /\n/\n");
+    f.group("PLAT", "FIELD", Well::ProducerCMode::GRAT, 200000.0);
+    f.group("G1", "PLAT");
+    // G2 answers to its own limits only (GCONPROD item 8 NO), gas the preferred one.
+    f.group("G2", "PLAT", Well::ProducerCMode::GRAT, 800000.0);
+    f.tree.at("G2").availableForGroupControl = false;
+    f.tree.at("G2").Limits[Well::ProducerCMode::ORAT] = 5000.0;
+    // As the tree builder leaves a group: no category of its own yet.
+    f.tree.at("G2").modeCategory = Opm::ProdNodeModeCategory::Group;
+    f.tree.at("G2").mode = Well::ProducerCMode::CMODE_UNDEFINED;
+    f.well("W1", "G1", {1500.0, 0.0, 300000.0}, {{Well::ProducerCMode::ORAT, 2000.0}});
+    // The dry well as the simulator hands it over: on its own control, at a capacity
+    // given as a limit on the sum of its rates, with a gas limit of its own as well.
+    f.group("M2", "G2");     // no limits, no guide rate: between the group and its well
+    // Its guide rate comes from potentials that do have gas; the rates it is handed
+    // over with do not.
+    f.well("W2", "M2", {1000.0, 0.5, 200000.0},
+           {{Well::ProducerCMode::ORAT, 4000.0}, {Well::ProducerCMode::GRAT, 500000.0},
+            {Well::ProducerCMode::LRAT, 8000.0}, {Well::ProducerCMode::THP, 1000.5}});
+    f.tree.at("W2").modeCategory = Opm::ProdNodeModeCategory::Individual;
+    f.tree.at("W2").mode = Well::ProducerCMode::THP;
+    f.tree.at("W2").rates = {-1000.0, -0.5, 0.0};
+    f.tree.at("W2").initialRates = f.tree.at("W2").rates;
+    BOOST_REQUIRE(f.balance());
+    BOOST_CHECK_CLOSE(f.oil("W2"), 1000.0, 1e-6);
+    BOOST_CHECK_CLOSE(f.gas("W1"), 200000.0, 1e-6);
+    BOOST_CHECK_CLOSE(f.oil("W1"), 1000.0, 1e-6);
+}
