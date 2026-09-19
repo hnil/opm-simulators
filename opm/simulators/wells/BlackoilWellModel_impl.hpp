@@ -2043,6 +2043,16 @@ namespace Opm {
             const std::string sig = controllerDecisionSignature_();
             const bool moved = sig != this->controller_decision_signature_;
             this->controller_decision_signature_ = sig;
+            // Diagnostic: OPM_CONTROLLER_PASS_SOLVES=0 decides once on the linearised wells and
+            // leaves the solving to the well solve every Newton iteration has anyway.
+            static const bool pass_solves = [] {
+                const char* v = std::getenv("OPM_CONTROLLER_PASS_SOLVES");
+                return v == nullptr || std::string(v) != "0";
+            }();
+            if (this->controller_network_owned_ && !pass_solves) {
+                ended = "decided on the linearised wells";
+                break;
+            }
             if (this->controller_network_owned_) {
                 // The route's IPRs are linearised at the wells' current states: solve
                 // the decided wells on their new controls before deciding again, as the
