@@ -208,9 +208,11 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
         this->controller_step_guides_.clear();
     }
     // The deck's guide rate on the mode of the nearest targeted group above the well.
-    const auto deckGuide = [&](const std::string& name) -> Scalar {
+    // The deck's guide rate of a well on a given phase, the time step's value.
+    const auto deckGuideOn = [&](const std::string& name, const GuideRateModel::Target target) -> Scalar {
+        const std::string key = name + ":" + std::to_string(static_cast<int>(target));
         if (explicit_guides) {
-            if (const auto it = this->controller_step_guides_.find(name); it != this->controller_step_guides_.end()) {
+            if (const auto it = this->controller_step_guides_.find(key); it != this->controller_step_guides_.end()) {
                 return it->second;
             }
         }
@@ -218,6 +220,23 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
         if (!gr.has(name) && !gr.hasPotentials(name)) {
             return Scalar{0};
         }
+        const auto value = static_cast<Scalar>(gr.get(name, target, this->groupStateHelper().getWellRateVector(name)));
+        if (explicit_guides && value > Scalar{0}) {
+            this->controller_step_guides_[key] = value;
+        }
+        return value;
+    };
+    const auto targetOf = [](const Mode m) {
+        switch (m) {
+        case Mode::Water:  return GuideRateModel::Target::WAT;
+        case Mode::Gas:    return GuideRateModel::Target::GAS;
+        case Mode::Liquid: return GuideRateModel::Target::LIQ;
+        case Mode::Resv:   return GuideRateModel::Target::RES;
+        default:           return GuideRateModel::Target::OIL;
+        }
+    };
+    // First guess before the tree exists: the mode of the nearest targeted group above the well.
+    const auto deckGuide = [&](const std::string& name) -> Scalar {
         const auto& helper = this->groupStateHelper();
         auto target = GuideRateModel::Target::OIL;
         for (std::string g = schedule.getWell(name, reportStepIdx).groupName(); !g.empty(); ) {
@@ -232,11 +251,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
             if (grp.parent() == g) { break; }
             g = grp.parent();
         }
-        const auto value = static_cast<Scalar>(gr.get(name, target, helper.getWellRateVector(name)));
-        if (explicit_guides && value > Scalar{0}) {
-            this->controller_step_guides_[name] = value;
-        }
-        return value;
+        return deckGuideOn(name, target);
     };
 
     std::map<std::string, Scalar> new_pressures;
@@ -418,6 +433,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
         std::map<std::string, int> gidx;
         std::map<int, std::vector<std::pair<Mode, Scalar>>> group_limits;
         std::map<int, std::array<Scalar, Sys::NP>> satellite_on;
+        std::function<void()> refreshGuides = [] {};
         // The deck's group tree, parents first.
         if (!tree_wells.empty()) {
             const bool deck_guides = std::all_of(tree_wells.begin(), tree_wells.end(),
@@ -538,6 +554,38 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
             for (const auto& t : tree_wells) {
                 system.setWellGroup(t.index, gidx.at(schedule.getWell(t.name, reportStepIdx).groupName()));
             }
+            // A share is measured on the mode of the group that hands it out, so that is
+            // the phase a node's guide rate is wanted on: a well's on its group's mode, a
+            // group's on its parent's. Done again whenever a group changes the limit it holds.
+            std::map<int, std::vector<std::string>> below;
+            for (const auto& t : tree_wells) {
+                for (int a = gidx.at(schedule.getWell(t.name, reportStepIdx).groupName()); a >= 0;
+                     a = system.groups()[a].parent) {
+                    below[a].push_back(t.name);
+                }
+            }
+            refreshGuides = [&, below, deck_guides]() {
+                if (!deck_guides) {
+                    return;
+                }
+                const auto& groups = system.groups();
+                for (const auto& t : tree_wells) {
+                    const int g = gidx.at(schedule.getWell(t.name, reportStepIdx).groupName());
+                    system.setWellGuide(t.index, deckGuideOn(t.name, targetOf(groups[g].mode)));
+                }
+                for (int g = 0; g < system.numGroups(); ++g) {
+                    const auto it = below.find(g);
+                    if (groups[g].parent < 0 || it == below.end()) {
+                        continue;
+                    }
+                    Scalar sum = 0;
+                    for (const auto& name : it->second) {
+                        sum += deckGuideOn(name, targetOf(groups[groups[g].parent].mode));
+                    }
+                    system.setGroupGuide(g, sum);
+                }
+            };
+            refreshGuides();
             system.setGroupTree(true);
             system.setGroupActiveSet(true);
         }
@@ -560,8 +608,109 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                                              NetworkSolve::CliffRule::Die);
         // A group with several limits holds the one its own answer violates most: solve,
         // look at every limit, switch and solve again. Bounded; a repeat ends it.
+        // OPM_CONTROLLER_STEIN_LIMITS: the balancer's tree on the route's answer picks the
+        // limit each group holds, in place of the greedy switch below.
+        static const bool stein_limits = std::getenv("OPM_CONTROLLER_STEIN_LIMITS") != nullptr;
         int limit_switches = 0;
+        Scalar stein_gap = 0;
+        std::string stein_gap_well;
+        bool stein_valid = true;
         for (int round = 0; rr.converged && round < 4 && !group_limits.empty(); ++round) {
+            if (stein_limits) {
+                // Every well's capacity and phase split where the route put it.
+                std::unordered_map<std::string, std::pair<int, Scalar>> capacity;
+                std::map<std::string, std::array<Scalar, 3>> at_answer;
+                for (int w = 0; w < system.numWells(); ++w) {
+                    const auto& well = system.wells()[w];
+                    if (!(well.ipr_b[1] < Scalar{0})) {
+                        continue;
+                    }
+                    auto phases = [&well](const Scalar q_oil) {
+                        const Scalar bhp = (q_oil - well.ipr_a[1]) / well.ipr_b[1];
+                        std::array<Scalar, 3> q{};     // oil, water, gas
+                        q[0] = std::max(well.ipr_a[1] + well.ipr_b[1] * bhp, Scalar{0});
+                        q[1] = std::max(well.ipr_a[0] + well.ipr_b[0] * bhp, Scalar{0});
+                        q[2] = std::max(well.ipr_a[2] + well.ipr_b[2] * bhp, Scalar{0});
+                        return q;
+                    };
+                    Scalar cap = well.ipr_a[1] + well.ipr_b[1] * well.bhp_limit;
+                    auto mode = Well::ProducerCMode::BHP;
+                    if (well.pinned) {
+                        cap = well.oil_rate_limit;
+                    } else if (well.vfp_table > 0) {
+                        const Scalar p_node = well.node == 0 ? terminal : rr.node_pressure[well.node];
+                        const Scalar lift = system.thpPotential(well, p_node);
+                        if (lift < cap) {
+                            cap = lift;
+                            mode = Well::ProducerCMode::THP;
+                        }
+                    }
+                    if (!(cap > Scalar{0})) {
+                        continue;
+                    }
+                    const auto at_cap = phases(cap);
+                    capacity[well.name] = {static_cast<int>(mode), at_cap[0] + at_cap[1] + at_cap[2]};
+                    at_answer[well.name] = rr.well_rate[w] > Scalar{0} ? phases(std::min(rr.well_rate[w], cap)) : at_cap;
+                }
+                bool valid = false;
+                const auto tree = ProdGroupTreeBalancer::decideTree(
+                    static_cast<const BlackoilWellModelGeneric<Scalar, IndexTraits>&>(*this), summary_state,
+                    reportStepIdx, static_cast<Scalar>(param_.group_tree_balancer_tolerance_), capacity,
+                    at_answer, deferred_logger, valid);
+                stein_valid = valid;
+                stein_gap = 0;
+                for (int w = 0; w < system.numWells(); ++w) {
+                    const auto it = tree.find(system.wells()[w].name);
+                    if (it == tree.end()) {
+                        continue;
+                    }
+                    const Scalar mine = rr.well_rate[w], theirs = -it->second.rates[0];
+                    const Scalar gap = std::abs(mine - theirs) / std::max({mine, theirs, Scalar{1e-9}});
+                    if (gap > stein_gap) {
+                        stein_gap = gap;
+                        stein_gap_well = system.wells()[w].name;
+                    }
+                }
+                bool switched = false;
+                for (const auto& [g, limits] : group_limits) {
+                    const auto& grp = system.groups()[g];
+                    const auto it = tree.find(grp.name);
+                    if (it == tree.end() || it->second.modeCategory != ProdNodeModeCategory::Individual) {
+                        continue;
+                    }
+                    Mode held = Mode::None;
+                    switch (it->second.mode) {
+                    case Well::ProducerCMode::ORAT: held = Mode::Oil; break;
+                    case Well::ProducerCMode::WRAT: held = Mode::Water; break;
+                    case Well::ProducerCMode::GRAT: held = Mode::Gas; break;
+                    case Well::ProducerCMode::LRAT: held = Mode::Liquid; break;
+                    default: break;
+                    }
+                    if (held == Mode::None || held == grp.mode) {
+                        continue;
+                    }
+                    for (const auto& lim : limits) {
+                        if (lim.first != held) {
+                            continue;
+                        }
+                        const auto c = Sys::modeWeights(held, grp.resv_coeff);
+                        Scalar sat = 0;
+                        if (const auto is = satellite_on.find(g); is != satellite_on.end()) {
+                            for (int ph = 0; ph < Sys::NP; ++ph) { sat += c[ph] * is->second[ph]; }
+                        }
+                        system.setGroupLimit(g, held, std::max(lim.second - sat, Scalar{1e-12}));
+                        switched = true;
+                        ++limit_switches;
+                    }
+                }
+                if (!switched) {
+                    break;
+                }
+                refreshGuides();
+                rr = NetworkSolve::solveReduced(system, rr.node_pressure, params, /*eliminate=*/true,
+                                                NetworkSolve::CliffRule::Die);
+                continue;
+            }
             std::map<int, std::array<Scalar, Sys::NP>> produced = satellite_on;
             for (int w = 0; w < system.numWells(); ++w) {
                 const auto& well = system.wells()[w];
@@ -607,12 +756,18 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
             if (!switched) {
                 break;
             }
+            refreshGuides();
             rr = NetworkSolve::solveReduced(system, rr.node_pressure, params, /*eliminate=*/true,
                                             NetworkSolve::CliffRule::Die);
         }
         if (limit_switches > 0) {
             deferred_logger.debug(fmt::format("Controller: {} group limit switches inside the decision under {}",
                                               limit_switches, root.name()));
+        }
+        if (stein_limits && !group_limits.empty()) {
+            deferred_logger.debug(fmt::format("Controller: balancer on the route's answer under {}: {}, "
+                                              "allocation differs by at most {:.1f} % ({})", root.name(),
+                                              stein_valid ? "valid" : "NOT valid", 100.0 * stein_gap, stein_gap_well));
         }
         if (!rr.converged) {
             return giveUp(fmt::format("the reduced route did not converge under {} in {} iterations, residual {:.3g}",

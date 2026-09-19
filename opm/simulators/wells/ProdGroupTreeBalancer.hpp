@@ -22,6 +22,7 @@
 
 #include <opm/simulators/wells/ProdGroupTreeNode.hpp>
 
+#include <array>
 #include <map>
 #include <string>
 #include <unordered_map>
@@ -66,6 +67,19 @@ bool runGroupTreeBalancer(BlackoilWellModelGeneric<Scalar, IndexTraits>& wellMod
                           bool assignTargets = false,
                           std::vector<std::string>* decidedWells = nullptr,
                           bool writeRates = true);
+
+/// The algorithm as a function of someone else's answer: the tree built from the well
+/// model, with the given well rates ({oil, water, gas}, production positive) in place
+/// of the well state's, balanced with targets assigned. Nothing is written back.
+template<class Scalar, typename IndexTraits>
+Tree<Scalar> decideTree(const BlackoilWellModelGeneric<Scalar, IndexTraits>& wellModel,
+                        const SummaryState& summaryState,
+                        int reportStep,
+                        Scalar tol,
+                        const std::unordered_map<std::string, std::pair<int, Scalar>>& limits,
+                        const std::map<std::string, std::array<Scalar, 3>>& wellRates,
+                        DeferredLogger& logger,
+                        bool& valid);
 
 /// Balance a tree built by hand (unit tests): the same top-down pass
 /// buildTree() ends with, then the algorithm and the validity check.

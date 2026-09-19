@@ -563,6 +563,8 @@ public:
     void setWellGroup(const int w, const int g) { wells_[w].group = g; }
     /// The weight the tree splits by, once the adapter knows the deck's.
     void setWellGuide(const int w, const Scalar g) { wells_[w].guide = g; }
+    /// A group's share of its parent, measured on the parent's mode; changes with it.
+    void setGroupGuide(const int g, const Scalar guide) { groups_[g].guide = guide; }
 
     /// Oil rates a start is to open each well at, instead of its own allowance
     /// at the guessed pressure -- an allocation from outside, e.g. Stein's

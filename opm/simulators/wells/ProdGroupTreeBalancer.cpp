@@ -572,7 +572,8 @@ template<class Scalar, typename IndexTraits>
 Tree<Scalar> buildTree(const BlackoilWellModelGeneric<Scalar, IndexTraits>& wellModel,
                        const SummaryState& summaryState,
                        int reportStep,
-                       const std::unordered_map<std::string, std::pair<int, Scalar>>& limits)
+                       const std::unordered_map<std::string, std::pair<int, Scalar>>& limits,
+                       const std::map<std::string, std::array<Scalar, 3>>* wellRates = nullptr)
 {
     const auto& schedule   = wellModel.schedule();
     const auto& wellState  = wellModel.wellState();
@@ -607,6 +608,12 @@ Tree<Scalar> buildTree(const BlackoilWellModelGeneric<Scalar, IndexTraits>& well
                 populateWellNode(node, name, schedule, wellState, groupState,
                                  guideRate, summaryState, reportStep,
                                  fipnum, pvtreg, wellModel, limits);
+                if (wellRates != nullptr) {
+                    if (const auto it = wellRates->find(name); it != wellRates->end()) {
+                        node.rates = {-it->second[0], -it->second[1], -it->second[2]};
+                        node.initialRates = node.rates;
+                    }
+                }
             }
         } else {
             // Group node: populate and push children onto the stack
@@ -2309,6 +2316,23 @@ bool runGroupTreeBalancer(BlackoilWellModelGeneric<Scalar, IndexTraits>& wellMod
     return valid;
 }
 
+template<class Scalar, typename IndexTraits>
+Tree<Scalar> decideTree(const BlackoilWellModelGeneric<Scalar, IndexTraits>& wellModel,
+                        const SummaryState& summaryState,
+                        const int reportStep,
+                        const Scalar tol,
+                        const std::unordered_map<std::string, std::pair<int, Scalar>>& limits,
+                        const std::map<std::string, std::array<Scalar, 3>>& wellRates,
+                        DeferredLogger& logger,
+                        bool& valid)
+{
+    auto tree = buildTree(wellModel, summaryState, reportStep, limits, &wellRates);
+    const bool ok = runBalancingAlgorithm(wellModel.guideRate(), wellModel.comm().rank(),
+                                          tree, tol, logger, /*assignTargets*/ true);
+    valid = ok && checkTreeValidity(tree, "FIELD", tol, logger);
+    return tree;
+}
+
 template<class Scalar>
 bool balanceTreeForTesting(Tree<Scalar>& tree,
                            const GuideRate& guideRate,
@@ -2341,9 +2365,21 @@ template bool runGroupTreeBalancer<double, BlackOilDefaultFluidSystemIndices>(
 
 template bool balanceTreeForTesting<double>(Tree<double>&, const GuideRate&, double, DeferredLogger&, bool);
 
+template Tree<double> decideTree<double, BlackOilDefaultFluidSystemIndices>(
+    const BlackoilWellModelGeneric<double, BlackOilDefaultFluidSystemIndices>&,
+    const SummaryState&, int, double,
+    const std::unordered_map<std::string, std::pair<int, double>>&,
+    const std::map<std::string, std::array<double, 3>>&, DeferredLogger&, bool&);
+
 #ifdef FLOW_INSTANTIATE_FLOAT
 
 template bool balanceTreeForTesting<float>(Tree<float>&, const GuideRate&, float, DeferredLogger&, bool);
+
+template Tree<float> decideTree<float, BlackOilDefaultFluidSystemIndices>(
+    const BlackoilWellModelGeneric<float, BlackOilDefaultFluidSystemIndices>&,
+    const SummaryState&, int, float,
+    const std::unordered_map<std::string, std::pair<int, float>>&,
+    const std::map<std::string, std::array<float, 3>>&, DeferredLogger&, bool&);
 
 template bool runGroupTreeBalancer<float, BlackOilDefaultFluidSystemIndices>(
     BlackoilWellModelGeneric<float, BlackOilDefaultFluidSystemIndices>&,
