@@ -563,6 +563,21 @@ public:
     void setWellGroup(const int w, const int g) { wells_[w].group = g; }
     /// The weight the tree splits by, once the adapter knows the deck's.
     void setWellGuide(const int w, const Scalar g) { wells_[w].guide = g; }
+    /// The tree's active set and shares from outside, in place of resolveTree()'s own
+    /// walk: given every well's oil capacity at this evaluation (0 = shut), which limit
+    /// holds each group, which wells are held by a share, and the oil rate of those.
+    /// Returning false falls back to the walk.
+    struct TreeDecision
+    {
+        std::vector<GroupBind> bind;
+        std::vector<char> held;
+        std::vector<Scalar> oil;
+    };
+    using TreeAllocator = std::function<bool(const std::vector<Scalar>&, TreeDecision&)>;
+    void setTreeAllocator(TreeAllocator allocator) { tree_allocator_ = std::move(allocator); }
+    long treeAllocatorCalls() const { return tree_allocator_calls_; }
+    long treeAllocatorFallbacks() const { return tree_allocator_fallbacks_; }
+
     /// A group's share of its parent, measured on the parent's mode; changes with it.
     void setGroupGuide(const int g, const Scalar guide) { groups_[g].guide = guide; }
 
@@ -1571,6 +1586,45 @@ public:
     {
         if (!usesGroupActiveSet()) { return false; }
         bool changed = false;
+        if (tree_allocator_) {
+            std::vector<Scalar> capacity(numWells(), Scalar{0});
+            for (int w = 0; w < numWells(); ++w) {
+                if (wells_[w].pinned) {
+                    capacity[w] = wells_[w].oil_rate_limit;
+                } else if (own_control_[w] != Control::Shut && own_allowance_[w] != kNoLimit) {
+                    capacity[w] = own_allowance_[w];
+                }
+            }
+            TreeDecision d;
+            ++tree_allocator_calls_;
+            if (tree_allocator_(capacity, d)
+                && static_cast<int>(d.bind.size()) == numGroups()
+                && static_cast<int>(d.held.size()) == numWells()
+                && static_cast<int>(d.oil.size()) == numWells()) {
+                for (int g = 0; g < numGroups(); ++g) {
+                    changed |= (d.bind[g] != group_bind_[g]);
+                    group_bind_[g] = d.bind[g];
+                }
+                for (int w = 0; w < numWells(); ++w) {
+                    if (wells_[w].group < 0) { continue; }
+                    if (own_control_[w] == Control::Shut || wells_[w].pinned) {
+                        if (!wells_[w].pinned) {
+                            changed |= (controls_[w] != Control::Shut);
+                            controls_[w] = Control::Shut;
+                        }
+                        tree_rate_[w] = own_allowance_[w];
+                        continue;
+                    }
+                    const bool held = d.held[w] && d.oil[w] < own_allowance_[w];
+                    tree_rate_[w] = held ? d.oil[w] : own_allowance_[w];
+                    const auto wanted = held ? Control::Tree : own_control_[w];
+                    changed |= (wanted != controls_[w]);
+                    controls_[w] = wanted;
+                }
+                return changed;
+            }
+            ++tree_allocator_fallbacks_;
+        }
         for (int g = 0; g < numGroups(); ++g) {
             if (groups_[g].parent < 0) { resolveGroup(x, g, kNoLimit, nullptr, changed); }
         }
@@ -2674,6 +2728,8 @@ private:
     std::vector<Scalar> start_oil_;    // setStartAllocation
     bool group_active_set_ = false;
     bool tree_frozen_ = false;
+    TreeAllocator tree_allocator_;
+    long tree_allocator_calls_ = 0, tree_allocator_fallbacks_ = 0;
     CapacityFractions capacity_fractions_ = CapacityFractions::Fixed;
     std::vector<GroupBind> group_bind_;
     // What each well's own limits allow, and which of them wins -- recorded by
