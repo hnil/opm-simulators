@@ -135,6 +135,8 @@ public:
         /// Per phase, production positive: q_p = ipr_a[p] + ipr_b[p] * bhp.
         std::array<Scalar, NP> ipr_a{};
         std::array<Scalar, NP> ipr_b{};
+        /// Lowest ratio to oil each phase's inflow line may give (0 = the line as it is).
+        std::array<Scalar, NP> min_ratio{};
         Scalar bhp_limit = 0.0;
         Scalar oil_rate_limit = 0.0;
         /// Held by the group, so its rate counts against the target whatever
@@ -658,7 +660,7 @@ public:
             if (well.ipr_b[1] < Scalar{0}) {
                 const Scalar bhp = (q_oil - well.ipr_a[1]) / well.ipr_b[1];
                 for (int ph = 0; ph < NP; ++ph) {
-                    on += c[ph] * std::max(well.ipr_a[ph] + well.ipr_b[ph] * bhp, Scalar{0});
+                    on += c[ph] * std::max(ipr(well, ph, bhp), Scalar{0});
                 }
             } else {
                 on = c[1] * q_oil;
@@ -780,7 +782,13 @@ public:
 
     static Scalar ipr(const Well& w, const int ph, const Scalar bhp)
     {
-        return w.ipr_a[ph] + w.ipr_b[ph] * bhp;
+        const Scalar line = w.ipr_a[ph] + w.ipr_b[ph] * bhp;
+        if (ph == 1 || !(w.min_ratio[ph] > Scalar{0})) {
+            return line;
+        }
+        // A tangent used far from where it was taken lets this phase vanish while oil
+        // still flows; its ratio to oil is held at a floor instead.
+        return std::max(line, w.min_ratio[ph] * (w.ipr_a[1] + w.ipr_b[1] * bhp));
     }
 
     /// Pressure below a branch carrying these phase rates. Production rates are

@@ -198,7 +198,29 @@ facilityCheck_(DeferredLogger& deferred_logger)
                     before[name] = this->groupState().production_control(name);
                 }
             }
+            std::map<std::string, Group::InjectionCMode> inj_before;
+            for (const auto& name : schedule.groupNames(step)) {
+                for (const Phase ph : {Phase::WATER, Phase::OIL, Phase::GAS}) {
+                    if (this->groupState().has_injection_control(name, ph)) {
+                        inj_before[name + ":" + std::to_string(static_cast<int>(ph))] = this->groupState().injection_control(name, ph);
+                    }
+                }
+            }
             this->updateGroupControls(field, scratch, step);
+            for (const auto& name : schedule.groupNames(step)) {
+                for (const Phase ph : {Phase::WATER, Phase::OIL, Phase::GAS}) {
+                    if (!this->groupState().has_injection_control(name, ph)) {
+                        continue;
+                    }
+                    const auto now = this->groupState().injection_control(name, ph);
+                    const auto it = inj_before.find(name + ":" + std::to_string(static_cast<int>(ph)));
+                    if (it == inj_before.end() || it->second != now) {
+                        group_switches.push_back(name + ":inj" + std::to_string(static_cast<int>(ph)) + ":"
+                            + (it == inj_before.end() ? std::string("-") : Group::InjectionCMode2String(it->second))
+                            + "->" + Group::InjectionCMode2String(now));
+                    }
+                }
+            }
             for (const auto& name : schedule.groupNames(step)) {
                 if (!this->groupState().has_production_control(name)) {
                     continue;

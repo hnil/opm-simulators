@@ -401,6 +401,12 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                 w.ipr_a[ph] = ws.implicit_ipr_a[pos[ph]];
                 w.ipr_b[ph] = -ws.implicit_ipr_b[pos[ph]];
             }
+            if (current > Scalar{0}) {
+                // Half the ratio the well has now: see Sys::ipr().
+                for (const int ph : {0, 2}) {
+                    w.min_ratio[ph] = Scalar{0.5} * std::max(-ws.surface_rates[pos[ph]], Scalar{0}) / current;
+                }
+            }
             w.q_start = current;
             if (owned) {
                 const auto [allow, mode] = allowance(w, controls);
@@ -620,9 +626,9 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                 auto phases = [](const typename Sys::Well& well, const Scalar q_oil) {
                     const Scalar bhp = (q_oil - well.ipr_a[1]) / well.ipr_b[1];
                     std::array<Scalar, 3> q{};     // oil, water, gas
-                    q[0] = std::max(well.ipr_a[1] + well.ipr_b[1] * bhp, Scalar{0});
-                    q[1] = std::max(well.ipr_a[0] + well.ipr_b[0] * bhp, Scalar{0});
-                    q[2] = std::max(well.ipr_a[2] + well.ipr_b[2] * bhp, Scalar{0});
+                    q[0] = std::max(Sys::ipr(well, 1, bhp), Scalar{0});
+                    q[1] = std::max(Sys::ipr(well, 0, bhp), Scalar{0});
+                    q[2] = std::max(Sys::ipr(well, 2, bhp), Scalar{0});
                     return q;
                 };
                 std::unordered_map<std::string, std::pair<int, Scalar>> capacity;
@@ -779,9 +785,16 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                 return true;
             });
         }
+        // Diagnostic: OPM_CONTROLLER_CLIFF=hold keeps a well at the rate it had before a cliff
+        // instead of letting it die inside the route's solve.
+        static const auto cliff_rule = [] {
+            const char* v = std::getenv("OPM_CONTROLLER_CLIFF");
+            return (v != nullptr && std::string(v) == "hold") ? NetworkSolve::CliffRule::Hold
+                                                               : NetworkSolve::CliffRule::Die;
+        }();
         const NetworkSolve::Parameters<Scalar> params{Scalar{1e-2}, 50};
         auto rr = NetworkSolve::solveReduced(system, guess, params, /*eliminate=*/true,
-                                             NetworkSolve::CliffRule::Die);
+                                             cliff_rule);
         // A group with several limits holds the one its own answer violates most: solve,
         // look at every limit, switch and solve again. Bounded; a repeat ends it.
         // OPM_CONTROLLER_STEIN_LIMITS: the balancer's tree on the route's answer picks the
@@ -804,9 +817,9 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                     auto phases = [&well](const Scalar q_oil) {
                         const Scalar bhp = (q_oil - well.ipr_a[1]) / well.ipr_b[1];
                         std::array<Scalar, 3> q{};     // oil, water, gas
-                        q[0] = std::max(well.ipr_a[1] + well.ipr_b[1] * bhp, Scalar{0});
-                        q[1] = std::max(well.ipr_a[0] + well.ipr_b[0] * bhp, Scalar{0});
-                        q[2] = std::max(well.ipr_a[2] + well.ipr_b[2] * bhp, Scalar{0});
+                        q[0] = std::max(Sys::ipr(well, 1, bhp), Scalar{0});
+                        q[1] = std::max(Sys::ipr(well, 0, bhp), Scalar{0});
+                        q[2] = std::max(Sys::ipr(well, 2, bhp), Scalar{0});
                         return q;
                     };
                     Scalar cap = well.ipr_a[1] + well.ipr_b[1] * well.bhp_limit;
@@ -884,7 +897,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                 }
                 refreshGuides();
                 rr = NetworkSolve::solveReduced(system, rr.node_pressure, params, /*eliminate=*/true,
-                                                NetworkSolve::CliffRule::Die);
+                                                cliff_rule);
                 continue;
             }
             std::map<int, std::array<Scalar, Sys::NP>> produced = satellite_on;
@@ -899,7 +912,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                 Scalar eff = well.efficiency;
                 for (int a = gi->second; a >= 0; a = system.groups()[a].parent) {
                     for (int ph = 0; ph < Sys::NP; ++ph) {
-                        produced[a][ph] += eff * std::max(well.ipr_a[ph] + well.ipr_b[ph] * bhp, Scalar{0});
+                        produced[a][ph] += eff * std::max(Sys::ipr(well, ph, bhp), Scalar{0});
                     }
                     eff *= system.groups()[a].efficiency;
                 }
@@ -934,7 +947,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
             }
             refreshGuides();
             rr = NetworkSolve::solveReduced(system, rr.node_pressure, params, /*eliminate=*/true,
-                                            NetworkSolve::CliffRule::Die);
+                                            cliff_rule);
         }
         if (limit_switches > 0) {
             deferred_logger.debug(fmt::format("Controller: {} group limit switches inside the decision under {}",
@@ -1015,6 +1028,18 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                 const Scalar gas_sys = std::max(well.ipr_a[2] + well.ipr_b[2] * bhp_w, Scalar{0});
                 const Scalar gas_now = this->wellState().has(well.name)
                     ? -this->wellState().well(well.name).surface_rates[pos[2]] : Scalar{0};
+                if (well.vfp_table > 0 && this->wellState().has(well.name)) {
+                    // The tubing as the route sees it, at the rates and bhp the well has now.
+                    const auto& wsn = this->wellState().well(well.name);
+                    std::array<Scalar, Sys::NP> now{};
+                    for (int ph = 0; ph < Sys::NP; ++ph) { now[ph] = std::max(-wsn.surface_rates[pos[ph]], Scalar{0}); }
+                    deferred_logger.debug(fmt::format(
+                        "CTRLTRACE step={} it={} {} tubing: table {} alq {:.4g} vfp_dp {:.3f} bar; at the well's rates "
+                        "w/o/g {:.1f}/{:.1f}/{:.0f} and thp {:.2f}: route bhp {:.2f}, well bhp {:.2f}, well thp {:.2f}",
+                        reportStepIdx, simulator_.problem().iterationContext().iteration(), well.name, well.vfp_table,
+                        well.alq, well.vfp_dp / 1e5, now[0] * 86400.0, now[1] * 86400.0, now[2] * 86400.0, p / 1e5,
+                        (system.tubingBhp(well, p, now) - well.vfp_dp) / 1e5, wsn.bhp / 1e5, wsn.thp / 1e5));
+                }
                 deferred_logger.debug(fmt::format("CTRLTRACE step={} it={} {} gas: ipr=({:.4g},{:.4g}) bhp={:.2f} gas_sys={:.0f} gas_now={:.0f} shut={}",
                     reportStepIdx, simulator_.problem().iterationContext().iteration(), well.name,
                     well.ipr_a[2] * 86400.0, well.ipr_b[2] * 86400.0 * 1e5, bhp_w / 1e5, gas_sys * 86400.0, gas_now * 86400.0, well.shut ? 1 : 0));
@@ -1082,7 +1107,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
             if (q_oil > Scalar{0} && well.ipr_b[1] < Scalar{0}) {
                 const Scalar bhp = (q_oil - well.ipr_a[1]) / well.ipr_b[1];
                 for (int ph = 0; ph < Sys::NP; ++ph) {
-                    q[pos[ph]] = -std::max(well.ipr_a[ph] + well.ipr_b[ph] * bhp, Scalar{0});
+                    q[pos[ph]] = -std::max(Sys::ipr(well, ph, bhp), Scalar{0});
                 }
             }
             assigned_rates[well.name] = q;

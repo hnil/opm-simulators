@@ -77,7 +77,8 @@ public:
                                       std::map<std::string, std::pair<std::string, std::string>>& closed_offending_wells,
                                       GroupState<Scalar>& group_state,
                                       WellState<Scalar, IndexTraits>& well_state,
-                                      DeferredLogger& deferred_logger) const;
+                                      DeferredLogger& deferred_logger,
+                                      const bool injection_only = false) const;
 
 private:
     //! \brief Check and return value and type of constraints for an injection well group.

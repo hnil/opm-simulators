@@ -790,7 +790,8 @@ bool BlackoilWellModelGeneric<Scalar, IndexTraits>::
 checkGroupHigherConstraints(const Group& group,
                             DeferredLogger& deferred_logger,
                             const int reportStepIdx,
-                            const bool update_group_switching_log)
+                            const bool update_group_switching_log,
+                            const bool injection_only)
 {
 
     const int max_number_of_group_switch = param_.max_number_of_group_switches_;
@@ -867,7 +868,8 @@ checkGroupHigherConstraints(const Group& group,
         }
     }
 
-    if (!isField && group.isProductionGroup()) {
+    // The group controller decides the production side itself.
+    if (!injection_only && !isField && group.isProductionGroup()) {
         const Group::ProductionCMode currentControl = this->groupState().production_control(group.name());
         if (auto groupPos = switched_prod_groups_.find(group.name()); groupPos != switched_prod_groups_.end()) {
             auto& ctrls = groupPos->second;

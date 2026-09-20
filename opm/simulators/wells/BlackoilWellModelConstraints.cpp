@@ -520,7 +520,8 @@ updateGroupIndividualControl(const Group& group,
                              std::map<std::string, std::pair<std::string, std::string>>& closed_offending_wells,
                              GroupState<Scalar>& group_state,
                              WellState<Scalar, IndexTraits>& well_state,
-                             DeferredLogger& deferred_logger) const
+                             DeferredLogger& deferred_logger,
+                             const bool injection_only) const
 {
     bool changed = false;
     if (group.isInjectionGroup()) {
@@ -534,7 +535,7 @@ updateGroupIndividualControl(const Group& group,
                                               deferred_logger);
     }
 
-    if (group.isProductionGroup()) {
+    if (!injection_only && group.isProductionGroup()) {
         changed = changed || updateProductionGroupControl(group,
                                                           max_number_of_group_switch,
                                                           update_group_switching_log,

@@ -317,11 +317,12 @@ template<class Scalar> class WellContributions;
             /// solution, by the physics and by what one more legacy pass would change.
             void facilityCheck_(DeferredLogger& deferred_logger);
 
-            void updateAndCommunicate(const int reportStepIdx);
+            void updateAndCommunicate(const int reportStepIdx, bool injectors_only = false);
 
             bool updateGroupControls(const Group& group,
                                     DeferredLogger& deferred_logger,
-                                    const int reportStepIdx);
+                                    const int reportStepIdx,
+                                    bool injection_only = false);
 
             static constexpr int numResDofs = Indices::numEq;
             static constexpr int numWellDofs = numResDofs + 1;//NB will fail for for thermal for now

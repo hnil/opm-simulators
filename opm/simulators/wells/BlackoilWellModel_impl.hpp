@@ -701,9 +701,10 @@ namespace Opm {
             const auto& st = this->controller_stats_;
             OpmLog::debug(fmt::format("Controller totals at day {:.1f}: {} calls, {} passes, {} decisions by the route "
                                       "({} iterations, {} evaluations, {} set changes, {} lookups), {} well solves, "
-                                      "{} cap hits, {} judge rejections, worst deviation {:.1f} %",
+                                      "{} converged, {} stalled, {} cap hits, {} judge rejections, worst deviation {:.1f} %",
                                       simulationTime / 86400.0, st.calls, st.passes, st.decisions, st.route_iterations,
-                                      st.route_evaluations, st.set_changes, st.lookups, st.well_solves, st.cap_hits,
+                                      st.route_evaluations, st.set_changes, st.lookups, st.well_solves, st.converged,
+                                      st.stalled, st.cap_hits,
                                       this->controller_judge_rejections_, 100.0 * st.worst_deviation));
         }
 
@@ -1978,6 +1979,28 @@ namespace Opm {
         const bool network_route = param_.enable_group_controller_network_
             && this->schedule()[episodeIdx].network().active();
         this->controller_network_owned_ = false;
+        // The injection side stays with legacy's rules: group controls, then the injectors'
+        // group and own checks. Reinjection and voidage targets follow the producers
+        // through the group data, as they do in legacy.
+        bool injection_changed = false;
+        {
+            const Group& fieldGroup = this->schedule().getGroup("FIELD", episodeIdx);
+            injection_changed = updateGroupControls(fieldGroup, deferred_logger, episodeIdx, /*injection_only*/ true);
+            bool to_group = false;
+            OPM_BEGIN_PARALLEL_TRY_CATCH()
+            for (const auto& well : well_container_) {
+                if (well->isInjector()) {
+                    to_group = well->updateWellControl(simulator_, WellInterface<TypeTag>::IndividualOrGroup::Group,
+                                                       this->groupStateHelper(), this->wellState()) || to_group;
+                }
+            }
+            OPM_END_PARALLEL_TRY_CATCH("BlackoilWellModel: updating injector controls failed: ",
+                                       simulator_.gridView().comm());
+            if (comm.sum(static_cast<int>(to_group)) > 0) {
+                updateAndCommunicate(episodeIdx, /*injectors_only*/ true);
+                injection_changed = true;
+            }
+        }
         const int max_passes = network_route ? 6 : 4;
         const std::string sig_before = this->controller_decision_signature_;
         int passes = 0, well_solves = 0;
@@ -2010,7 +2033,7 @@ namespace Opm {
                     // A well delivering more or less than it was assigned is the other
                     // half of the report: the remainder has to be re-allocated.
                     const auto ir = this->controller_assigned_rates_.find(well->name());
-                    if (may_redecide && ir != this->controller_assigned_rates_.end()) {
+                    if ((may_redecide || network_route) && ir != this->controller_assigned_rates_.end()) {
                         constexpr Scalar rtol = 0.01, floor = 1e-7; // m3/s
                         for (std::size_t p = 0; p < ir->second.size(); ++p) {
                             if (std::abs(ws.surface_rates[p] - ir->second[p])
@@ -2027,7 +2050,8 @@ namespace Opm {
             const bool group_violated = controllerGroupLimitViolated_();
             changed = changed || group_violated;
             if (!changed) {
-                ended = pass == 0 ? "nothing to decide" : "no trigger";
+                ended = pass == 0 ? "nothing to decide" : "converged";
+                this->controller_stats_.converged += pass > 0;
                 break;
             }
             ++passes;
@@ -2070,7 +2094,19 @@ namespace Opm {
                 this->updateAndCommunicateGroupData(episodeIdx, /*update_wellgrouptarget*/ true);
             }
             if (!moved) {
-                ended = "decision stands";
+                // The criterion: the solved wells deliver what they were assigned and no
+                // group is over a limit. A decision that repeats without that is a stall.
+                Scalar off = 0;
+                for (const auto& [name, q] : this->controller_assigned_rates_) {
+                    if (!this->wellState().has(name)) continue;
+                    const auto& r = this->wellState().well(name).surface_rates;
+                    for (std::size_t p = 0; p < q.size() && p < r.size(); ++p) {
+                        off = std::max(off, std::abs(r[p] - q[p]) / std::max(std::abs(q[p]), Scalar(1e-7)));
+                    }
+                }
+                const bool met = off <= Scalar(0.01) && !controllerGroupLimitViolated_();
+                ended = met ? "converged" : "stalled: the decision stands and the wells do not follow";
+                ++(met ? this->controller_stats_.converged : this->controller_stats_.stalled);
                 break;
             }
             ended = pass + 1 == max_passes ? "cap reached, decision still moving" : "moved";
@@ -2097,7 +2133,7 @@ namespace Opm {
         }
         // Only a decision that moved is a change; a rate off its assignment by the
         // IPR's error is not, or the step would never be allowed to converge.
-        changed_any = changed_any || (this->controller_decision_signature_ != sig_before);
+        changed_any = changed_any || injection_changed || (this->controller_decision_signature_ != sig_before);
         this->updateWsolvent(this->schedule().getGroup("FIELD", episodeIdx), episodeIdx, this->nupcolWellState());
         return changed_any;
     }
@@ -2105,7 +2141,7 @@ namespace Opm {
     template<typename TypeTag>
     void
     BlackoilWellModel<TypeTag>::
-    updateAndCommunicate(const int reportStepIdx)
+    updateAndCommunicate(const int reportStepIdx, const bool injectors_only)
     {
         this->updateAndCommunicateGroupData(reportStepIdx, /*update_wellgrouptarget*/ true);
 
@@ -2116,6 +2152,10 @@ namespace Opm {
         for (const auto& well : well_container_) {
             // We only want to update wells under group-control here
             const auto& ws = this->wellState().well(well->indexOfWell());
+            // The controller's producers are primed by their own decision only.
+            if (injectors_only && !well->isInjector()) {
+                continue;
+            }
             if (ws.production_cmode ==  Well::ProducerCMode::GRUP ||
                 ws.injection_cmode == Well::InjectorCMode::GRUP)
             {
@@ -2134,7 +2174,8 @@ namespace Opm {
     BlackoilWellModel<TypeTag>::
     updateGroupControls(const Group& group,
                         DeferredLogger& deferred_logger,
-                        const int reportStepIdx)
+                        const int reportStepIdx,
+                        const bool injection_only)
     {
         OPM_TIMEFUNCTION();
         const auto& iterCtx = simulator_.problem().iterationContext();
@@ -2143,10 +2184,10 @@ namespace Opm {
         const int nupcol = this->schedule()[reportStepIdx].nupcol();
         const bool update_group_switching_log = !iterCtx.withinNupcol(nupcol);
         const bool changed_hc = this->checkGroupHigherConstraints(
-            group, deferred_logger, reportStepIdx, update_group_switching_log);
+            group, deferred_logger, reportStepIdx, update_group_switching_log, injection_only);
         if (changed_hc) {
             changed = true;
-            updateAndCommunicate(reportStepIdx);
+            updateAndCommunicate(reportStepIdx, injection_only);
         }
 
         bool changed_individual =
@@ -2160,15 +2201,16 @@ namespace Opm {
                                              this->closed_offending_wells_,
                                              this->groupState(),
                                              this->wellState(),
-                                             deferred_logger);
+                                             deferred_logger,
+                                             injection_only);
 
         if (changed_individual) {
             changed = true;
-            updateAndCommunicate(reportStepIdx);
+            updateAndCommunicate(reportStepIdx, injection_only);
         }
         // call recursively down the group hierarchy
         for (const std::string& groupName : group.groups()) {
-            bool changed_this = updateGroupControls(this->schedule().getGroup(groupName, reportStepIdx), deferred_logger, reportStepIdx);
+            bool changed_this = updateGroupControls(this->schedule().getGroup(groupName, reportStepIdx), deferred_logger, reportStepIdx, injection_only);
             changed = changed || changed_this;
         }
         return changed;
