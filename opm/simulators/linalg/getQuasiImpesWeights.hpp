@@ -261,10 +261,12 @@ namespace Amg
 
         // Turn one degree of freedom's accumulation term into its weight.  Only the
         // storage derivatives and the volume the storage is scaled by enter it.
-        const auto weightFromStorage = [pressureVarIndex, &rhs, &block_transpose, &elemCtx]
+        // Called from OpenMP loops: the scratch block must be per call, not captured.
+        const auto weightFromStorage = [pressureVarIndex, &rhs, &elemCtx]
             (const auto& stor, const auto storage_scale, auto& bw, const int globalDofIdx)
         {
             const double pressure_scale = 50e5;
+            MatrixBlockType block_transpose;
 
             // Build the transposed matrix directly to avoid separate transpose step
             for (int ii = 0; ii < numEq; ++ii) {
