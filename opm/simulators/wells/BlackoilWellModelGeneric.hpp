@@ -602,6 +602,7 @@ protected:
         long decisions = 0, route_iterations = 0, route_evaluations = 0, set_changes = 0, lookups = 0;
         long calls = 0, passes = 0, well_solves = 0, cap_hits = 0, judge_rejections = 0;
         long converged = 0, stalled = 0;
+        long stein_decisions = 0, stein_inconsistent = 0;
         double worst_deviation = 0;
     } controller_stats_;
     // Explicit guide rates: the deck's values as read at the first decision of a time

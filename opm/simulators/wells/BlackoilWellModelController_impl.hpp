@@ -648,6 +648,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
         }();
         const bool stein_set = group_set == "stein" && !tree_wells.empty();
         int stein_mode_switches = 0;
+        ProdGroupTreeBalancer::Tree<Scalar> stein_last;   // the tree behind the set in force
         if (stein_set) {
             system.setTreeAllocator([&](const std::vector<Scalar>& oil_capacity,
                                         typename Sys::TreeDecision& d) -> bool {
@@ -678,7 +679,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                 // lines: a few sweeps put the fractions where the allocation puts the wells.
                 DeferredLogger quiet;
                 ProdGroupTreeBalancer::Tree<Scalar> tree;
-                for (int sweep = 0; sweep < 3; ++sweep) {
+                for (int sweep = 0; sweep < 6; ++sweep) {
                     bool valid = false;
                     tree = ProdGroupTreeBalancer::decideTree(
                         static_cast<const BlackoilWellModelGeneric<Scalar, IndexTraits>&>(*this), summary_state,
@@ -811,6 +812,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                         d.bind[g] = own[g] ? Sys::GroupBind::Own : Sys::GroupBind::Share;
                     }
                 }
+                stein_last = std::move(tree);
                 return true;
             });
         }
@@ -1108,6 +1110,15 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                 ws.group_target->group_name = system.groups()[t.group].name;
                 ws.group_target->target_value = t.value;
                 ws.group_target->production_cmode = cmode;
+                if (stein_set) {
+                    // The tree's own number where it names the same group and mode: those
+                    // sum to the group's limit exactly, the inflow lines' only nearly.
+                    const auto node = stein_last.find(well.name);
+                    if (node != stein_last.end() && node->second.groupTarget.groupName == ws.group_target->group_name
+                        && node->second.groupTarget.ctrlMode == cmode && node->second.groupTarget.value > Scalar{0}) {
+                        ws.group_target->target_value = node->second.groupTarget.value;
+                    }
+                }
                 holding[ws.group_target->group_name] = cmode;
                 ws.group_target_fallback = std::nullopt;
                 ws.use_group_target_fallback = false;
@@ -1141,6 +1152,49 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                 }
             }
             assigned_rates[well.name] = q;
+        }
+        if (stein_set && !stein_last.empty()) {
+            // What was written against the tree it came from: control, holding group, mode,
+            // target and rate of every well the tree knows.
+            int n = 0, off_control = 0, off_group = 0;
+            Scalar off_target = 0, off_rate = 0;
+            std::string worst;
+            for (int w = 0; w < system.numWells(); ++w) {
+                const auto& well = system.wells()[w];
+                const auto it = stein_last.find(well.name);
+                if (it == stein_last.end() || well.pinned || well.group < 0 || !this->wellState().has(well.name)) {
+                    continue;
+                }
+                ++n;
+                const auto& node = it->second;
+                const auto& ws = this->wellState().well(well.name);
+                const bool theirs = node.modeCategory == ProdNodeModeCategory::Group;
+                const bool ours = ws.production_cmode == Well::ProducerCMode::GRUP;
+                if (theirs != ours) {
+                    ++off_control;
+                    worst = well.name;
+                }
+                const Scalar r = std::abs(rr.well_rate[w] + node.rates[0])
+                    / std::max({rr.well_rate[w], -node.rates[0], Scalar{1e-9}});
+                if (r > off_rate) { off_rate = r; if (off_control == 0) { worst = well.name; } }
+                if (theirs && ours && ws.group_target.has_value()) {
+                    const auto& gt = node.groupTarget;
+                    off_group += gt.groupName != ws.group_target->group_name
+                        || gt.ctrlMode != ws.group_target->production_cmode;
+                    off_target = std::max(off_target, std::abs(gt.value - ws.group_target->target_value)
+                        / std::max({gt.value, ws.group_target->target_value, Scalar{1e-9}}));
+                }
+            }
+            auto& st = this->controller_stats_;
+            ++st.stein_decisions;
+            const bool consistent = off_control == 0 && off_group == 0 && off_target <= Scalar{0.01} && off_rate <= Scalar{0.01};
+            st.stein_inconsistent += !consistent;
+            if (!consistent) {
+                deferred_logger.debug(fmt::format(
+                    "Controller: written against the balancer's tree under {}: {} wells, {} on another control, "
+                    "{} under another group or mode, targets off by {:.1f} %, rates by {:.1f} % ({})", root.name(), n,
+                    off_control, off_group, 100.0 * off_target, 100.0 * off_rate, worst));
+            }
         }
     }
     // The shut decision handed to the wells: dead while the system holds it shut,

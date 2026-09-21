@@ -701,11 +701,13 @@ namespace Opm {
             const auto& st = this->controller_stats_;
             OpmLog::debug(fmt::format("Controller totals at day {:.1f}: {} calls, {} passes, {} decisions by the route "
                                       "({} iterations, {} evaluations, {} set changes, {} lookups), {} well solves, "
-                                      "{} converged, {} stalled, {} cap hits, {} judge rejections, worst deviation {:.1f} %",
+                                      "{} converged, {} stalled, {} cap hits, {} judge rejections, worst deviation {:.1f} %, "
+                                      "written against the balancer's tree: {} of {} decisions differ",
                                       simulationTime / 86400.0, st.calls, st.passes, st.decisions, st.route_iterations,
                                       st.route_evaluations, st.set_changes, st.lookups, st.well_solves, st.converged,
                                       st.stalled, st.cap_hits,
-                                      this->controller_judge_rejections_, 100.0 * st.worst_deviation));
+                                      this->controller_judge_rejections_, 100.0 * st.worst_deviation,
+                                      st.stein_inconsistent, st.stein_decisions));
         }
 
         // time step is finished and we are not any more at the beginning of an report step
