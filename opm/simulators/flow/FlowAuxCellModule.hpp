@@ -102,6 +102,11 @@ public:
     virtual bool participatesInCnv() const
     { return true; }
 
+    //! Pore volume to scale the CNV residual by when the module is outside CNV
+    //! proper; zero means the cell is not checked.
+    virtual double cnvReferencePoreVolume(unsigned /*localIdx*/) const
+    { return 0.0; }
+
     //! Inactive (preallocated) cells have empty rows; the module conditions them in linearize().
     virtual bool isActive(unsigned /*localIdx*/) const
     { return true; }
