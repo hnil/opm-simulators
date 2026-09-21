@@ -2672,7 +2672,13 @@ namespace Opm {
             //     production at that pressure — use their sum as the rate proxy.
             // Only GRUP-controlled wells and CMODE_UNDEFINED still require the IPR path.
             const auto cmode = ws.production_cmode;
-            if (cmode != Well::ProducerCMode::GRUP &&
+            // Under the group controller every well gets the estimate below - given its thp
+            // limit, which of its limits binds - not only the wells on GRUP: the control a
+            // well happens to be on is what flips at a corner between two of its limits.
+            // OPM_CONTROLLER_TRUST_CURRENT=1 for the balancer's own rule.
+            static const bool trust_current = std::getenv("OPM_CONTROLLER_TRUST_CURRENT") != nullptr;
+            if ((!param_.enable_group_controller_ || trust_current) &&
+                cmode != Well::ProducerCMode::GRUP &&
                 cmode != Well::ProducerCMode::CMODE_UNDEFINED)
             {
                 Scalar target = Scalar(-1);
