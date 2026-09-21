@@ -115,6 +115,7 @@ template<class Scalar>
 struct GroupControllerNetworkTolerance { static constexpr Scalar value = 0.1; };
 struct GroupControllerMaxPasses { static constexpr int value = 4; };
 struct GroupControllerMaxPassesNetwork { static constexpr int value = 6; };
+struct GroupControllerMaxRevivals { static constexpr int value = 3; };
 template<class Scalar>
 struct GroupTreeBalancerTolerance { static constexpr Scalar value = 1e-5; };
 
@@ -452,6 +453,9 @@ public:
     /// Controller passes per Newton iteration, without and with a network
     int group_controller_max_passes_;
     int group_controller_max_passes_network_;
+
+    /// Controller: revivals of a network-dead well per time step before it stays dead
+    int group_controller_max_revivals_;
 
     template<class Serializer>
     void serializeOp(Serializer& serializer)

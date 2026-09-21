@@ -120,6 +120,19 @@ controllerRefreshIpr_(DeferredLogger& deferred_logger)
         well->updateIPRImplicit(simulator_, this->groupStateHelper(), this->wellState());
         const bool zero = std::all_of(ws.surface_rates.begin(), ws.surface_rates.end(),
                                       [](const Scalar q) { return q == Scalar{0}; });
+        // The implicit intercept is the well's unconverged rate, taken before the reservoir
+        // moved (5 bar of shut-in pressure on STDW's C-2H); the true inflow at its bhp is current.
+        static const bool true_intercept = [] {
+            const char* v = std::getenv("OPM_CONTROLLER_IPR_INTERCEPT");
+            return v == nullptr || std::string(v) != "stale";
+        }();
+        if (!zero && true_intercept) {
+            std::vector<Scalar> q(ws.implicit_ipr_a.size(), Scalar{0});
+            well->computeWellRatesWithBhp(simulator_, ws.bhp, q, deferred_logger);
+            for (std::size_t ph = 0; ph < q.size(); ++ph) {
+                ws.implicit_ipr_a[ph] = ws.implicit_ipr_b[ph] * ws.bhp - q[ph];
+            }
+        }
         auto& source = this->controller_ipr_source_[well->name()];
         if (!zero) {
             cache[well->name()] = {ws.implicit_ipr_a, ws.implicit_ipr_b};
@@ -323,6 +336,20 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
     std::map<std::string, Well::ProducerCMode> assigned_cmode;
     std::map<std::string, std::vector<Scalar>> assigned_rates;
     std::map<std::string, bool> dead_now;
+    // A well at zero rate given a rate again more often than the budget stays shut for the
+    // rest of the step, as legacy's max_well_status_switch: a well on its lift cliff otherwise
+    // flips every Newton iteration and the step never converges.
+    const auto step_key = std::pair{static_cast<double>(simulator_.time()), static_cast<double>(simulator_.timeStepSize())};
+    if (step_key != this->controller_revival_step_) {
+        this->controller_revival_step_ = step_key;
+        this->controller_revivals_.clear();
+    }
+    auto held_dead = [&](const std::string& name, const Scalar rate_now) {
+        const auto r = this->controller_revivals_.find(name);
+        return !(rate_now > Scalar{0}) && r != this->controller_revivals_.end()
+            && r->second >= param_.group_controller_max_revivals_;
+    };
+    std::set<std::string> kept_dead;
     std::set<std::string> route_groups, switched;
     std::map<std::string, Group::ProductionCMode> holding;
     int n_judged_wrong = 0;
@@ -462,6 +489,8 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                     wi.refDensity(), wi.gravity());
                 w.explicit_wfr = this->getVFPProperties().getExplicitWFR(w.vfp_table, wi.indexOfWell());
                 w.explicit_gfr = this->getVFPProperties().getExplicitGFR(w.vfp_table, wi.indexOfWell());
+                // The well model's flag, including the one its own failed solves set: ignoring
+                // it costs 5-8 % oil on the network decks.
                 w.explicit_vfp = wi.useVfpExplicit();
             }
             w.bhp_limit = static_cast<Scalar>(controls.bhp_limit);
@@ -471,7 +500,11 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
             if (w.node_adds_lift_gas) {
                 w.lift_gas = w.alq;
             }
-            if (!usable) {
+            const bool held = held_dead(name, current);
+            if (held) {
+                kept_dead.insert(name);
+            }
+            if (!usable || held) {
                 if (!owned) {
                     continue;             // at zero rate on its own control; not part of it
                 }
@@ -1129,11 +1162,36 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                     std::array<Scalar, Sys::NP> now{};
                     for (int ph = 0; ph < Sys::NP; ++ph) { now[ph] = std::max(-wsn.surface_rates[pos[ph]], Scalar{0}); }
                     deferred_logger.debug(fmt::format(
-                        "CTRLTRACE step={} it={} {} tubing: table {} alq {:.4g} vfp_dp {:.3f} bar; at the well's rates "
+                        "CTRLTRACE step={} it={} {} tubing: table {} alq {:.4g} vfp_dp {:.3f} bar{}; at the well's rates "
                         "w/o/g {:.1f}/{:.1f}/{:.0f} and thp {:.2f}: route bhp {:.2f}, well bhp {:.2f}, well thp {:.2f}",
                         reportStepIdx, simulator_.problem().iterationContext().iteration(), well.name, well.vfp_table,
-                        well.alq, well.vfp_dp / 1e5, now[0] * 86400.0, now[1] * 86400.0, now[2] * 86400.0, p / 1e5,
+                        well.alq, well.vfp_dp / 1e5,
+                        well.explicit_vfp ? fmt::format(", explicit wfr {:.3g} gfr {:.4g}", well.explicit_wfr, well.explicit_gfr) : std::string(),
+                        now[0] * 86400.0, now[1] * 86400.0, now[2] * 86400.0, p / 1e5,
                         (system.tubingBhp(well, p, now) - well.vfp_dp) / 1e5, wsn.bhp / 1e5, wsn.thp / 1e5));
+                    // The well model's own answer at this thp, with its true inflow, and its true
+                    // inflow at the route's bhp: where the route's line and the well part ways.
+                    const auto wit = std::find_if(well_container_.begin(), well_container_.end(),
+                                                  [&](const auto& x) { return x->name() == well.name; });
+                    if (wit == well_container_.end()) { continue; }
+                    auto& wi = *wit;
+                    const auto saved = wi->getDynamicThpLimit();
+                    wi->setDynamicThpLimit(p);
+                    const auto own = wi->computeBhpAtThpLimitProdWithAlq(simulator_, this->groupStateHelper(),
+                                                                         summary_state, well.alq, false);
+                    wi->setDynamicThpLimit(saved);
+                    std::vector<Scalar> tq(pu.numActivePhases(), Scalar{0});
+                    wi->computeWellRatesWithBhp(simulator_, bhp_w, tq, deferred_logger);
+                    std::vector<Scalar> oq(pu.numActivePhases(), Scalar{0});
+                    if (own) { wi->computeWellRatesWithBhp(simulator_, *own, oq, deferred_logger); }
+                    deferred_logger.debug(fmt::format(
+                        "CTRLTRACE step={} it={} {} well model at thp {:.2f}: {}; true inflow at the route's bhp {:.2f}: "
+                        "oil {:.1f} gas {:.0f} (route {:.1f} / {:.0f})",
+                        reportStepIdx, simulator_.problem().iterationContext().iteration(), well.name, p / 1e5,
+                        own ? fmt::format("bhp {:.2f}, oil {:.1f} gas {:.0f}", *own / 1e5, oq[pos[1]] * 86400.0,
+                                          oq[pos[2]] * 86400.0)
+                            : std::string("no crossing"),
+                        bhp_w / 1e5, tq[pos[1]] * 86400.0, tq[pos[2]] * 86400.0, qo * 86400.0, gas_sys * 86400.0));
                 }
                 deferred_logger.debug(fmt::format("CTRLTRACE step={} it={} {} gas: ipr=({:.4g},{:.4g}) bhp={:.2f} gas_sys={:.0f} gas_now={:.0f} shut={}",
                     reportStepIdx, simulator_.problem().iterationContext().iteration(), well.name,
@@ -1206,6 +1264,9 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
             }
             assigned_cmode[well.name] = ws.production_cmode;
             dead_now[well.name] = t.control == Ctrl::Shut && !well.shut;
+            if (!(well.q_start > Scalar{0}) && rr.well_rate[w] > Scalar{0}) {
+                ++this->controller_revivals_[well.name];
+            }
             // The other phases where the inflow puts them at the bhp this oil rate needs.
             std::vector<Scalar> q(ws.surface_rates.size(), Scalar{0});
             const Scalar q_oil = rr.well_rate[w];
@@ -1266,6 +1327,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
     for (const auto& wp : well_container_) {
         const auto it = dead_now.find(wp->name());
         wp->setNetworkDead(it != dead_now.end() && it->second);
+        wp->setNetworkHeld(kept_dead.count(wp->name()) > 0);
     }
     // The group state's controls say what was decided: the holding groups their mode,
     // the groups under one FLD, the rest NONE. Output and legacy's bookkeeping read them.

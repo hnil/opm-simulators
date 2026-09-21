@@ -981,12 +981,15 @@ namespace Opm
         bool converged = true;
         auto& ws = well_state.well(this->index_of_well_);
         // The network route decided: no reopening attempt of its own.
-        if (this->wellIsStopped() && this->networkDead()) {
+        if (this->wellIsStopped() && (this->networkDead() || this->networkHeld())) {
             const bool solved = solveWellWithZeroRate(simulator, dt, groupStateHelper, well_state);
-            // Not operable (the zero-rate solve resets that): the step's end closes the
-            // well as legacy would, and WTEST decides when it is tried again.
-            this->operability_status_.can_obtain_bhp_with_thp_limit = false;
-            this->operability_status_.obey_thp_limit_under_bhp_limit = false;
+            // Dead: not operable (the zero-rate solve resets that), so the step's end closes
+            // the well as legacy would and WTEST decides when it is tried again. Held: stopped
+            // for this step only.
+            if (this->networkDead()) {
+                this->operability_status_.can_obtain_bhp_with_thp_limit = false;
+                this->operability_status_.obey_thp_limit_under_bhp_limit = false;
+            }
             return solved;
         }
         // if well is stopped, check if we can reopen with explicit fraction

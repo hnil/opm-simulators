@@ -591,6 +591,9 @@ protected:
     std::set<std::string> controller_decided_wells_{};
     /// Every well in the network route's systems, decided or pinned: solved in the pass loop.
     std::set<std::string> controller_route_wells_{};
+    /// Per time step (time, dt): how often the route gave each zero-rate well a rate again.
+    std::pair<double, double> controller_revival_step_{-1.0, -1.0};
+    std::map<std::string, int> controller_revivals_{};
     std::map<std::string, Well::ProducerCMode> controller_assigned_cmode_{};
     std::map<std::string, std::vector<Scalar>> controller_assigned_rates_{};
     bool controller_network_owned_{false};

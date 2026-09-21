@@ -137,6 +137,7 @@ BlackoilModelParameters<Scalar>::BlackoilModelParameters()
         unit::convert::from(Parameters::Get<Parameters::GroupControllerNetworkTolerance<Scalar>>(), unit::barsa);
     group_controller_max_passes_ = Parameters::Get<Parameters::GroupControllerMaxPasses>();
     group_controller_max_passes_network_ = Parameters::Get<Parameters::GroupControllerMaxPassesNetwork>();
+    group_controller_max_revivals_ = Parameters::Get<Parameters::GroupControllerMaxRevivals>();
     if (enable_group_controller_) {
         enable_group_tree_balancer_ = true;
     }
@@ -365,6 +366,9 @@ void BlackoilModelParameters<Scalar>::registerParameters()
         ("Group controller: decide/solve passes per Newton iteration without a network");
     Parameters::Register<Parameters::GroupControllerMaxPassesNetwork>
         ("Group controller: decide/solve passes per Newton iteration with a network");
+    Parameters::Register<Parameters::GroupControllerMaxRevivals>
+        ("Group controller: how often a well the network route shut may be revived within "
+         "a time step before it is kept shut for the rest of the step");
 
     // if openMP is available, use two threads per mpi rank by default
 #if _OPENMP

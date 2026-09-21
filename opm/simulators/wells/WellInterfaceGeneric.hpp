@@ -121,6 +121,9 @@ public:
     /// while set the well is not operable, so the shut decision is made once.
     void setNetworkDead(const bool dead) { network_dead_ = dead; }
     bool networkDead() const { return network_dead_; }
+    /// Kept shut for the rest of the time step by the controller's revival budget, but operable.
+    void setNetworkHeld(const bool held) { network_held_ = held; }
+    bool networkHeld() const { return network_held_; }
     void setDynamicThpLimit(const std::optional<Scalar> thp_limit);
     void updatePerforatedCell(std::vector<bool>& is_cell_perforated);
 
@@ -477,6 +480,7 @@ protected:
     Scalar wsolvent_;
     std::optional<Scalar> dynamic_thp_limit_;
     bool network_dead_ = false;
+    bool network_held_ = false;
 
     // recording the multiplier calculate from the keyword WINJMULT during the time step
     mutable std::vector<Scalar> inj_multiplier_;
