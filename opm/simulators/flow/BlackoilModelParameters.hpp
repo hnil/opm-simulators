@@ -116,6 +116,7 @@ struct GroupControllerNetworkTolerance { static constexpr Scalar value = 0.1; };
 struct GroupControllerMaxPasses { static constexpr int value = 4; };
 struct GroupControllerMaxPassesNetwork { static constexpr int value = 6; };
 struct GroupControllerMaxRevivals { static constexpr int value = 3; };
+struct EnableGroupControllerThpRoute { static constexpr bool value = true; };
 template<class Scalar>
 struct GroupTreeBalancerTolerance { static constexpr Scalar value = 1e-5; };
 
@@ -456,6 +457,9 @@ public:
 
     /// Controller: revivals of a network-dead well per time step before it stays dead
     int group_controller_max_revivals_;
+
+    /// Controller without a network: producers with a thp limit on the route, each at its own thp
+    bool enable_group_controller_thp_route_;
 
     template<class Serializer>
     void serializeOp(Serializer& serializer)

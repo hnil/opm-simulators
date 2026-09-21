@@ -24,6 +24,7 @@
 
 #include <array>
 #include <map>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -79,7 +80,8 @@ Tree<Scalar> decideTree(const BlackoilWellModelGeneric<Scalar, IndexTraits>& wel
                         const std::unordered_map<std::string, std::pair<int, Scalar>>& limits,
                         const std::map<std::string, std::array<Scalar, 3>>& wellRates,
                         DeferredLogger& logger,
-                        bool& valid);
+                        bool& valid,
+                        const std::set<std::string>* individual = nullptr);
 
 /// Balance a tree built by hand (unit tests): the same top-down pass
 /// buildTree() ends with, then the algorithm and the validity check.

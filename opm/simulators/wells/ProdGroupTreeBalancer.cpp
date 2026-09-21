@@ -573,7 +573,8 @@ Tree<Scalar> buildTree(const BlackoilWellModelGeneric<Scalar, IndexTraits>& well
                        const SummaryState& summaryState,
                        int reportStep,
                        const std::unordered_map<std::string, std::pair<int, Scalar>>& limits,
-                       const std::map<std::string, std::array<Scalar, 3>>* wellRates = nullptr)
+                       const std::map<std::string, std::array<Scalar, 3>>* wellRates = nullptr,
+                       const std::set<std::string>* individual = nullptr)
 {
     const auto& schedule   = wellModel.schedule();
     const auto& wellState  = wellModel.wellState();
@@ -613,6 +614,12 @@ Tree<Scalar> buildTree(const BlackoilWellModelGeneric<Scalar, IndexTraits>& well
                         node.rates = {-it->second[0], -it->second[1], -it->second[2]};
                         node.initialRates = node.rates;
                     }
+                }
+                if (individual != nullptr && individual->count(name) > 0) {
+                    // Cannot be held to a share (e.g. below its tubing's minimum rate): on its own limit.
+                    node.availableForGroupControl = false;
+                    node.modeCategory = ProdNodeModeCategory::Individual;
+                    node.mode = static_cast<Well::ProducerCMode>(limits.at(name).first);
                 }
             }
         } else {
@@ -2372,9 +2379,10 @@ Tree<Scalar> decideTree(const BlackoilWellModelGeneric<Scalar, IndexTraits>& wel
                         const std::unordered_map<std::string, std::pair<int, Scalar>>& limits,
                         const std::map<std::string, std::array<Scalar, 3>>& wellRates,
                         DeferredLogger& logger,
-                        bool& valid)
+                        bool& valid,
+                        const std::set<std::string>* individual)
 {
-    auto tree = buildTree(wellModel, summaryState, reportStep, limits, &wellRates);
+    auto tree = buildTree(wellModel, summaryState, reportStep, limits, &wellRates, individual);
     const auto input = tree;
     const bool ok = runBalancingAlgorithm(wellModel.guideRate(), wellModel.comm().rank(),
                                           tree, tol, logger, /*assignTargets*/ true);
@@ -2434,7 +2442,8 @@ template Tree<double> decideTree<double, BlackOilDefaultFluidSystemIndices>(
     const BlackoilWellModelGeneric<double, BlackOilDefaultFluidSystemIndices>&,
     const SummaryState&, int, double,
     const std::unordered_map<std::string, std::pair<int, double>>&,
-    const std::map<std::string, std::array<double, 3>>&, DeferredLogger&, bool&);
+    const std::map<std::string, std::array<double, 3>>&, DeferredLogger&, bool&,
+    const std::set<std::string>*);
 
 #ifdef FLOW_INSTANTIATE_FLOAT
 
@@ -2444,7 +2453,8 @@ template Tree<float> decideTree<float, BlackOilDefaultFluidSystemIndices>(
     const BlackoilWellModelGeneric<float, BlackOilDefaultFluidSystemIndices>&,
     const SummaryState&, int, float,
     const std::unordered_map<std::string, std::pair<int, float>>&,
-    const std::map<std::string, std::array<float, 3>>&, DeferredLogger&, bool&);
+    const std::map<std::string, std::array<float, 3>>&, DeferredLogger&, bool&,
+    const std::set<std::string>*);
 
 template bool runGroupTreeBalancer<float, BlackOilDefaultFluidSystemIndices>(
     BlackoilWellModelGeneric<float, BlackOilDefaultFluidSystemIndices>&,

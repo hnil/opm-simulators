@@ -189,12 +189,7 @@ bool
 BlackoilWellModel<TypeTag>::
 controllerThpRouteApplies_() const
 {
-    // Experimental, OPM_CONTROLLER_THP_ROUTE=1, off by default.
-    static const bool enabled = [] {
-        const char* v = std::getenv("OPM_CONTROLLER_THP_ROUTE");
-        return v != nullptr && std::string(v) == "1";
-    }();
-    if (!enabled || !param_.enable_group_controller_network_) {
+    if (!param_.enable_group_controller_thp_route_ || !param_.enable_group_controller_network_) {
         return false;
     }
     const int step = simulator_.episodeIndex();
@@ -574,8 +569,10 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
             std::set<std::string> here;
             for (const auto& t : tree_wells) {
                 wguide[t.name] = system.wells()[t.index].guide;
-                here.insert(t.name);
             }
+            // Every well in the system counts as here, including those not available for group
+            // control: they are not held to a share, but their rates are in the group's total.
+            for (const auto& w : system.wells()) { here.insert(w.name); }
             std::function<Scalar(const std::string&)> subtreeGuide = [&](const std::string& g) {
                 const auto& grp = schedule.getGroup(g, reportStepIdx);
                 Scalar sum = 0;
@@ -678,8 +675,10 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                     }
                 }
             }
-            for (const auto& t : tree_wells) {
-                system.setWellGroup(t.index, gidx.at(schedule.getWell(t.name, reportStepIdx).groupName()));
+            // Every well counts in its group's rate; the tree decides which can be held (WGRUPCON).
+            for (int w = 0; w < system.numWells(); ++w) {
+                const auto it = gidx.find(schedule.getWell(system.wells()[w].name, reportStepIdx).groupName());
+                if (it != gidx.end()) { system.setWellGroup(w, it->second); }
             }
             // A share is measured on the mode of the group that hands it out, so that is
             // the phase a node's guide rate is wanted on: a well's on its group's mode, a
@@ -742,9 +741,15 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
         int stein_mode_switches = 0;
         ProdGroupTreeBalancer::Tree<Scalar> stein_last;   // the tree behind the set in force
         if (stein_set) {
+            system.setLiftTolerance(param_.group_controller_network_tolerance_);
             system.setTreeAllocator([&](const std::vector<Scalar>& oil_capacity,
+                                        const std::vector<char>& not_holdable,
                                         typename Sys::TreeDecision& d) -> bool {
                 const auto& wells = system.wells();
+                std::set<std::string> individual;
+                for (int w = 0; w < system.numWells(); ++w) {
+                    if (not_holdable[w]) { individual.insert(wells[w].name); }
+                }
                 auto phases = [](const typename Sys::Well& well, const Scalar q_oil) {
                     const Scalar bhp = (q_oil - well.ipr_a[1]) / well.ipr_b[1];
                     std::array<Scalar, 3> q{};     // oil, water, gas
@@ -776,7 +781,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                     tree = ProdGroupTreeBalancer::decideTree(
                         static_cast<const BlackoilWellModelGeneric<Scalar, IndexTraits>&>(*this), summary_state,
                         reportStepIdx, static_cast<Scalar>(param_.group_tree_balancer_tolerance_), capacity,
-                        rates, quiet, valid);
+                        rates, quiet, valid, &individual);
                     if (!valid) {
                         // Say why, once more with a logger that is kept.
                         std::string what;
@@ -791,7 +796,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                         const auto bad = ProdGroupTreeBalancer::decideTree(
                             static_cast<const BlackoilWellModelGeneric<Scalar, IndexTraits>&>(*this), summary_state,
                             reportStepIdx, static_cast<Scalar>(param_.group_tree_balancer_tolerance_), capacity,
-                            rates, deferred_logger, again);
+                            rates, deferred_logger, again, &individual);
                         for (const auto& [name, node] : bad) {
                             deferred_logger.debug(fmt::format(
                                 "Controller:   {} {} category {} mode {} o/w/g {:.4g}/{:.4g}/{:.4g} limits{}", name,

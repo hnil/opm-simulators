@@ -583,10 +583,14 @@ public:
         std::vector<char> held;
         std::vector<Scalar> oil;
     };
-    using TreeAllocator = std::function<bool(const std::vector<Scalar>&, TreeDecision&)>;
+    /// capacity per well, and wells that cannot be held to a share (their tubing cannot lift it).
+    using TreeAllocator = std::function<bool(const std::vector<Scalar>&, const std::vector<char>&, TreeDecision&)>;
     void setTreeAllocator(TreeAllocator allocator) { tree_allocator_ = std::move(allocator); }
+    /// How far below the tubing's need a held well's bhp may be before it cannot be held there.
+    void setLiftTolerance(const Scalar dp) { lift_tol_ = dp; }
     long treeAllocatorCalls() const { return tree_allocator_calls_; }
     long treeAllocatorFallbacks() const { return tree_allocator_fallbacks_; }
+    long treeUnholdable() const { return tree_unholdable_; }
 
     /// A group's share of its parent, measured on the parent's mode; changes with it.
     void setGroupGuide(const int g, const Scalar guide) { groups_[g].guide = guide; }
@@ -1619,12 +1623,43 @@ public:
                     capacity[w] = own_allowance_[w];
                 }
             }
+            // A share below what the tubing can lift at the well's thp is no operating point: that
+            // well goes on its own limit and the tree allocates again without it.
+            auto cannot_lift = [&](const int w, const Scalar q) {
+                const auto& well = wells_[w];
+                if (!hasTubing(well) || !(q > Scalar{0}) || !(well.ipr_b[1] < Scalar{0})) { return false; }
+                const Scalar p_w = well.own_thp > Scalar{0} ? well.own_thp
+                                 : well.node == 0 ? terminal_pressure_ : x[pIdx(well.node)];
+                const Scalar bhp = (q - well.ipr_a[1]) / well.ipr_b[1];
+                std::array<Scalar, NP> qp{};
+                for (int ph = 0; ph < NP; ++ph) { qp[ph] = std::max(ipr(well, ph, bhp), Scalar{0}); }
+                const CountScope probe(*this, false);
+                return tubingBhp(well, p_w, qp) - well.vfp_dp > bhp + lift_tol_;
+            };
+            std::vector<char> not_holdable(numWells(), 0);
             TreeDecision d;
-            ++tree_allocator_calls_;
-            if (tree_allocator_(capacity, d)
-                && static_cast<int>(d.bind.size()) == numGroups()
-                && static_cast<int>(d.held.size()) == numWells()
-                && static_cast<int>(d.oil.size()) == numWells()) {
+            bool ok = false;
+            for (int round = 0; round <= numWells(); ++round) {
+                d = TreeDecision{};
+                ++tree_allocator_calls_;
+                ok = tree_allocator_(capacity, not_holdable, d)
+                    && static_cast<int>(d.bind.size()) == numGroups()
+                    && static_cast<int>(d.held.size()) == numWells()
+                    && static_cast<int>(d.oil.size()) == numWells();
+                if (!ok) { break; }
+                bool again = false;
+                for (int w = 0; w < numWells(); ++w) {
+                    if (wells_[w].group < 0 || not_holdable[w] || wells_[w].pinned
+                        || own_control_[w] == Control::Shut) { continue; }
+                    if (d.held[w] && d.oil[w] < own_allowance_[w] && cannot_lift(w, d.oil[w])) {
+                        not_holdable[w] = 1;
+                        again = true;
+                    }
+                }
+                if (!again) { break; }
+                ++tree_unholdable_;
+            }
+            if (ok) {
                 for (int g = 0; g < numGroups(); ++g) {
                     changed |= (d.bind[g] != group_bind_[g]);
                     group_bind_[g] = d.bind[g];
@@ -2761,6 +2796,8 @@ private:
     bool tree_frozen_ = false;
     TreeAllocator tree_allocator_;
     long tree_allocator_calls_ = 0, tree_allocator_fallbacks_ = 0;
+    long tree_unholdable_ = 0;     // re-allocations because a held well could not be lifted
+    Scalar lift_tol_ = Scalar{0.1} * unit::barsa;
     CapacityFractions capacity_fractions_ = CapacityFractions::Fixed;
     std::vector<GroupBind> group_bind_;
     // What each well's own limits allow, and which of them wins -- recorded by
