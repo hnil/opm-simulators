@@ -615,6 +615,7 @@ protected:
         bool has_last = false, last_physics_ok = false, last_legacy_ok = false;
     } facility_check_stats_;
     std::map<std::string, std::pair<std::vector<Scalar>, std::vector<Scalar>>> controller_last_flowing_ipr_{};
+    std::map<std::string, std::string> controller_ipr_source_{};   // for the trace
 
     std::vector<int> local_shut_wells_{};
 

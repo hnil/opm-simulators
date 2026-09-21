@@ -117,8 +117,10 @@ controllerRefreshIpr_(DeferredLogger& deferred_logger)
         well->updateIPRImplicit(simulator_, this->groupStateHelper(), this->wellState());
         const bool zero = std::all_of(ws.surface_rates.begin(), ws.surface_rates.end(),
                                       [](const Scalar q) { return q == Scalar{0}; });
+        auto& source = this->controller_ipr_source_[well->name()];
         if (!zero) {
             cache[well->name()] = {ws.implicit_ipr_a, ws.implicit_ipr_b};
+            source = "flowing";
             continue;
         }
         const auto implicit_a = ws.implicit_ipr_a, implicit_b = ws.implicit_ipr_b;
@@ -129,12 +131,39 @@ controllerRefreshIpr_(DeferredLogger& deferred_logger)
             return m;
         };
         const bool degenerate = steepest(implicit_b) > Scalar{10} * steepest(ws.implicit_ipr_b);
-        if (!degenerate) {
-            ws.implicit_ipr_a = implicit_a;
-            ws.implicit_ipr_b = implicit_b;
-        } else if (const auto it = cache.find(well->name()); it != cache.end()) {
+        // OPM_CONTROLLER_REVIVAL_IPR=zero-rate keeps the old choice: the tangent at zero rate
+        // unless it is degenerate. It can be several times flatter than the flowing well's,
+        // and a well the route shut on one Newton iterate then never comes back.
+        static const bool last_flowing = [] {
+            const char* v = std::getenv("OPM_CONTROLLER_REVIVAL_IPR");
+            return v == nullptr || std::string(v) != "zero-rate";
+        }();
+        const auto it = cache.find(well->name());
+        if (last_flowing && it != cache.end()) {
+            // The productivity it had when it last flowed, at the static pressure it sees
+            // now: each phase's line keeps its slope and is moved to today's zero-inflow bhp.
+            const auto& now_a = degenerate ? ws.implicit_ipr_a : implicit_a;
+            const auto& now_b = degenerate ? ws.implicit_ipr_b : implicit_b;
+            const int oil = this->phaseUsage().canonicalToActivePhaseIdx(IndexTraits::oilPhaseIdx);
+            const Scalar p_static = (oil >= 0 && now_b[oil] > Scalar{0}) ? now_a[oil] / now_b[oil] : Scalar{-1};
             ws.implicit_ipr_a = it->second.first;
             ws.implicit_ipr_b = it->second.second;
+            if (p_static > Scalar{0}) {
+                for (std::size_t ph = 0; ph < ws.implicit_ipr_b.size(); ++ph) {
+                    ws.implicit_ipr_a[ph] = ws.implicit_ipr_b[ph] * p_static;
+                }
+            }
+            source = "last flowing slope at today's static pressure";
+        } else if (!degenerate) {
+            ws.implicit_ipr_a = implicit_a;
+            ws.implicit_ipr_b = implicit_b;
+            source = "zero-rate tangent";
+        } else if (it != cache.end()) {
+            ws.implicit_ipr_a = it->second.first;
+            ws.implicit_ipr_b = it->second.second;
+            source = "last flowing";
+        } else {
+            source = "connections";
         }
     }
 }
@@ -1016,12 +1045,13 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                 const Scalar p = rr.node_pressure[well.node];
                 deferred_logger.debug(fmt::format(
                     "CTRLTRACE step={} it={} {} {} q={:.1f} qstart={:.1f} limit={:.1f} p={:.3f} "
-                    "ipr_oil=({:.4g},{:.4g}) thp_pot={:.1f} bhp_lim={:.2f}{}",
+                    "ipr_oil=({:.4g},{:.4g}) thp_pot={:.1f} bhp_lim={:.2f}{} ipr_from='{}'",
                     reportStepIdx, simulator_.problem().iterationContext().iteration(), well.name,
                     system.controlLetter(w), rr.well_rate[w] * 86400.0, well.q_start * 86400.0,
                     well.oil_rate_limit * 86400.0, p / 1e5, well.ipr_a[1] * 86400.0, well.ipr_b[1] * 86400.0 * 1e5,
                     well.vfp_table > 0 ? system.thpPotential(well, p) * 86400.0 : -1.0, well.bhp_limit / 1e5,
-                    well.pinned ? " pinned" : ""));
+                    well.pinned ? " pinned" : "",
+                    this->controller_ipr_source_.count(well.name) ? this->controller_ipr_source_.at(well.name) : std::string("-")));
                 // The gas side: the line, the system's gas at its oil answer, the well's current gas.
                 const Scalar qo = rr.well_rate[w];
                 const Scalar bhp_w = (qo > Scalar{0} && well.ipr_b[1] < Scalar{0}) ? (qo - well.ipr_a[1]) / well.ipr_b[1] : well.bhp_limit;
