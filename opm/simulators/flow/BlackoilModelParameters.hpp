@@ -110,6 +110,12 @@ struct EnableGroupTreeBalancer { static constexpr bool value = true; };
 struct EnableGroupController { static constexpr bool value = false; };
 struct EnableGroupControllerNetwork { static constexpr bool value = true; };
 template<class Scalar>
+struct GroupControllerRateTolerance { static constexpr Scalar value = 0.01; };
+template<class Scalar>
+struct GroupControllerNetworkTolerance { static constexpr Scalar value = 0.1; };
+struct GroupControllerMaxPasses { static constexpr int value = 4; };
+struct GroupControllerMaxPassesNetwork { static constexpr int value = 6; };
+template<class Scalar>
 struct GroupTreeBalancerTolerance { static constexpr Scalar value = 1e-5; };
 
 struct UseMultisegmentWell { static constexpr bool value = true; };
@@ -436,6 +442,16 @@ public:
 
     /// Under the controller, a production network is decided by the reduced route
     bool enable_group_controller_network_;
+
+    /// Controller hand-over: relative rate tolerance of a solved well against its assignment
+    Scalar group_controller_rate_tolerance_;
+
+    /// Controller hand-over: node pressures against the network at the solved rates (Pa)
+    Scalar group_controller_network_tolerance_;
+
+    /// Controller passes per Newton iteration, without and with a network
+    int group_controller_max_passes_;
+    int group_controller_max_passes_network_;
 
     template<class Serializer>
     void serializeOp(Serializer& serializer)

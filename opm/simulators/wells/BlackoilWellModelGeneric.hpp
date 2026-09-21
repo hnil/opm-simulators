@@ -589,6 +589,8 @@ protected:
     // Wells whose control and target the group controller set this iteration;
     // legacy's per-well target assignment leaves them alone.
     std::set<std::string> controller_decided_wells_{};
+    /// Every well in the network route's systems, decided or pinned: solved in the pass loop.
+    std::set<std::string> controller_route_wells_{};
     std::map<std::string, Well::ProducerCMode> controller_assigned_cmode_{};
     std::map<std::string, std::vector<Scalar>> controller_assigned_rates_{};
     bool controller_network_owned_{false};

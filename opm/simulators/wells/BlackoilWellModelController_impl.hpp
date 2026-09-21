@@ -76,10 +76,13 @@ controllerDecisionSignature_() const
         if (const auto it = this->controller_assigned_rates_.find(name); it != this->controller_assigned_rates_.end()) {
             for (const auto v : it->second) { q += std::abs(v); }
         }
-        sig += fmt::format("{}:{}:{:.3g};", name, static_cast<int>(cmode), q * 86400.0);
+        // Rates in bins of the rate tolerance, pressures in steps of the network tolerance.
+        const long bin = q > Scalar{0}
+            ? std::lround(std::log(q * 86400.0 + 1.0) / std::log1p(param_.group_controller_rate_tolerance_)) : 0;
+        sig += fmt::format("{}:{}:{};", name, static_cast<int>(cmode), bin);
     }
     for (const auto& [node, p] : this->network_.nodePressures()) {
-        sig += fmt::format("{}={:.1f};", node, p / 1e5);
+        sig += fmt::format("{}={};", node, std::lround(p / param_.group_controller_network_tolerance_));
     }
     return sig;
 }
@@ -316,6 +319,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
 
     std::map<std::string, Scalar> new_pressures;
     std::set<std::string> decided;
+    std::set<std::string> route_wells;
     std::map<std::string, Well::ProducerCMode> assigned_cmode;
     std::map<std::string, std::vector<Scalar>> assigned_rates;
     std::map<std::string, bool> dead_now;
@@ -497,8 +501,9 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                 own_limit_mode[name] = mode;
                 w.guide = current;
                 tree_wells.push_back({static_cast<int>(system.numWells()), name, deckGuide(name)});
-            } else if (w.vfp_table > 0 && ws.production_cmode == Well::ProducerCMode::THP) {
-                // Its thp is the node pressure: the network places it.
+            } else if (w.vfp_table > 0) {
+                // On THP or on an own limit it may not reach at this node pressure: the
+                // network places it. Pinned at its current rate it could not switch to THP.
                 const auto [allow, mode] = allowance(w, controls);
                 w.oil_rate_limit = allow;
                 own_limit_mode[name] = mode;
@@ -1146,6 +1151,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
         }
         for (int w = 0; w < system.numWells(); ++w) {
             const auto& well = system.wells()[w];
+            route_wells.insert(well.name);
             if (well.pinned || !this->wellState().has(well.name)) {
                 continue;
             }
@@ -1283,6 +1289,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
     // Emit: node pressures and the thp limits they impose, then the wells.
     this->network_.setOwnedNodePressures(new_pressures);
     this->controller_decided_wells_ = decided;
+    this->controller_route_wells_ = route_wells;
     controllerMarkDecided_();
     this->controller_assigned_cmode_ = assigned_cmode;
     this->controller_assigned_rates_ = assigned_rates;

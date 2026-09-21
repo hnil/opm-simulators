@@ -20,6 +20,8 @@
 #include <config.h>
 #include <opm/simulators/flow/BlackoilModelParameters.hpp>
 
+#include <opm/input/eclipse/Units/Units.hpp>
+
 #include <opm/simulators/linalg/FlowLinearSolverParameters.hpp>
 
 #include <opm/models/discretization/common/fvbaseparameters.hh>
@@ -130,6 +132,11 @@ BlackoilModelParameters<Scalar>::BlackoilModelParameters()
     group_tree_balancer_tolerance_ = Parameters::Get<Parameters::GroupTreeBalancerTolerance<Scalar>>();
     enable_group_controller_ = Parameters::Get<Parameters::EnableGroupController>();
     enable_group_controller_network_ = Parameters::Get<Parameters::EnableGroupControllerNetwork>();
+    group_controller_rate_tolerance_ = Parameters::Get<Parameters::GroupControllerRateTolerance<Scalar>>();
+    group_controller_network_tolerance_ =
+        unit::convert::from(Parameters::Get<Parameters::GroupControllerNetworkTolerance<Scalar>>(), unit::barsa);
+    group_controller_max_passes_ = Parameters::Get<Parameters::GroupControllerMaxPasses>();
+    group_controller_max_passes_network_ = Parameters::Get<Parameters::GroupControllerMaxPassesNetwork>();
     if (enable_group_controller_) {
         enable_group_tree_balancer_ = true;
     }
@@ -349,6 +356,15 @@ void BlackoilModelParameters<Scalar>::registerParameters()
     Parameters::Register<Parameters::EnableGroupControllerNetwork>
         ("Under the group controller, decide a production network with the reduced route: "
          "IPR, node and group rows in one system, judged before it is applied");
+    Parameters::Register<Parameters::GroupControllerRateTolerance<Scalar>>
+        ("Group controller: relative tolerance of a solved well's rates against its assignment");
+    Parameters::Register<Parameters::GroupControllerNetworkTolerance<Scalar>>
+        ("Group controller: tolerance in bar of the node pressures against the network "
+         "evaluated at the solved wells' rates, before the facility is handed to Newton");
+    Parameters::Register<Parameters::GroupControllerMaxPasses>
+        ("Group controller: decide/solve passes per Newton iteration without a network");
+    Parameters::Register<Parameters::GroupControllerMaxPassesNetwork>
+        ("Group controller: decide/solve passes per Newton iteration with a network");
 
     // if openMP is available, use two threads per mpi rank by default
 #if _OPENMP

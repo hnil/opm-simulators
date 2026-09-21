@@ -2003,12 +2003,18 @@ namespace Opm {
                 injection_changed = true;
             }
         }
-        const int max_passes = network_route ? 6 : 4;
+        const int max_passes = network_route ? param_.group_controller_max_passes_network_
+                                             : param_.group_controller_max_passes_;
+        const Scalar rtol = param_.group_controller_rate_tolerance_;
+        const Scalar ntol = param_.group_controller_network_tolerance_;
         const std::string sig_before = this->controller_decision_signature_;
         int passes = 0, well_solves = 0;
         std::string ended = "nothing to decide";
+        // The last solve switched a well or left the network off: not a facility solution yet.
+        bool unsettled = false;
+        std::pair<Scalar, std::string> imbalance{Scalar{0}, ""};
         for (int pass = 0; pass < max_passes; ++pass) {
-            bool changed = (pass == 0 && network_route);
+            bool changed = (pass == 0 && network_route) || unsettled;
             OPM_BEGIN_PARALLEL_TRY_CATCH()
                 for (const auto& well : well_container_) {
                     const auto mode = WellInterface<TypeTag>::IndividualOrGroup::Individual;
@@ -2036,7 +2042,7 @@ namespace Opm {
                     // half of the report: the remainder has to be re-allocated.
                     const auto ir = this->controller_assigned_rates_.find(well->name());
                     if ((may_redecide || network_route) && ir != this->controller_assigned_rates_.end()) {
-                        constexpr Scalar rtol = 0.01, floor = 1e-7; // m3/s
+                        constexpr Scalar floor = 1e-7; // m3/s
                         for (std::size_t p = 0; p < ir->second.size(); ++p) {
                             if (std::abs(ws.surface_rates[p] - ir->second[p])
                                 > rtol * std::abs(ir->second[p]) + floor) {
@@ -2069,6 +2075,7 @@ namespace Opm {
             const std::string sig = controllerDecisionSignature_();
             const bool moved = sig != this->controller_decision_signature_;
             this->controller_decision_signature_ = sig;
+            unsettled = false;
             // Diagnostic: OPM_CONTROLLER_PASS_SOLVES=0 decides once on the linearised wells and
             // leaves the solving to the well solve every Newton iteration has anyway.
             static const bool pass_solves = [] {
@@ -2083,19 +2090,28 @@ namespace Opm {
                 // The route's IPRs are linearised at the wells' current states: solve
                 // the decided wells on their new controls before deciding again, as the
                 // network sub-iterations do, so decision and linearisation settle together.
+                // Every well in the route, pinned ones too: a well that switches in its
+                // solve after the decision hands Newton node pressures it does not match.
                 const double dt = simulator_.timeStepSize();
+                bool switched = false;
                 OPM_BEGIN_PARALLEL_TRY_CATCH()
                 for (const auto& well : well_container_) {
-                    if (this->controller_decided_wells_.count(well->name())) {
+                    if (this->controller_route_wells_.count(well->name())
+                        || this->controller_decided_wells_.count(well->name())) {
+                        const auto& ws = this->wellState().well(well->indexOfWell());
+                        const auto before = std::pair{ws.production_cmode, ws.status};
                         well->prepareWellBeforeAssembling(simulator_, dt, this->groupStateHelper(), this->wellState());
+                        switched = switched || before != std::pair{ws.production_cmode, ws.status};
                         ++well_solves;
                     }
                 }
                 OPM_END_PARALLEL_TRY_CATCH("BlackoilWellModel: solving the controller's wells failed: ",
                                            simulator_.gridView().comm());
                 this->updateAndCommunicateGroupData(episodeIdx, /*update_wellgrouptarget*/ true);
+                imbalance = this->network_.pressureImbalance(episodeIdx);
+                unsettled = comm.sum(static_cast<int>(switched)) > 0 || imbalance.first > ntol;
             }
-            if (!moved) {
+            if (!moved && !unsettled) {
                 // The criterion: the solved wells deliver what they were assigned and no
                 // group is over a limit. A decision that repeats without that is a stall.
                 Scalar off = 0;
@@ -2106,12 +2122,14 @@ namespace Opm {
                         off = std::max(off, std::abs(r[p] - q[p]) / std::max(std::abs(q[p]), Scalar(1e-7)));
                     }
                 }
-                const bool met = off <= Scalar(0.01) && !controllerGroupLimitViolated_();
+                const bool met = off <= rtol && !controllerGroupLimitViolated_();
                 ended = met ? "converged" : "stalled: the decision stands and the wells do not follow";
                 ++(met ? this->controller_stats_.converged : this->controller_stats_.stalled);
                 break;
             }
-            ended = pass + 1 == max_passes ? "cap reached, decision still moving" : "moved";
+            ended = pass + 1 == max_passes ? (unsettled ? "cap reached, wells or network not settled"
+                                                        : "cap reached, decision still moving")
+                                           : "moved";
         }
         // How far the solved wells sit from what they were assigned: the closing
         // check of decision against well solve, reported, not enforced.
@@ -2129,9 +2147,11 @@ namespace Opm {
             if (ended.rfind("cap", 0) == 0) ++st.cap_hits;
             st.worst_deviation = std::max(st.worst_deviation, worst);
             deferred_logger.debug(fmt::format("Controller: step {} iteration {}: {} passes, {} well solves, {}; "
-                                              "solved wells off their assignment by at most {:.1f} % ({})",
+                                              "solved wells off their assignment by at most {:.1f} % ({}); "
+                                              "network off {:.3f} bar ({})",
                                               episodeIdx, simulator_.problem().iterationContext().iteration(), passes,
-                                              well_solves, ended, 100.0 * worst, worst_well));
+                                              well_solves, ended, 100.0 * worst, worst_well,
+                                              imbalance.first / 1e5, imbalance.second));
         }
         // Only a decision that moved is a change; a rate off its assignment by the
         // IPR's error is not, or the step would never be allowed to converge.

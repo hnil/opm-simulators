@@ -46,8 +46,8 @@ facilityCheck_(DeferredLogger& deferred_logger)
     const auto& summary_state = this->summaryState();
     const auto& pu = this->phaseUsage();
     const Group& field = schedule.getGroup("FIELD", step);
-    constexpr Scalar tol = 0.01;
-    constexpr Scalar tol_pressure = 0.1e5;
+    const Scalar tol = param_.group_controller_rate_tolerance_;
+    const Scalar tol_pressure = param_.group_controller_network_tolerance_;
 
     auto phase = [&pu](const std::vector<Scalar>& r, const int canonical) {
         return pu.phaseIsActive(canonical) ? r[pu.canonicalToActivePhaseIdx(canonical)] : Scalar(0);
