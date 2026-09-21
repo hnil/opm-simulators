@@ -171,6 +171,13 @@ public:
     { return true; }
 
     /*!
+     * \brief Pore volume to scale this cell's residual by in CNV when the module is
+     *        outside CNV proper; zero means the cell is not checked.
+     */
+    virtual double cnvReferencePoreVolume(unsigned /*localIdx*/) const
+    { return 0.0; }
+
+    /*!
      * \brief Whether this auxiliary cell currently takes part in the flow problem.
      *
      * A module may preallocate degrees of freedom it does not use yet -- fracture cells
