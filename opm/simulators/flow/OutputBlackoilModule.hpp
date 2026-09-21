@@ -37,6 +37,7 @@
 #include <opm/common/Exceptions.hpp>
 #include <opm/common/TimingMacros.hpp>
 #include <opm/common/OpmLog/OpmLog.hpp>
+#include <opm/common/utility/SymmTensor.hpp>
 #include <opm/common/utility/Visitor.hpp>
 
 #include <opm/input/eclipse/EclipseState/SummaryConfig/SummaryConfig.hpp>
@@ -88,6 +89,17 @@ namespace detail {
     //! \brief Utility to silence "unused variable" warnings in lambdas.
     template <typename... T>
     constexpr void ignoreUnused(T&&...) noexcept {}
+
+    //! External mechanics models may hand out Voigt-ordered FieldVector<6> tensors.
+    template <class Scalar, class Tensor>
+    SymmTensor<Scalar> asSymmTensor(const Tensor& t)
+    {
+        if constexpr (std::is_convertible_v<Tensor, SymmTensor<Scalar>>) {
+            return t;
+        } else {
+            return SymmTensor<Scalar>{t[0], t[1], t[2], t[3], t[4], t[5]};
+        }
+    }
 }
 
 /*!
@@ -2096,17 +2108,17 @@ private:
                      &model = simulator_.problem().geoMechModel()](const Context& ectx)
                     {
                         mech.assignDelStress(ectx.globalDofIdx,
-                                             model.delstress(ectx.globalDofIdx));
+                                             detail::asSymmTensor<Scalar>(model.delstress(ectx.globalDofIdx)));
 
                         mech.assignDisplacement(ectx.globalDofIdx,
                                                 model.disp(ectx.globalDofIdx, /*include_fracture*/true));
 
                         // is the tresagii stress which make rock fracture
                         mech.assignFracStress(ectx.globalDofIdx,
-                                              model.fractureStress(ectx.globalDofIdx));
+                                              detail::asSymmTensor<Scalar>(model.fractureStress(ectx.globalDofIdx)));
 
                         mech.assignLinStress(ectx.globalDofIdx,
-                                             model.linstress(ectx.globalDofIdx));
+                                             detail::asSymmTensor<Scalar>(model.linstress(ectx.globalDofIdx)));
 
                         // Models may provide dedicated output forms of the
                         // pressure/temperature potentials (e.g. with the
@@ -2125,28 +2137,32 @@ private:
                         }
 
                         mech.assignStrain(ectx.globalDofIdx,
-                                          model.strain(ectx.globalDofIdx, /*include_fracture*/true));
+                                          detail::asSymmTensor<Scalar>(model.strain(ectx.globalDofIdx, /*include_fracture*/true)));
 
                         // Total stress is not stored but calculated result is Voigt notation.
                         // Prefer the model's output snapshot (valid even if the initial
                         // stress is modified during the run) over recomputation.
                         if constexpr (requires { model.outputstress(ectx.globalDofIdx); }) {
                             mech.assignStress(ectx.globalDofIdx,
-                                              model.outputstress(ectx.globalDofIdx));
+                                              detail::asSymmTensor<Scalar>(model.outputstress(ectx.globalDofIdx)));
                         } else {
                             mech.assignStress(ectx.globalDofIdx,
-                                              model.stress(ectx.globalDofIdx, /*include_fracture*/true));
+                                              detail::asSymmTensor<Scalar>(model.stress(ectx.globalDofIdx, /*include_fracture*/true)));
                         }
 
                         // Only assign traction if TRACT/TRACT- is requested
-                        if (mech.enableTraction()) {
-                            mech.assignTraction(ectx.globalDofIdx,
-                                                model.traction(ectx.globalDofIdx));
+                        if constexpr (requires { model.traction(ectx.globalDofIdx); }) {
+                            if (mech.enableTraction()) {
+                                mech.assignTraction(ectx.globalDofIdx,
+                                                    model.traction(ectx.globalDofIdx));
+                            }
                         }
                     },
                     true
                 );
             }
+            if constexpr (requires (const std::decay_t<decltype(simulator_.problem().geoMechModel())>& m)
+                          { m.rotation(0u); m.solidPressure(0u); }) {
             if (this->tpsaC_.allocated()) {
                 this->extractors_.emplace_back(
                     [&tpsaC = this->tpsaC_,
@@ -2159,6 +2175,7 @@ private:
                     },
                     true
                 );
+            }
             }
         }
     }
@@ -3333,9 +3350,9 @@ private:
                                       (const VoigtIndex index, const Context& ectx)
                                       {
                                           if constexpr (requires { model.outputstress(ectx.globalDofIdx); }) {
-                                              return model.outputstress(ectx.globalDofIdx)[index];
+                                              return detail::asSymmTensor<Scalar>(model.outputstress(ectx.globalDofIdx))[index];
                                           } else {
-                                              return model.stress(ectx.globalDofIdx, /*include_fracture*/true)[index];
+                                              return detail::asSymmTensor<Scalar>(model.stress(ectx.globalDofIdx, /*include_fracture*/true))[index];
                                           }
                                       }
                           }
