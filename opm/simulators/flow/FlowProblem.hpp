@@ -605,7 +605,14 @@ public:
      * \brief Threshold pressure [Pa] for the intersection between two elements.
      */
     Scalar thresholdPressure(unsigned elem1Idx, unsigned elem2Idx) const
-    { return thresholdPressures_.thresholdPressure(elem1Idx, elem2Idx); }
+    {
+        // An auxiliary cell is in no equilibration region or fault; the tables are grid-sized.
+        const auto numGridDof = this->model().numGridDof();
+        if (elem1Idx >= numGridDof || elem2Idx >= numGridDof) {
+            return 0.0;
+        }
+        return thresholdPressures_.thresholdPressure(elem1Idx, elem2Idx);
+    }
 
     const FlowThresholdPressure<TypeTag>& thresholdPressure() const
     { return thresholdPressures_; }
