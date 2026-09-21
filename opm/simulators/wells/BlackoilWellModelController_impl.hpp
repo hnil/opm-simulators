@@ -1179,7 +1179,27 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                     wi->setDynamicThpLimit(p);
                     const auto own = wi->computeBhpAtThpLimitProdWithAlq(simulator_, this->groupStateHelper(),
                                                                          summary_state, well.alq, false);
+                    // And at the node pressure the previous decision handed over, for a jump.
+                    const auto& prev_p = this->network_.nodePressures();
+                    const auto pp = prev_p.find(schedule.getWell(well.name, reportStepIdx).groupName());
+                    std::optional<Scalar> own_prev;
+                    const Scalar p_prev = pp != prev_p.end() ? pp->second : Scalar{0};
+                    if (p_prev > Scalar{0} && std::abs(p_prev - p) > Scalar{0.1e5}) {
+                        wi->setDynamicThpLimit(p_prev);
+                        own_prev = wi->computeBhpAtThpLimitProdWithAlq(simulator_, this->groupStateHelper(),
+                                                                       summary_state, well.alq, false);
+                    }
                     wi->setDynamicThpLimit(saved);
+                    if (p_prev > Scalar{0} && std::abs(p_prev - p) > Scalar{0.1e5}) {
+                        std::vector<Scalar> pq(pu.numActivePhases(), Scalar{0});
+                        if (own_prev) { wi->computeWellRatesWithBhp(simulator_, *own_prev, pq, deferred_logger); }
+                        deferred_logger.debug(fmt::format(
+                            "CTRLTRACE step={} it={} {} well model at the previous node pressure {:.2f}: {}",
+                            reportStepIdx, simulator_.problem().iterationContext().iteration(), well.name,
+                            p_prev / 1e5, own_prev ? fmt::format("bhp {:.2f}, oil {:.1f}", *own_prev / 1e5,
+                                                                 -pq[pos[1]] * 86400.0)
+                                                   : std::string("no crossing")));
+                    }
                     std::vector<Scalar> tq(pu.numActivePhases(), Scalar{0});
                     wi->computeWellRatesWithBhp(simulator_, bhp_w, tq, deferred_logger);
                     std::vector<Scalar> oq(pu.numActivePhases(), Scalar{0});
