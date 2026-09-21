@@ -681,6 +681,14 @@ localConvergenceData(std::vector<Scalar>& R_sum,
             else {
                 numAquiferPvSumLocal += pvValue;
 
+                // Checked against a pore volume the module names (its host rock's).
+                const auto refPv = static_cast<Scalar>(module->cnvReferencePoreVolume(localIdx));
+                if (refPv > 0.0) {
+                    this->getMaxCoeff(cell_idx, intQuants, fs, residual, refPv,
+                                      B_avg, R_sum, maxCoeff, maxCoeffCell);
+                    continue;
+                }
+
                 // Same accumulation into the material balance and the averaged
                 // formation-volume factors; only the CNV maximum is discarded.
                 discardedCoeff.assign(maxCoeff.size(), 0.0);
@@ -1263,8 +1271,11 @@ getMaxCoeff(const unsigned cell_idx,
         B_avg[contiEnergyEqIdx] += 1.0;
         const auto R2 = modelResid[cell_idx][contiEnergyEqIdx];
         R_sum[contiEnergyEqIdx] += R2;
-        maxCoeff[contiEnergyEqIdx] = std::max(maxCoeff[contiEnergyEqIdx],
-                                              std::abs(R2) / pvValue);
+        const Scalar Rval = std::abs(R2) / pvValue;
+        if (Rval > maxCoeff[contiEnergyEqIdx]) {
+            maxCoeff[contiEnergyEqIdx] = Rval;
+            maxCoeffCell[contiEnergyEqIdx] = cell_idx;
+        }
     }
 
     if constexpr (has_bioeffects_) {
