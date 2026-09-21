@@ -1979,7 +1979,7 @@ namespace Opm {
         // With a network the node pressures move every iteration: decide every time,
         // NUPCOL or not, as legacy's network update does.
         const bool network_route = param_.enable_group_controller_network_
-            && this->schedule()[episodeIdx].network().active();
+            && (this->schedule()[episodeIdx].network().active() || controllerThpRouteApplies_());
         this->controller_network_owned_ = false;
         // The injection side stays with legacy's rules: group controls, then the injectors'
         // group and own checks. Reinjection and voidage targets follow the producers

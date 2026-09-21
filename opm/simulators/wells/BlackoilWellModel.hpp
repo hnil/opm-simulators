@@ -309,6 +309,10 @@ template<class Scalar> class WellContributions;
             /// targets. False if the route does not apply or did not converge.
             bool controllerNetworkDecide_(DeferredLogger& deferred_logger);
 
+            /// Without a network: some producer has a tubing table and a thp limit, so the
+            /// route decides with each such well on its own thp.
+            bool controllerThpRouteApplies_() const;
+
             /// A production group's current rates exceed one of its own limits by more
             /// than 1 %: the group-level feasibility report.
             bool controllerGroupLimitViolated_() const;

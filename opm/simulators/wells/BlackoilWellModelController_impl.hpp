@@ -171,6 +171,35 @@ controllerRefreshIpr_(DeferredLogger& deferred_logger)
 template<typename TypeTag>
 bool
 BlackoilWellModel<TypeTag>::
+controllerThpRouteApplies_() const
+{
+    // Experimental, OPM_CONTROLLER_THP_ROUTE=1. Off by default: the route's tubing lookup does
+    // not follow the well model's explicit-fraction lookup (use_vfpexplicit), and near a
+    // cliff the 1 bar that costs is a sixth of the well's capacity.
+    static const bool enabled = [] {
+        const char* v = std::getenv("OPM_CONTROLLER_THP_ROUTE");
+        return v != nullptr && std::string(v) == "1";
+    }();
+    if (!enabled || !param_.enable_group_controller_network_) {
+        return false;
+    }
+    const int step = simulator_.episodeIndex();
+    for (const auto& name : this->schedule().wellNames(step)) {
+        const auto& well = this->schedule().getWell(name, step);
+        if (!well.isProducer() || !well.predictionMode() || well.getStatus() == Well::Status::SHUT) {
+            continue;
+        }
+        const auto controls = well.productionControls(this->summaryState());
+        if (controls.vfp_table_number > 0 && controls.thp_limit > 0.0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+template<typename TypeTag>
+bool
+BlackoilWellModel<TypeTag>::
 controllerNetworkDecide_(DeferredLogger& deferred_logger)
 {
     OPM_TIMEFUNCTION();
@@ -180,7 +209,11 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
     const int reportStepIdx = simulator_.episodeIndex();
     const auto& schedule = this->schedule();
     const auto& network = schedule[reportStepIdx].network();
-    if (!network.active()) {
+    // Without a network the route still carries the wells that have a tubing table: each
+    // with its own thp limit where a network would give its node's pressure. The capacity
+    // the tree is handed and the control the well is given then come from one model.
+    const bool no_network = !network.active();
+    if (no_network && !controllerThpRouteApplies_()) {
         return false;
     }
     if (this->comm().size() > 1) {
@@ -292,12 +325,27 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
     std::map<std::string, Group::ProductionCMode> holding;
     int n_judged_wrong = 0;
 
-    for (const auto& root_ref : network.roots()) {
-        const auto& root = root_ref.get();
-        if (!root.terminal_pressure().has_value()) {
+    struct RootSpec {
+        std::string root_name;
+        std::optional<Scalar> pressure;
+        const std::string& name() const { return root_name; }
+    };
+    std::vector<RootSpec> roots;
+    if (no_network) {
+        roots.push_back({"FIELD", Scalar{0}});      // no node below it, its pressure is never used
+    } else {
+        for (const auto& root_ref : network.roots()) {
+            const auto& r = root_ref.get();
+            roots.push_back({r.name(), r.terminal_pressure().has_value()
+                                           ? std::optional<Scalar>(static_cast<Scalar>(*r.terminal_pressure()))
+                                           : std::nullopt});
+        }
+    }
+    for (const auto& root : roots) {
+        if (!root.pressure.has_value()) {
             return giveUp(fmt::format("{} has no terminal pressure", root.name()));
         }
-        const Scalar terminal = *root.terminal_pressure();
+        const Scalar terminal = *root.pressure;
         Sys system(*this->getVFPProperties().getProd(), units);
         system.setTerminalPressure(terminal);
         // Nodes, parents before children.
@@ -305,7 +353,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
         std::vector<std::string> order{root.name()};
         system.addNode(NetworkSolve::Node{order.front(), -1, NetworkSolve::NoTable}, Scalar{0});
         index[order.front()] = 0;
-        for (std::size_t at = 0; at < order.size(); ++at) {
+        for (std::size_t at = 0; !no_network && at < order.size(); ++at) {
             for (const auto& branch : network.downtree_branches(order[at])) {
                 const auto& child = branch.downtree_node();
                 if (index.count(child)) {
@@ -374,7 +422,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
         };
         for (const auto& name : schedule.wellNames(reportStepIdx)) {
             const auto& well = schedule.getWell(name, reportStepIdx);
-            if (!well.isProducer() || !well.predictionMode() || !index.count(well.groupName())) {
+            if (!well.isProducer() || !well.predictionMode() || (!no_network && !index.count(well.groupName()))) {
                 continue;
             }
             if (schedule.getGroup(well.groupName(), reportStepIdx).hasSatelliteProduction()) {
@@ -397,8 +445,13 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
             const bool owned = groupControllable(well);
             typename Sys::Well w;
             w.name = name;
-            w.node = index.at(well.groupName());
+            w.node = no_network ? 0 : index.at(well.groupName());
             w.vfp_table = controls.vfp_table_number;
+            if (no_network && w.vfp_table > 0 && controls.thp_limit > 0.0) {
+                w.own_thp = static_cast<Scalar>(controls.thp_limit);
+            } else if (no_network) {
+                w.vfp_table = 0;            // no thp limit: the table constrains nothing
+            }
             if (w.vfp_table > 0) {
                 // The table's datum is not the well's reference depth.
                 const auto& wi = this->getWell(name);
@@ -409,7 +462,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
             w.bhp_limit = static_cast<Scalar>(controls.bhp_limit);
             w.efficiency = static_cast<Scalar>(well.getEfficiencyFactor(/*network=*/true)) * ws.efficiency_scaling_factor;
             w.alq = ws.alq_state.get();
-            w.node_adds_lift_gas = network.node(well.groupName()).add_gas_lift_gas();
+            w.node_adds_lift_gas = !no_network && network.node(well.groupName()).add_gas_lift_gas();
             if (w.node_adds_lift_gas) {
                 w.lift_gas = w.alq;
             }
@@ -858,7 +911,8 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                     if (well.pinned) {
                         cap = well.oil_rate_limit;
                     } else if (well.vfp_table > 0) {
-                        const Scalar p_node = well.node == 0 ? terminal : rr.node_pressure[well.node];
+                        const Scalar p_node = well.own_thp > Scalar{0} ? well.own_thp
+                            : well.node == 0 ? terminal : rr.node_pressure[well.node];
                         const Scalar lift = system.thpPotential(well, p_node);
                         if (lift < cap) {
                             cap = lift;
@@ -1028,6 +1082,9 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
         }
         // The route never touches the root's entry: it is the terminal pressure.
         new_pressures[order.front()] = terminal;
+        if (no_network) {
+            new_pressures.clear();      // there are no nodes; the wells keep their own thp limits
+        }
         // OPM_CONTROLLER_TRACE: one line per well per decision; OPM_CONTROLLER_DUMP=<prefix>:
         // every system written for the bench to replay.
         static const bool trace = std::getenv("OPM_CONTROLLER_TRACE") != nullptr;
@@ -1044,7 +1101,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
             }
             for (int w = 0; w < system.numWells(); ++w) {
                 const auto& well = system.wells()[w];
-                const Scalar p = rr.node_pressure[well.node];
+                const Scalar p = well.own_thp > Scalar{0} ? well.own_thp : rr.node_pressure[well.node];
                 deferred_logger.debug(fmt::format(
                     "CTRLTRACE step={} it={} {} {} q={:.1f} qstart={:.1f} limit={:.1f} p={:.3f} "
                     "ipr_oil=({:.4g},{:.4g}) thp_pot={:.1f} bhp_lim={:.2f}{} ipr_from='{}'",

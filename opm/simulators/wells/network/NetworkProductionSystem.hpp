@@ -135,6 +135,9 @@ public:
         /// Per phase, production positive: q_p = ipr_a[p] + ipr_b[p] * bhp.
         std::array<Scalar, NP> ipr_a{};
         std::array<Scalar, NP> ipr_b{};
+        /// The well's own thp limit, used in place of its node's pressure (0 = the node's):
+        /// a well with a tubing table and no network above it.
+        Scalar own_thp = 0.0;
         /// Lowest ratio to oil each phase's inflow line may give (0 = the line as it is).
         std::array<Scalar, NP> min_ratio{};
         Scalar bhp_limit = 0.0;
@@ -1250,7 +1253,7 @@ public:
             Scalar& control = r[4 * nodes + NP * wells + w];
             switch (controls_[w]) {
             case Control::Thp:
-                control = (bhp - (tubingBhp(well, pressure(well.node), q)
+                control = (bhp - (tubingBhp(well, (well.own_thp > Scalar{0} ? well.own_thp : pressure(well.node)), q)
                                   - well.vfp_dp)) / pressure_scale_;
                 break;
             case Control::Bhp:
@@ -1283,7 +1286,7 @@ public:
                 // not b's: b is negative below the liquid-loading hump too,
                 // where the well does flow. q >= 0 is kept by limitStep(), so
                 // the lookup takes max(q, 0).
-                if (hasTubing(well) && cmplDead(w, pressure(well.node))) {
+                if (hasTubing(well) && cmplDead(w, (well.own_thp > Scalar{0} ? well.own_thp : pressure(well.node)))) {
                     control = q[1] / rate_scale_;
                     break;
                 }
@@ -1294,7 +1297,7 @@ public:
                 // No VFPPROD means no tubing curve, so thp is not one of this
                 // well's limits and its slack never binds.
                 const Scalar b = hasTubing(well)
-                    ? (bhp - (tubingBhp(well, pressure(well.node), qp)
+                    ? (bhp - (tubingBhp(well, (well.own_thp > Scalar{0} ? well.own_thp : pressure(well.node)), qp)
                               - well.vfp_dp)) / pressure_scale_
                     : Scalar{1e6};
                 const Scalar c = (bhp - well.bhp_limit) / pressure_scale_;
@@ -1323,7 +1326,7 @@ public:
                 // what flips; the Fischer-Burmeister function has the same
                 // zero set and is smooth everywhere but the origin.
                 const Scalar a = (well.oil_rate_limit - q[1]) / rate_scale_;
-                const Scalar b = (bhp - (tubingBhp(well, pressure(well.node), q)
+                const Scalar b = (bhp - (tubingBhp(well, (well.own_thp > Scalar{0} ? well.own_thp : pressure(well.node)), q)
                                          - well.vfp_dp)) / pressure_scale_;
                 control = a + b - std::sqrt(a * a + b * b);
                 break;
@@ -1813,7 +1816,8 @@ public:
         for (int w = 0; w < numWells(); ++w) {
             auto& well = wells_[w];
             if (!well.inflow || well.shut || !hasTubing(well)) { continue; }
-            const Scalar p_node = (well.node == 0) ? terminal_pressure_ : node_pressure[pIdx(well.node)];
+            const Scalar p_node = well.own_thp > Scalar{0} ? well.own_thp
+                : (well.node == 0) ? terminal_pressure_ : node_pressure[pIdx(well.node)];
             ++well_solves_;
             // The operating point is where the well's control has it: a rate
             // well at the bhp its rate needs on the inflow, a bhp well at its
@@ -1980,7 +1984,7 @@ public:
         dead_now_.assign(n, 0);
         for (int w = 0; w < n; ++w) {
             const auto& well = wells_[w];
-            const Scalar p_node = (well.node == 0) ? terminal_pressure_
+            const Scalar p_node = well.own_thp > Scalar{0} ? well.own_thp : (well.node == 0) ? terminal_pressure_
                 : (isChoke(well.node) && choked(well.node) && !(complementarity_ && analytic_jacobian_))
                     ? choke_pressure[well.node]
                 : x[pIdx(well.node)];
@@ -2078,7 +2082,7 @@ public:
                 // is handed back, honestly, rather than re-decided mid-way.
                 if (!cmpl_decided_) {
                     const bool dead = well.dead_above > Scalar{0}
-                        && ((well.node == 0 ? terminal_pressure_ : x[pIdx(well.node)]) >= well.dead_above);
+                        && ((well.own_thp > Scalar{0} ? well.own_thp : well.node == 0 ? terminal_pressure_ : x[pIdx(well.node)]) >= well.dead_above);
                     // Not conditioned on a finite tubing allowance at the start:
                     // the row itself covers "thp does not bind" (b large) and
                     // "cannot lift" (the q = 0 branch), and a start pressure
@@ -2162,7 +2166,7 @@ public:
             } else if (complementarity_ && well.q_start > Scalar{0}) {
                 q_oil = well.q_start;
             } else if (hasTubing(well)) {
-                const Scalar p = node_pressure[well.node];
+                const Scalar p = well.own_thp > Scalar{0} ? well.own_thp : node_pressure[well.node];
                 const Scalar found = thpPotential(well, p);
                 if (found > Scalar{0} && found < q_oil) {
                     q_oil = found;
@@ -2171,7 +2175,7 @@ public:
             q_oil = std::max(q_oil, Scalar{0});
             const Scalar bhp = (well.ipr_b[1] < Scalar{0})
                 ? std::max((q_oil - well.ipr_a[1]) / well.ipr_b[1], well.bhp_limit)
-                : std::max(well.bhp_limit, node_pressure[well.node]);
+                : std::max(well.bhp_limit, well.own_thp > Scalar{0} ? well.own_thp : node_pressure[well.node]);
             x[bhpIdx(w)] = bhp;
             for (int ph = 0; ph < NP; ++ph) {
                 x[qwIdx(w, ph)] = std::max(ipr(well, ph, bhp), Scalar{0});
@@ -2374,7 +2378,7 @@ public:
             if (controls_[w] != Control::Cmpl) { continue; }
             const auto& well = wells_[w];
             const int i = qwIdx(w, 1);
-            const Scalar p = well.node == 0 ? terminal_pressure_ : x[pIdx(well.node)];
+            const Scalar p = well.own_thp > Scalar{0} ? well.own_thp : well.node == 0 ? terminal_pressure_ : x[pIdx(well.node)];
             const Scalar scan = cachedThpPotential(well, p);
             if (cmplDead(w, p)) { continue; }   // the dead row handles it
             const Scalar allow = cmplAllowance(well, scan);
@@ -2401,7 +2405,7 @@ public:
             }
             for (int w = 0; w < numWells(); ++w) {
                 const auto& well = wells_[w];
-                const Scalar pw = well.node == 0 ? terminal_pressure_ : x[pIdx(well.node)];
+                const Scalar pw = well.own_thp > Scalar{0} ? well.own_thp : well.node == 0 ? terminal_pressure_ : x[pIdx(well.node)];
                 const Scalar sc = controls_[w] == Control::Cmpl ? cachedThpPotential(well, pw) : Scalar{-1};
                 std::fprintf(stderr, " | %s[%c%s] q %.1f d %.1f bhp %.2f scan %.0f", well.name.c_str(), controlLetter(w),
                              cmpl_dead_[w] ? "/dead" : "",
@@ -2568,7 +2572,7 @@ public:
             case Control::Thp: {
                 std::array<Scalar, NP> q{};
                 for (int ph = 0; ph < NP; ++ph) { q[ph] = x[qwIdx(w, ph)]; }
-                const auto e = tubingLookup(well, pressure(well.node), q);
+                const auto e = tubingLookup(well, (well.own_thp > Scalar{0} ? well.own_thp : pressure(well.node)), q);
                 add(row, bhpIdx(w), 1.0, pressure_scale_);
                 if (well.node != 0) {
                     add(row, pIdx(well.node), -e.dthp, pressure_scale_);
@@ -2599,7 +2603,7 @@ public:
             }
             case Control::Cmpl: {
                 const bool tubing = hasTubing(well);
-                if (tubing && cmplDead(w, pressure(well.node))) {
+                if (tubing && cmplDead(w, (well.own_thp > Scalar{0} ? well.own_thp : pressure(well.node)))) {
                     add(row, qwIdx(w, 1), 1.0, rate_scale_);
                     break;
                 }
@@ -2608,7 +2612,7 @@ public:
                 // No VFPPROD means no tubing curve, so no table to look up and
                 // that slack never binds -- mirror the residual exactly.
                 Lookup e{};
-                if (tubing) { e = tubingLookup(well, pressure(well.node), qp); }
+                if (tubing) { e = tubingLookup(well, (well.own_thp > Scalar{0} ? well.own_thp : pressure(well.node)), qp); }
                 const bool has_rate = well.oil_rate_limit > Scalar{0};
                 const Scalar a = has_rate ? (well.oil_rate_limit - q[1]) / rate_scale_ : Scalar{1e6};
                 const Scalar b = tubing
@@ -2657,7 +2661,7 @@ public:
             case Control::Tied: {
                 std::array<Scalar, NP> q{};
                 for (int ph = 0; ph < NP; ++ph) { q[ph] = x[qwIdx(w, ph)]; }
-                const auto e = tubingLookup(well, pressure(well.node), q);
+                const auto e = tubingLookup(well, (well.own_thp > Scalar{0} ? well.own_thp : pressure(well.node)), q);
                 const Scalar a = (well.oil_rate_limit - q[1]) / rate_scale_;
                 const Scalar b = (x[bhpIdx(w)] - (e.value - well.vfp_dp)) / pressure_scale_;
                 const Scalar norm = std::sqrt(a * a + b * b);
