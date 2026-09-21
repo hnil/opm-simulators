@@ -2163,6 +2163,31 @@ namespace Opm {
         // Only a decision that moved is a change; a rate off its assignment by the
         // IPR's error is not, or the step would never be allowed to converge.
         changed_any = changed_any || injection_changed || (this->controller_decision_signature_ != sig_before);
+        // A group nothing above holds is left at NONE; legacy keeps a deck FLD group at FLD, and
+        // the group control is reported. The label only: the decided wells carry their own targets.
+        for (const auto& gname : this->schedule().groupNames(episodeIdx)) {
+            const auto& group = this->schedule().getGroup(gname, episodeIdx);
+            if (group.isProductionGroup() && this->groupState().has_production_control(gname)
+                && this->groupState().production_control(gname) == Group::ProductionCMode::NONE
+                && group.productionControls(this->summaryState()).cmode == Group::ProductionCMode::FLD) {
+                this->groupState().production_control(gname, Group::ProductionCMode::FLD);
+            }
+        }
+        // Limits with exceed action WELL are not the tree's: as legacy, the group's worst-offending
+        // well is recorded here and closed when the step succeeds.
+        {
+            const BlackoilWellModelConstraints constraints(*this);
+            std::function<void(const std::string&)> exceed = [&](const std::string& name) {
+                const Group& group = this->schedule().getGroup(name, episodeIdx);
+                for (const auto& child : group.groups()) { exceed(child); }
+                if (!group.isProductionGroup()) { return; }
+                if (const auto close = constraints.wellToCloseOnExceed(group)) {
+                    this->closed_offending_wells_.insert_or_assign(
+                        name, std::make_pair(Group::ProductionCMode2String(close->first), close->second));
+                }
+            };
+            exceed("FIELD");
+        }
         this->updateWsolvent(this->schedule().getGroup("FIELD", episodeIdx), episodeIdx, this->nupcolWellState());
         return changed_any;
     }

@@ -59,10 +59,10 @@ controllerDecide_(DeferredLogger& deferred_logger, const bool write_rates)
 {
     if (param_.enable_group_controller_network_ && controllerNetworkDecide_(deferred_logger)) {
         this->controller_network_owned_ = true;
-        return;
+    } else {
+        this->controller_network_owned_ = false;
+        runControllerBalance_(prepareWellsForBalancing_(deferred_logger), deferred_logger, write_rates);
     }
-    this->controller_network_owned_ = false;
-    runControllerBalance_(prepareWellsForBalancing_(deferred_logger), deferred_logger, write_rates);
 }
 
 template<typename TypeTag>

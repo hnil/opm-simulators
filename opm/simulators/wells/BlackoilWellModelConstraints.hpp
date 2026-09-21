@@ -80,6 +80,11 @@ public:
                                       DeferredLogger& deferred_logger,
                                       const bool injection_only = false) const;
 
+    //! \brief The limit and well a WELL exceed action closes for this production group, if the limit
+    //! legacy's check finds exceeded has action WELL.
+    std::optional<std::pair<Group::ProductionCMode, std::string>>
+    wellToCloseOnExceed(const Group& group) const;
+
 private:
     //! \brief Check and return value and type of constraints for an injection well group.
     std::pair<Group::InjectionCMode, Scalar>

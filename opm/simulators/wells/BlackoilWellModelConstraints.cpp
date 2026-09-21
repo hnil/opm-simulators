@@ -380,6 +380,31 @@ actionOnBrokenConstraints(const Group& group,
 }
 
 template<typename Scalar, typename IndexTraits>
+std::optional<std::pair<Group::ProductionCMode, std::string>>
+BlackoilWellModelConstraints<Scalar, IndexTraits>::
+wellToCloseOnExceed(const Group& group) const
+{
+    const auto exceeded = this->checkGroupProductionConstraints(group).first;
+    const auto& act = group.productionControls(wellModel_.summaryState()).group_limit_action;
+    Group::ExceedAction action = Group::ExceedAction::RATE;
+    switch (exceeded) {
+    case Group::ProductionCMode::ORAT: action = act.oil; break;
+    case Group::ProductionCMode::WRAT: action = act.water; break;
+    case Group::ProductionCMode::GRAT: action = act.gas; break;
+    case Group::ProductionCMode::LRAT: action = act.liquid; break;
+    default: return std::nullopt;
+    }
+    if (action != Group::ExceedAction::WELL) {
+        return std::nullopt;
+    }
+    const auto [well, ratio] = groupStateHelper().worstOffendingWell(group, exceeded);
+    if (!well.has_value()) {
+        return std::nullopt;
+    }
+    return std::make_pair(exceeded, *well);
+}
+
+template<typename Scalar, typename IndexTraits>
 bool BlackoilWellModelConstraints<Scalar, IndexTraits>::
 updateInjectionGroupControl(const Group& group,
                             const int reportStepIdx,
