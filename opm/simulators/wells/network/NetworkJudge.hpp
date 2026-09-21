@@ -59,13 +59,15 @@ Verdict verifyAnswer(const Sys& sys, const std::vector<double>& p, const std::ve
         const auto& well = sys.wells()[w];
         const char c = controls[w];
         const double qo = q_oil[w];
+        // The pressure at the well head: its own thp limit on the no-network route.
+        const double pw = well.own_thp > 0.0 ? well.own_thp : p[well.node];
         bhp[w] = (qo > 0.0 && well.ipr_b[1] < 0.0) ? (qo - well.ipr_a[1]) / well.ipr_b[1] : well.bhp_limit;
         for (int ph = 0; ph < NP; ++ph) { q[w][ph] = qo > 0.0 ? std::max(sys.ipr(well, ph, bhp[w]), 0.0) : 0.0; }
         if (well.shut || c == 'S' || c == 'D') {
             if (qo > 1e-9) { fail("shut well producing"); }
             // The branch rule: shut only because nothing can lift it.
-            if (!well.shut && well.vfp_table > 0 && sys.thpPotential(well, p[well.node]) > 0.0
-                && !(well.dead_above > 0.0 && p[well.node] >= well.dead_above)) { ++v.hysteresis; }
+            if (!well.shut && well.vfp_table > 0 && sys.thpPotential(well, pw) > 0.0
+                && !(well.dead_above > 0.0 && pw >= well.dead_above)) { ++v.hysteresis; }
             continue;
         }
         if (!(qo > 0.0)) { fail("open well at zero"); continue; }
@@ -76,11 +78,11 @@ Verdict verifyAnswer(const Sys& sys, const std::vector<double>& p, const std::ve
         if (well.oil_rate_limit > 0.0 && qo > well.oil_rate_limit * (1 + r_tol)) { fail("above own rate limit"); }
         if (bhp[w] < well.bhp_limit - dp_tol) { fail("below bhp limit"); }
         if (well.vfp_table > 0) {
-            const double need = sys.tableBhp(well, p[well.node], q[w]) - well.vfp_dp;
+            const double need = sys.tableBhp(well, pw, q[w]) - well.vfp_dp;
             if (c == 'T') {
                 if (std::abs(bhp[w] - need) > dp_tol) { fail("thp well off its tubing curve"); }
-                if (sys.thpPotential(well, p[well.node]) > 0.0
-                    && std::abs(qo - sys.thpPotential(well, p[well.node])) > r_tol * qo) { fail("thp well not on the stable crossing"); }
+                if (sys.thpPotential(well, pw) > 0.0
+                    && std::abs(qo - sys.thpPotential(well, pw)) > r_tol * qo) { fail("thp well not on the stable crossing"); }
             } else if (need > bhp[w] + dp_tol && qo > 1.0 / 86400.0) {
                 // A well held at nothing lifts nothing: at q -> 0 the table
                 // wants a full column, which a zero share never asks for.

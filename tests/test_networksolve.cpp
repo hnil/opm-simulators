@@ -19,6 +19,8 @@
 #include <config.h>
 #include "NetworkSolveTestSupport.hpp"
 
+#include <opm/simulators/wells/network/NetworkJudge.hpp>
+
 // The production system: its rows, its controls, the analytic Jacobian,
 // and the dumped simulator failures they were written from.
 
@@ -793,6 +795,26 @@ BOOST_AUTO_TEST_CASE(production_thp_that_does_not_bind_leaves_the_well_on_bhp)
         BOOST_CHECK_EQUAL(system.controlLetter(w), 'B');
         BOOST_CHECK_CLOSE(r.well_rate[w], Sys::ipr(well, 1, well.bhp_limit), 1e-6);
     }
+}
+
+// A well on the route without a network has its own thp limit in place of a
+// node pressure, and the judge must read the tubing at that thp, as the rows do.
+BOOST_AUTO_TEST_CASE(the_judge_reads_a_thp_well_at_its_own_limit)
+{
+    ProductionCase c;
+    for (auto& w : c.wells()) {
+        w.own_thp = convert::from(100.0, bars);
+        w.oil_rate_limit = 0.0;
+    }
+    auto system = c.system();
+    const auto r = NetworkSolve::solve(system, ProductionCase::guess(), kParams, NetworkSolve::FullStep{});
+    BOOST_REQUIRE(r.converged);
+    std::string controls;
+    for (int w = 0; w < system.numWells(); ++w) { controls += system.controlLetter(w); }
+    BOOST_CHECK_EQUAL(controls, "TT");
+    const auto v = NetworkSolve::verifyAnswer(system, r.node_pressure, r.well_rate, controls);
+    for (const auto& [what, n] : v.violations) { BOOST_TEST_MESSAGE(what << " x" << n); }
+    BOOST_CHECK(v.ok);
 }
 
 // Efficiency factors, lift gas and node sources all change what the branch
