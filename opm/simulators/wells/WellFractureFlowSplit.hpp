@@ -60,6 +60,10 @@ void updateWellFractureFlowSplit(const Simulator& simulator,
 
         const int nperf = static_cast<int>(well->wellIndex().size());
         assert(static_cast<int>(fracture_indices.size()) == nperf);
+        // PerfData leaves fracture_data unsized until something stores in it.
+        if (static_cast<int>(fracture_data.water_rate.size()) != nperf) {
+            fracture_data.resize(nperf);
+        }
 
         Scalar total_flow_fracture = 0.0;
         const int np = well_state.numPhases();
