@@ -151,6 +151,11 @@ public:
         /// Hydrostatic correction between the tubing table's datum and the
         /// well's reference depth: the well's bhp is the table's less this.
         Scalar vfp_dp = 0.0;
+        /// The well model's explicit fractions (last step's rates): used for its tubing lookup
+        /// below the table's first flow point, and everywhere when explicit_vfp is set.
+        Scalar explicit_wfr = 0.0;
+        Scalar explicit_gfr = 0.0;
+        bool explicit_vfp = false;
         /// Held at oil_rate_limit, whatever the node pressure: a well the
         /// network is not deciding for is a source, and offering it thp lets
         /// it undercut the rate it was given. Sets the control to OilRate.
@@ -418,7 +423,7 @@ public:
         for (std::size_t i = 0; i < flos.size(); ++i) {
             std::array<Scalar, NP> q{};
             for (int ph = 0; ph < NP; ++ph) { q[ph] = qdir[ph] * (Scalar(flos[i]) / flo_dir); }
-            O[i] = tableBhp(w.vfp_table, p_node, q, w.alq);
+            O[i] = tableBhp(w, p_node, q);
             const Scalar gap = O[i] - w.vfp_dp - line(Scalar(flos[i]));
             if (!tp.valid || gap < tp.gap) { tp.valid = true; tp.flo = flos[i]; tp.bhp = O[i]; tp.gap = gap; at = i; }
         }
@@ -434,12 +439,12 @@ public:
     /// A well's tubing bhp at these rates: the table, or its continuation.
     Scalar tubingBhp(const Well& w, const Scalar thp, const std::array<Scalar, NP>& q) const
     {
-        if (!tubing_extension_) { return tableBhp(w.vfp_table, thp, q, w.alq); }
+        if (!tubing_extension_) { return tableBhp(w, thp, q); }
         const auto tp = touchingPoint(w, thp, q);
-        if (!tp.valid || tp.gap < Scalar{0}) { return tableBhp(w.vfp_table, thp, q, w.alq); }
+        if (!tp.valid || tp.gap < Scalar{0}) { return tableBhp(w, thp, q); }
         const auto& t = props_->getTable(w.vfp_table);
         const Scalar flo = std::abs(detail::getFlo(t, -q[0], -q[1], -q[2]));
-        return flo >= tp.flo ? tableBhp(w.vfp_table, thp, q, w.alq) : tp.bhp;
+        return flo >= tp.flo ? tableBhp(w, thp, q) : tp.bhp;
     }
 
     /// How far the IPR line misses the tubing curve at these fractions, in
@@ -809,6 +814,14 @@ public:
                            Scalar{0}, Scalar{0}, /*use_expvfp=*/false);
     }
 
+    /// A well's tubing, looked up as the well model does it (explicit fractions).
+    Scalar tableBhp(const Well& w, const Scalar thp, const std::array<Scalar, NP>& q) const
+    {
+        if (counting_off_axis_) { noteOffAxis(w.vfp_table, thp, q); }
+        return props_->bhp(w.vfp_table, -q[0], -q[1], -q[2], thp, w.alq,
+                           w.explicit_wfr, w.explicit_gfr, w.explicit_vfp);
+    }
+
     /// Only the lookups an *answer* is made of are counted: the residual's,
     /// and the crossing a well sits on. The probes the control rule makes
     /// at the bhp limit are off the axes as a matter of course.
@@ -966,8 +979,8 @@ public:
         // iteration with a tolerance makes this function only piecewise-smooth
         // in the node pressure, and it is evaluated inside a Newton residual.
         const auto qf = rates(fraction_bhp);
-        const Scalar wfr = detail::getWFR(t, -qf[0], -qf[1], -qf[2]);
-        const Scalar gfr = detail::getGFR(t, -qf[0], -qf[1], -qf[2]);
+        const Scalar wfr = w.explicit_vfp ? w.explicit_wfr : detail::getWFR(t, -qf[0], -qf[1], -qf[2]);
+        const Scalar gfr = w.explicit_vfp ? w.explicit_gfr : detail::getGFR(t, -qf[0], -qf[1], -qf[2]);
         return crossing(w, t, p_node, wfr, gfr, qf);
     }
 
@@ -2453,21 +2466,27 @@ public:
 
     Lookup tableLookup(const int table, const Scalar thp,
                        const std::array<Scalar, NP>& q, const Scalar alq) const
+    { return tableLookup(table, thp, q, alq, Scalar{0}, Scalar{0}, false); }
+
+    Lookup tableLookup(const Well& w, const Scalar thp, const std::array<Scalar, NP>& q) const
+    { return tableLookup(w.vfp_table, thp, q, w.alq, w.explicit_wfr, w.explicit_gfr, w.explicit_vfp); }
+
+    Lookup tableLookup(const int table, const Scalar thp, const std::array<Scalar, NP>& q,
+                       const Scalar alq, const Scalar wfr, const Scalar gfr, const bool expl) const
     {
         using Eval = DenseAd::Evaluation<Scalar, NP>;
         // production rates are negative to the table, as in tableBhp()
         const Eval aqua    = Eval::createVariable(-q[0], 0);
         const Eval liquid  = Eval::createVariable(-q[1], 1);
         const Eval vapour  = Eval::createVariable(-q[2], 2);
-        const Eval bhp = props_->bhp(table, aqua, liquid, vapour, thp, alq,
-                                     Scalar{0}, Scalar{0}, /*use_expvfp=*/false);
+        const Eval bhp = props_->bhp(table, aqua, liquid, vapour, thp, alq, wfr, gfr, expl);
         Lookup out;
         out.value = bhp.value();
         for (int ph = 0; ph < NP; ++ph) {
             out.dq[ph] = -bhp.derivative(ph);     // d/dq = -d/d(-q)
         }
         const Scalar h = Scalar{0.01} * unit::barsa;
-        out.dthp = (tableBhp(table, thp + h, q, alq) - out.value) / h;
+        out.dthp = (props_->bhp(table, -q[0], -q[1], -q[2], thp + h, alq, wfr, gfr, expl) - out.value) / h;
         return out;
     }
 
@@ -2476,12 +2495,12 @@ public:
     /// of the level. Otherwise the table's own.
     Lookup tubingLookup(const Well& w, const Scalar thp, const std::array<Scalar, NP>& q) const
     {
-        if (!tubing_extension_) { return tableLookup(w.vfp_table, thp, q, w.alq); }
+        if (!tubing_extension_) { return tableLookup(w, thp, q); }
         const auto tp = touchingPoint(w, thp, q);
-        if (!tp.valid || tp.gap < Scalar{0}) { return tableLookup(w.vfp_table, thp, q, w.alq); }
+        if (!tp.valid || tp.gap < Scalar{0}) { return tableLookup(w, thp, q); }
         const auto& t = props_->getTable(w.vfp_table);
         const Scalar flo = std::abs(detail::getFlo(t, -q[0], -q[1], -q[2]));
-        if (flo >= tp.flo) { return tableLookup(w.vfp_table, thp, q, w.alq); }
+        if (flo >= tp.flo) { return tableLookup(w, thp, q); }
         Lookup out;
         out.value = tp.bhp;
         out.dq.fill(Scalar{0});

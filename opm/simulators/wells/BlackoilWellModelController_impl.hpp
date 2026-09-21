@@ -173,9 +173,7 @@ bool
 BlackoilWellModel<TypeTag>::
 controllerThpRouteApplies_() const
 {
-    // Experimental, OPM_CONTROLLER_THP_ROUTE=1. Off by default: the route's tubing lookup does
-    // not follow the well model's explicit-fraction lookup (use_vfpexplicit), and near a
-    // cliff the 1 bar that costs is a sixth of the well's capacity.
+    // Experimental, OPM_CONTROLLER_THP_ROUTE=1, off by default.
     static const bool enabled = [] {
         const char* v = std::getenv("OPM_CONTROLLER_THP_ROUTE");
         return v != nullptr && std::string(v) == "1";
@@ -458,6 +456,9 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                 w.vfp_dp = wellhelpers::computeHydrostaticCorrection(
                     wi.refDepth(), this->getVFPProperties().getProd()->getTable(w.vfp_table).getDatumDepth(),
                     wi.refDensity(), wi.gravity());
+                w.explicit_wfr = this->getVFPProperties().getExplicitWFR(w.vfp_table, wi.indexOfWell());
+                w.explicit_gfr = this->getVFPProperties().getExplicitGFR(w.vfp_table, wi.indexOfWell());
+                w.explicit_vfp = wi.useVfpExplicit();
             }
             w.bhp_limit = static_cast<Scalar>(controls.bhp_limit);
             w.efficiency = static_cast<Scalar>(well.getEfficiencyFactor(/*network=*/true)) * ws.efficiency_scaling_factor;

@@ -76,7 +76,7 @@ Verdict verifyAnswer(const Sys& sys, const std::vector<double>& p, const std::ve
         if (well.oil_rate_limit > 0.0 && qo > well.oil_rate_limit * (1 + r_tol)) { fail("above own rate limit"); }
         if (bhp[w] < well.bhp_limit - dp_tol) { fail("below bhp limit"); }
         if (well.vfp_table > 0) {
-            const double need = sys.tableBhp(well.vfp_table, p[well.node], q[w], well.alq) - well.vfp_dp;
+            const double need = sys.tableBhp(well, p[well.node], q[w]) - well.vfp_dp;
             if (c == 'T') {
                 if (std::abs(bhp[w] - need) > dp_tol) { fail("thp well off its tubing curve"); }
                 if (sys.thpPotential(well, p[well.node]) > 0.0
