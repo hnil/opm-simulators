@@ -686,6 +686,13 @@ namespace Opm {
                                       simulationTime / 86400.0, c.outer_iterations, c.network_sub_iterations,
                                       c.well_solves, c.well_solves_failed, c.well_linearisations));
         }
+        if (std::getenv("OPM_WELL_SOLVE_STATS") != nullptr) {
+            const auto& c = FacilityCounters::get();
+            OpmLog::debug(fmt::format("Well solve totals at day {:.1f}: first in a Newton iteration {} solves / {} "
+                                      "iterations; same control {} / {} ({} took more than one); changed control "
+                                      "{} / {}; implicit-IPR assemblies {}", simulationTime / 86400.0, c.first_solves, c.first_lins, c.same_solves,
+                                      c.same_lins, c.same_cold, c.changed_solves, c.changed_lins, c.ipr_assemblies));
+        }
         if (auto& fc = this->facility_check_stats_; fc.has_last) {
             ++fc.steps;
             fc.step_physics_ok += fc.last_physics_ok;

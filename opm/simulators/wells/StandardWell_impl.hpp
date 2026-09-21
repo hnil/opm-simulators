@@ -975,6 +975,7 @@ namespace Opm
         const auto cmode = ws.production_cmode;
         ws.production_cmode = Well::ProducerCMode::BHP;
         const double dt = simulator.timeStepSize();
+        ++FacilityCounters::get().ipr_assemblies;
         assembleWellEqWithoutIteration(simulator, groupStateHelper, dt, inj_controls, prod_controls, well_state,
                                        /*solving_with_zero_rate=*/false);
 

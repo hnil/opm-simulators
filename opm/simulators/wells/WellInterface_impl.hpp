@@ -902,6 +902,21 @@ namespace Opm
         const auto pmode_orig = ws.production_cmode;
         const auto imode_orig = ws.injection_cmode;
         bool converged = false;
+        static const bool solve_stats = std::getenv("OPM_WELL_SOLVE_STATS") != nullptr;
+        const long lins_before = FacilityCounters::get().well_linearisations - FacilityCounters::get().ipr_assemblies;
+        // The value the current control holds the well to, so a changed target counts as a change.
+        auto control_target = [&]() -> double {
+            if (!this->isProducer()) { return static_cast<double>(ws.injection_cmode == Well::InjectorCMode::GRUP); }
+            switch (ws.production_cmode) {
+            case Well::ProducerCMode::GRUP: return ws.group_target ? ws.group_target->target_value : 0.0;
+            case Well::ProducerCMode::THP:  return this->getTHPConstraint(summary_state);
+            case Well::ProducerCMode::BHP:  return prod_controls.bhp_limit;
+            default:                        return 0.0;
+            }
+        };
+        const int cmode_now = this->isProducer() ? static_cast<int>(ws.production_cmode)
+                                                 : 100 + static_cast<int>(ws.injection_cmode);
+        const double target_now = solve_stats ? control_target() : 0.0;
         try {
             // TODO: the following two functions will be refactored to be one to reduce the code duplication
             if (!this->param_.local_well_solver_control_switching_){
@@ -926,6 +941,28 @@ namespace Opm
         }
         ++FacilityCounters::get().well_solves;
         FacilityCounters::get().well_solves_failed += !converged;
+        if (solve_stats) {
+            auto& fc = FacilityCounters::get();
+            const long lins = fc.well_linearisations - fc.ipr_assemblies - lins_before;
+            const double t = simulator.time();
+            const int it = simulator.problem().iterationContext().iteration();
+            auto& prev = fc.last[this->name()];
+            if (prev.time != t || prev.iteration != it) {
+                ++fc.first_solves; fc.first_lins += lins;
+            } else if (prev.cmode == cmode_now
+                       && std::abs(prev.target - target_now) <= 1e-9 * std::max(1.0, std::abs(target_now))) {
+                ++fc.same_solves; fc.same_lins += lins;
+                if (lins > 1) {
+                    ++fc.same_cold;
+                    deferred_logger.debug(fmt::format("WELLSOLVE {} same control {} as its previous solve in this "
+                                                      "Newton iteration, {} iterations", this->name(), cmode_now, lins));
+                }
+            } else {
+                ++fc.changed_solves; fc.changed_lins += lins;
+            }
+            prev = {t, it, this->isProducer() ? static_cast<int>(ws.production_cmode) : 100 + static_cast<int>(ws.injection_cmode),
+                    control_target()};
+        }
         if (converged) {
             // Add debug info for switched controls
             if (ws.production_cmode != pmode_orig || ws.injection_cmode != imode_orig) {
