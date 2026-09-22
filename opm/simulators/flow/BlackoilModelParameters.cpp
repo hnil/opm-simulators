@@ -143,6 +143,9 @@ BlackoilModelParameters<Scalar>::BlackoilModelParameters()
     group_controller_require_settled_ = Parameters::Get<Parameters::GroupControllerRequireSettled>();
     group_controller_max_unsettled_iterations_ = Parameters::Get<Parameters::GroupControllerMaxUnsettledIterations>();
     group_controller_tubing_extension_ = Parameters::Get<Parameters::GroupControllerTubingExtension>();
+    group_controller_injection_ = Parameters::Get<Parameters::GroupControllerInjection>();
+    group_controller_injection_current_production_ =
+        Parameters::Get<Parameters::GroupControllerInjectionCurrentProduction>();
     if (enable_group_controller_) {
         enable_group_tree_balancer_ = true;
     }
@@ -383,6 +386,12 @@ void BlackoilModelParameters<Scalar>::registerParameters()
     Parameters::Register<Parameters::GroupControllerMaxUnsettledIterations>
         ("Group controller: consecutive Newton iterations an unsettled hand-over may block convergence; "
          "after that the step may converge on it, and it is counted as accepted unsettled");
+    Parameters::Register<Parameters::GroupControllerInjection>
+        ("Group controller: injection groups are decided by the controller's tree; injection networks, "
+         "satellite injection and MULTI injectors stay with the legacy rules");
+    Parameters::Register<Parameters::GroupControllerInjectionCurrentProduction>
+        ("Group controller: reinjection and voidage targets follow the producers as just decided "
+         "instead of the NUPCOL state");
     Parameters::Register<Parameters::GroupControllerTubingExtension>
         ("Group controller: the network route solves on tubing curves continued below the point where "
          "each well's inflow line touches them, then shuts every well left on a continuation at once");

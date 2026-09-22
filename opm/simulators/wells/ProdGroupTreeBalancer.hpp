@@ -90,7 +90,8 @@ bool balanceTreeForTesting(Tree<Scalar>& tree,
                            const GuideRate& guideRate,
                            Scalar tol,
                            DeferredLogger& logger,
-                           bool assignTargets = false);
+                           bool assignTargets = false,
+                           bool requireValid = true);
 
 } // namespace Opm::ProdGroupTreeBalancer
 

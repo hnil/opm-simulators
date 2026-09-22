@@ -27,6 +27,7 @@
 #include <array>
 #include <limits>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -124,6 +125,8 @@ struct ProdGroupTreeNode {
     // ---- Fields for new sorting-based balancing algorithm ----------------
     /// Whether this node participates in guide-rate balancing (false for transparent groups)
     bool hasGuideRate{false};
+    /// A guide rate given with the node (an injection tree), used instead of the GuideRate lookup.
+    std::optional<Scalar> fixedGuideRate{};
 
     /// Accumulated rates during balancing (sum of children's rates)
     std::array<Scalar, 3> rateSums{};

@@ -232,6 +232,17 @@ Scalar getGuideRateForMode(const std::string& name,
     return gr >= Scalar(0) ? gr : 0.0;
 }
 
+// A node's own guide rate where it carries one (the injection tree), else the lookup.
+template<class Scalar>
+Scalar guideRateOf(const ProdGroupTreeNode<Scalar>& node,
+                   const std::string& name,
+                   const std::array<Scalar, 3>& rates,
+                   Group::ProductionCMode ctrlMode,
+                   const GuideRate& guideRate)
+{
+    return node.fixedGuideRate ? *node.fixedGuideRate : getGuideRateForMode(name, rates, ctrlMode, guideRate);
+}
+
 // ---------------------------------------------------------------------------
 
 template<class Scalar, typename IndexTraits>
@@ -536,11 +547,11 @@ void propagateGuideRatesAndMode(Tree<Scalar>& tree,
                                (node.mode != Well::ProducerCMode::NONE);
         const auto groupMode = validMode ? wellModeToGroupMode(node.mode) : node.preferredMode;
         node.groupTarget.ctrlMode  = groupMode;
-        node.groupTarget.guideRate = getGuideRateForMode(nodeName, node.initialRates, groupMode, guideRate);
+        node.groupTarget.guideRate = guideRateOf(node, nodeName, node.initialRates, groupMode, guideRate);
 
         // Also fill groupTargetFallback using the preferred mode.
         node.groupTargetFallback.ctrlMode  = node.preferredMode;
-        node.groupTargetFallback.guideRate = getGuideRateForMode(
+        node.groupTargetFallback.guideRate = guideRateOf(node,
             nodeName, node.initialRates, node.preferredMode, guideRate);
 
         // If the preferred-phase guide rate is zero the node cannot participate
@@ -908,7 +919,7 @@ void updateGuideRatesForMode(Tree<Scalar>& tree,
         auto& child = tree.at(childName);
         if (child.groupTarget.ctrlMode != modeAsGroupMode) {
             child.groupTarget.ctrlMode = modeAsGroupMode;
-            child.groupTarget.guideRate = getGuideRateForMode(childName, child.initialRates, modeAsGroupMode, guideRate);
+            child.groupTarget.guideRate = guideRateOf(child, childName, child.initialRates, modeAsGroupMode, guideRate);
         }
     }
 }
@@ -1223,7 +1234,7 @@ void distributeFallbackRates(Tree<Scalar>& tree,
     for (const auto& childName : c) {
         if (tree.count(childName) == 0) continue;
         const auto& child = tree.at(childName);
-        const Scalar preferredGuideRate = getGuideRateForMode(childName, child.initialRates, modePreferred, guideRate);
+        const Scalar preferredGuideRate = guideRateOf(child, childName, child.initialRates, modePreferred, guideRate);
 
         if (child.useFallback) {
             cFallback.push_back(childName);
@@ -1558,7 +1569,7 @@ checkAndSwitchMode(ProdGroupTreeNode<Scalar>& node,
         result.newTarget = projectOnMode(rateSums, newMode, node.resvCoeff) / maxViolation;
         const auto groupMode = wellModeToGroupMode(newMode);
         node.groupTarget.ctrlMode = groupMode;
-        node.groupTarget.guideRate = getGuideRateForMode(nodeName, node.initialRates, groupMode, guideRate);
+        node.groupTarget.guideRate = guideRateOf(node, nodeName, node.initialRates, groupMode, guideRate);
     }
 
     return result;
@@ -2414,7 +2425,8 @@ bool balanceTreeForTesting(Tree<Scalar>& tree,
                            const GuideRate& guideRate,
                            Scalar tol,
                            DeferredLogger& logger,
-                           const bool assignTargets)
+                           const bool assignTargets,
+                           const bool requireValid)
 {
     // The top-down pass buildTree() ends with, so a hand-built tree is not
     // half-initialised: effective modes, guide rates, preferred control.
@@ -2423,7 +2435,7 @@ bool balanceTreeForTesting(Tree<Scalar>& tree,
                                Group::ProductionCMode::NONE,
                                /* parentSeesLimits */ false);
     const bool ok = runBalancingAlgorithm(guideRate, /*rank=*/0, tree, tol, logger, assignTargets);
-    return ok && checkTreeValidity(tree, "FIELD", tol, logger);
+    return ok && (!requireValid || checkTreeValidity(tree, "FIELD", tol, logger));
 }
 
 // ===========================================================================
@@ -2439,7 +2451,7 @@ template bool runGroupTreeBalancer<double, BlackOilDefaultFluidSystemIndices>(
     const std::unordered_map<std::string, std::pair<int, double>>&,
     DeferredLogger&, bool, std::vector<std::string>*, bool);
 
-template bool balanceTreeForTesting<double>(Tree<double>&, const GuideRate&, double, DeferredLogger&, bool);
+template bool balanceTreeForTesting<double>(Tree<double>&, const GuideRate&, double, DeferredLogger&, bool, bool);
 
 template Tree<double> decideTree<double, BlackOilDefaultFluidSystemIndices>(
     const BlackoilWellModelGeneric<double, BlackOilDefaultFluidSystemIndices>&,
@@ -2450,7 +2462,7 @@ template Tree<double> decideTree<double, BlackOilDefaultFluidSystemIndices>(
 
 #ifdef FLOW_INSTANTIATE_FLOAT
 
-template bool balanceTreeForTesting<float>(Tree<float>&, const GuideRate&, float, DeferredLogger&, bool);
+template bool balanceTreeForTesting<float>(Tree<float>&, const GuideRate&, float, DeferredLogger&, bool, bool);
 
 template Tree<float> decideTree<float, BlackOilDefaultFluidSystemIndices>(
     const BlackoilWellModelGeneric<float, BlackOilDefaultFluidSystemIndices>&,

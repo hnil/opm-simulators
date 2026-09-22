@@ -121,6 +121,8 @@ struct GroupControllerMaxRepairs { static constexpr int value = 3; };
 struct GroupControllerRequireSettled { static constexpr bool value = true; };
 struct GroupControllerMaxUnsettledIterations { static constexpr int value = 3; };
 struct GroupControllerTubingExtension { static constexpr bool value = false; };
+struct GroupControllerInjection { static constexpr bool value = true; };
+struct GroupControllerInjectionCurrentProduction { static constexpr bool value = true; };
 template<class Scalar>
 struct GroupTreeBalancerTolerance { static constexpr Scalar value = 1e-5; };
 
@@ -476,6 +478,12 @@ public:
 
     /// Controller: the route solves on tubing curves continued below the IPR's touching point
     bool group_controller_tubing_extension_;
+
+    /// Controller: injection groups decided by the controller's tree, not legacy's rules
+    bool group_controller_injection_;
+
+    /// Controller: REIN and VREP targets from the producers as just decided, not the NUPCOL state
+    bool group_controller_injection_current_production_;
 
     template<class Serializer>
     void serializeOp(Serializer& serializer)

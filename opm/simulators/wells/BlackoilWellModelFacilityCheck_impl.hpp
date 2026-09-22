@@ -204,6 +204,7 @@ facilityCheck_(DeferredLogger& deferred_logger)
     const auto saved_inj_switches = this->switched_inj_groups_;
     const auto saved_closed = this->closed_offending_wells_;
     const auto saved_decided = this->controller_decided_wells_;
+    const auto saved_inj_decided = this->controller_injection_decided_;
 
     std::pair<Scalar, std::string> network_off{Scalar{0}, ""};
     std::pair<Scalar, std::string> group_over{Scalar{0}, ""};
@@ -216,6 +217,7 @@ facilityCheck_(DeferredLogger& deferred_logger)
         try {
             // A legacy pass at the current rates, its switch budgets unspent.
             this->controller_decided_wells_.clear();
+            this->controller_injection_decided_.clear();
             for (const auto& well : well_container_) {
                 this->wellState().well(well->indexOfWell()).controller_decided = false;
             }
@@ -365,6 +367,7 @@ facilityCheck_(DeferredLogger& deferred_logger)
     this->switched_inj_groups_ = saved_inj_switches;
     this->closed_offending_wells_ = saved_closed;
     this->controller_decided_wells_ = saved_decided;
+    this->controller_injection_decided_ = saved_inj_decided;
 
     const bool physics_ok = failure.empty() && unsolved.empty() && idle.empty()
         && network_off.first <= tol_pressure && group_over.first <= tol && well_over.first <= tol

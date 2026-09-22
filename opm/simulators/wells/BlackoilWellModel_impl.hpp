@@ -2029,11 +2029,22 @@ namespace Opm {
         const bool network_route = param_.enable_group_controller_network_
             && (this->schedule()[episodeIdx].network().active() || controllerThpRouteApplies_());
         this->controller_network_owned_ = false;
-        // The injection side stays with legacy's rules: group controls, then the injectors'
-        // group and own checks. Reinjection and voidage targets follow the producers
-        // through the group data, as they do in legacy.
+        // Injection groups are decided by the controller's tree; what it gives up on (injection
+        // network, satellite injection, MULTI, parallel) stays with legacy's rules.
         bool injection_changed = false;
-        {
+        const std::string inj_sig_before = controllerInjectionSignature_();
+        // Decided within NUPCOL, as the producers; after it the modes stand and only the held
+        // wells' shares follow the production REIN and VREP are a fraction of, not counted as a change.
+        if (param_.group_controller_injection_) {
+            const bool targets_only = !may_redecide && this->controller_injection_owned_;
+            this->controller_injection_owned_ = controllerInjectionDecide_(deferred_logger, targets_only);
+            injection_changed = this->controller_injection_owned_ && !targets_only
+                && (this->controller_injection_moved_ || controllerInjectionSignature_() != inj_sig_before);
+        }
+        if (!(param_.group_controller_injection_ && this->controller_injection_owned_)) {
+            this->controller_injection_owned_ = false;
+            this->controller_injection_decided_.clear();
+            controllerMarkDecided_();
             const Group& fieldGroup = this->schedule().getGroup("FIELD", episodeIdx);
             injection_changed = updateGroupControls(fieldGroup, deferred_logger, episodeIdx, /*injection_only*/ true);
             bool to_group = false;

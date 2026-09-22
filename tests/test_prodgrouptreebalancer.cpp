@@ -292,3 +292,24 @@ BOOST_AUTO_TEST_CASE(a_well_without_the_target_phase_is_not_zeroed)
     BOOST_CHECK_CLOSE(f.gas("W1"), 200000.0, 1e-6);
     BOOST_CHECK_CLOSE(f.oil("W1"), 1000.0, 1e-6);
 }
+
+// The injection tree carries its guide rates on the nodes: W1 and W2 have equal
+// potentials, but guide rates 1 and 3, so the group's 3000 is shared 750 / 2250.
+BOOST_AUTO_TEST_CASE(a_node_guide_rate_overrides_the_lookup)
+{
+    Fixture f("GRUPTREE\n 'PLAT' 'FIELD' /\n/\n"
+              "WELSPECS\n 'W1' 'PLAT' 1 1 7000 'WATER' /\n 'W2' 'PLAT' 2 1 7000 'WATER' /\n/\n"
+              "COMPDAT\n 'W1' 1 1 1 2 'OPEN' 1* 1* 0.2 /\n 'W2' 2 1 1 2 'OPEN' 1* 1* 0.2 /\n/\n"
+              "WCONPROD\n 'W1' 'OPEN' 'GRUP' 2* 3000 2* 100 /\n 'W2' 'OPEN' 'GRUP' 2* 3000 2* 100 /\n/\n");
+    f.group("PLAT", "FIELD", Well::ProducerCMode::WRAT, 3000.0);
+    f.tree.at("PLAT").preferredMode = Group::ProductionCMode::WRAT;
+    f.well("W1", "PLAT", {0.0, 3000.0, 0.0}, {{Well::ProducerCMode::WRAT, 3000.0}});
+    f.well("W2", "PLAT", {0.0, 3000.0, 0.0}, {{Well::ProducerCMode::WRAT, 3000.0}});
+    f.tree.at("W1").fixedGuideRate = 1.0;
+    f.tree.at("W2").fixedGuideRate = 3.0;
+    f.tree.at("PLAT").fixedGuideRate = 4.0;
+    f.balance();
+    const auto water = [&f](const std::string& n) { return -f.tree.at(n).rates[1]; };
+    BOOST_CHECK_CLOSE(water("W1"), 750.0, 1e-6);
+    BOOST_CHECK_CLOSE(water("W2"), 2250.0, 1e-6);
+}

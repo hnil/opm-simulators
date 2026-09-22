@@ -247,6 +247,16 @@ public:
                                    const Phase& injection_phase,
                                    const std::vector<Scalar>& resv_coeff) const;
 
+    /// What the given control mode of an injection group asks for, as a surface rate of the
+    /// phase: legacy's own formulas (RATE, RESV, REIN, VREP, SALE, GPMAINT).
+    Scalar injectionGroupTargetForMode(const Group& group,
+                                       const Phase& injection_phase,
+                                       const std::vector<Scalar>& resv_coeff,
+                                       const Group::InjectionCMode cmode) const
+    {
+        return getInjectionGroupTargetForMode_(group, injection_phase, resv_coeff, cmode);
+    }
+
     /// @brief Get the guide rate target mode for an injection phase
     /// @param injection_phase The injection phase (WATER, OIL, or GAS)
     /// @return The corresponding GuideRateModel::Target for the injection phase
