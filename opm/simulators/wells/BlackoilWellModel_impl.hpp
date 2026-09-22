@@ -693,6 +693,23 @@ namespace Opm {
                                       "{} / {}; implicit-IPR assemblies {}", simulationTime / 86400.0, c.first_solves, c.first_lins, c.same_solves,
                                       c.same_lins, c.same_cold, c.changed_solves, c.changed_lins, c.ipr_assemblies));
         }
+        if (std::getenv("OPM_FACILITY_CHECK") != nullptr) {
+            // Totals from the well state, so a comparison never depends on the deck's SUMMARY.
+            const auto& pu = this->phaseUsage();
+            auto& t = this->facility_check_stats_.totals;
+            const int canon[3] = {IndexTraits::oilPhaseIdx, IndexTraits::waterPhaseIdx, IndexTraits::gasPhaseIdx};
+            for (const auto& well : well_container_) {
+                const auto& ws = this->wellState().well(well->indexOfWell());
+                for (int k = 0; k < 3; ++k) {
+                    if (!pu.phaseIsActive(canon[k])) { continue; }
+                    const double q = ws.surface_rates[pu.canonicalToActivePhaseIdx(canon[k])] * dt;
+                    if (well->isProducer()) { t[k] += -q; } else { t[k == 0 ? 5 : k == 1 ? 3 : 4] += q; }
+                }
+            }
+            OpmLog::debug(fmt::format("Facility totals at day {:.1f}: produced oil {:.6e} water {:.6e} gas {:.6e}, "
+                                      "injected water {:.6e} gas {:.6e} oil {:.6e} sm3",
+                                      simulationTime / 86400.0, t[0], t[1], t[2], t[3], t[4], t[5]));
+        }
         if (auto& fc = this->facility_check_stats_; fc.has_last) {
             ++fc.steps;
             fc.step_physics_ok += fc.last_physics_ok;

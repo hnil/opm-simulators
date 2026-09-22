@@ -110,6 +110,93 @@ facilityCheck_(DeferredLogger& deferred_logger)
         }
     }
 
+    // Own limits of the injectors: rate, reservoir rate, and bhp and thp from above.
+    std::pair<Scalar, std::string> inj_over{Scalar{0}, ""};
+    auto injectedPhase = [](const InjectorType t) {
+        return t == InjectorType::WATER ? IndexTraits::waterPhaseIdx
+             : t == InjectorType::OIL ? IndexTraits::oilPhaseIdx : IndexTraits::gasPhaseIdx;
+    };
+    for (const auto& well : well_container_) {
+        if (!well->isInjector() || well->wellIsStopped() || !well->wellEcl().predictionMode()) {
+            continue;
+        }
+        const auto& ws = this->wellState().well(well->indexOfWell());
+        const auto controls = well->wellEcl().injectionControls(summary_state);
+        const int ph = injectedPhase(controls.injector_type);
+        if (controls.hasControl(Well::InjectorCMode::RATE) && controls.surface_rate > 0.0) {
+            worse(inj_over, std::abs(phase(ws.surface_rates, ph)) / controls.surface_rate - Scalar(1),
+                  well->name() + ":RATE");
+        }
+        if (controls.hasControl(Well::InjectorCMode::RESV) && controls.reservoir_rate > 0.0) {
+            worse(inj_over, std::abs(phase(ws.reservoir_rates, ph)) / controls.reservoir_rate - Scalar(1),
+                  well->name() + ":RESV");
+        }
+        if (controls.hasControl(Well::InjectorCMode::BHP) && controls.bhp_limit > 0.0) {
+            worse(inj_over, ws.bhp / controls.bhp_limit - Scalar(1), well->name() + ":BHP");
+        }
+        if (well->wellHasTHPConstraints(summary_state)) {
+            const Scalar limit = well->getTHPConstraint(summary_state);
+            if (limit > Scalar(0)) {
+                worse(inj_over, ws.thp / limit - Scalar(1), well->name() + ":THP");
+            }
+        }
+    }
+
+    // Injection groups, per phase, with legacy's own sums: RATE, RESV, REIN (of the reinjection
+    // group's production), VREP (of the voidage group's reservoir voidage).
+    std::pair<Scalar, std::string> group_inj_over{Scalar{0}, ""};
+    {
+        const auto& helper = this->groupStateHelper();
+        auto pos = [&pu](const int canonical) {
+            return pu.phaseIsActive(canonical) ? pu.canonicalToActivePhaseIdx(canonical) : -1;
+        };
+        auto resSum = [&](const Group& g, const bool injector) {
+            Scalar s = 0;
+            for (const int c : {IndexTraits::waterPhaseIdx, IndexTraits::oilPhaseIdx, IndexTraits::gasPhaseIdx}) {
+                if (pos(c) >= 0) { s += helper.sumWellResRates(g, pos(c), injector); }
+            }
+            return this->comm().sum(s);
+        };
+        for (const auto& name : schedule.groupNames(step)) {
+            const auto& group = schedule.getGroup(name, step);
+            if (!group.isInjectionGroup()) {
+                continue;
+            }
+            for (const auto& [ph, canonical, tag] : {std::tuple{Phase::WATER, IndexTraits::waterPhaseIdx, "WAT"},
+                                                     std::tuple{Phase::GAS, IndexTraits::gasPhaseIdx, "GAS"},
+                                                     std::tuple{Phase::OIL, IndexTraits::oilPhaseIdx, "OIL"}}) {
+                if (!group.hasInjectionControl(ph) || pos(canonical) < 0) {
+                    continue;
+                }
+                const auto controls = group.injectionControls(ph, summary_state);
+                const Scalar injected = this->comm().sum(helper.sumWellSurfaceRates(group, pos(canonical), true));
+                auto over = [&](const Scalar current, const Scalar target, const char* mode) {
+                    if (target > Scalar(0)) {
+                        worse(group_inj_over, current / target - Scalar(1), name + ":" + tag + ":" + mode);
+                    }
+                };
+                if (group.has_control(ph, Group::InjectionCMode::RATE)) {
+                    over(injected, group.has_gpmaint_control(ph, Group::InjectionCMode::RATE)
+                                   ? this->groupState().gpmaint_target(name) : controls.surface_max_rate, "RATE");
+                }
+                if (group.has_control(ph, Group::InjectionCMode::RESV)) {
+                    over(this->comm().sum(helper.sumWellResRates(group, pos(canonical), true)),
+                         group.has_gpmaint_control(ph, Group::InjectionCMode::RESV)
+                             ? this->groupState().gpmaint_target(name) : controls.resv_max_rate, "RESV");
+                }
+                if (group.has_control(ph, Group::InjectionCMode::REIN)) {
+                    const Group& from = schedule.getGroup(controls.reinj_group, step);
+                    const Scalar produced = this->comm().sum(helper.sumWellSurfaceRates(from, pos(canonical), false));
+                    over(injected, controls.target_reinj_fraction * produced, "REIN");
+                }
+                if (group.has_control(ph, Group::InjectionCMode::VREP)) {
+                    const Group& from = schedule.getGroup(controls.voidage_group, step);
+                    over(resSum(group, true), controls.target_void_fraction * resSum(from, false), "VREP");
+                }
+            }
+        }
+    }
+
     // From here the state is written to; everything is put back below.
     const auto saved_active = this->active_wgstate_;
     const auto saved_nupcol = this->nupcol_wgstate_;
@@ -280,7 +367,8 @@ facilityCheck_(DeferredLogger& deferred_logger)
     this->controller_decided_wells_ = saved_decided;
 
     const bool physics_ok = failure.empty() && unsolved.empty() && idle.empty()
-        && network_off.first <= tol_pressure && group_over.first <= tol && well_over.first <= tol;
+        && network_off.first <= tol_pressure && group_over.first <= tol && well_over.first <= tol
+        && inj_over.first <= tol && group_inj_over.first <= tol;
     const bool legacy_ok = failure.empty() && group_switches.empty() && well_switches.empty()
         && target_move.first <= tol && network_off.first <= tol_pressure;
 
@@ -298,11 +386,13 @@ facilityCheck_(DeferredLogger& deferred_logger)
     deferred_logger.debug(fmt::format(
         "Facility check: step {} iteration {}: physics {}, legacy {} | unsolved wells {} [{}] | "
         "network off {:.3f} bar ({}) | group over {:+.1f} % ({}) | well over {:+.1f} % ({}) | "
+        "injector over {:+.1f} % ({}) | injection group over {:+.1f} % ({}) | "
         "held without a binding limit {} [{}] | legacy would switch groups {} [{}] wells {} [{}], "
         "move a target {:.1f} % ({}); unliftable, not counted {} [{}]{}",
         step, iterCtx.iteration(), physics_ok ? "ok" : "NO", legacy_ok ? "ok" : "NO",
         unsolved.size(), join(unsolved), network_off.first * 1.0e-5, network_off.second,
         100.0 * group_over.first, group_over.second, 100.0 * well_over.first, well_over.second,
+        100.0 * inj_over.first, inj_over.second, 100.0 * group_inj_over.first, group_inj_over.second,
         idle.size(), join(idle), group_switches.size(), join(group_switches),
         well_switches.size(), join(well_switches), 100.0 * target_move.first, target_move.second,
         unliftable_switches.size(), join(unliftable_switches),

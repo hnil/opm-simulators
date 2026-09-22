@@ -627,6 +627,8 @@ protected:
         long checks = 0, physics_ok = 0, legacy_ok = 0, both_ok = 0, physics_only = 0;
         long steps = 0, step_physics_ok = 0, step_legacy_ok = 0;
         bool has_last = false, last_physics_ok = false, last_legacy_ok = false;
+        // Accepted steps' totals, sm3: produced oil, water, gas; injected water, gas, oil.
+        std::array<double, 6> totals{};
     } facility_check_stats_;
     std::map<std::string, std::pair<std::vector<Scalar>, std::vector<Scalar>>> controller_last_flowing_ipr_{};
     std::map<std::string, std::string> controller_ipr_source_{};   // for the trace
