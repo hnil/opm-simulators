@@ -1444,7 +1444,8 @@ runSingleDistributionPass(Tree<Scalar>& tree,
 
         const Scalar gsum = projectOnMode(node.guideRateSums, mode, node.resvCoeff);
         const Scalar gk = projectOnMode(ck.guideRateSums, mode, ck.resvCoeff);
-        const Scalar qmRemain = qm - projectOnMode(node.rateSums, mode, node.resvCoeff);
+        // Wells that cannot be held may already exceed the target: nothing is left, not less.
+        const Scalar qmRemain = std::max(qm - projectOnMode(node.rateSums, mode, node.resvCoeff), Scalar(0));
         // qkParent is in origin frame; divide by accumulated efficiency
         // (product of all eff factors from ck up to nodeName, inclusive)
         // to convert to ck's native frame before recursing.
@@ -1597,9 +1598,11 @@ void categorizeBalancedNode(Tree<Scalar>& tree,
     node.mode = mode;
     node.visited = true;
 
+    // At or above: wells that cannot be held can push a group over a limit its held wells
+    // (at zero) still hold.
     bool atLimit = false;
     for (const auto& [limitMode, limit] : node.Limits) {
-        if (std::abs(-projectOnMode(node.rates, limitMode, node.resvCoeff) - limit) <= tol * limit) {
+        if (-projectOnMode(node.rates, limitMode, node.resvCoeff) >= limit * (Scalar(1) - tol)) {
             atLimit = true;
             break;
         }

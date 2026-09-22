@@ -200,6 +200,34 @@ BOOST_AUTO_TEST_CASE(a_well_with_two_limits_is_held_at_the_binding_one)
     BOOST_CHECK(f.tree.at("W1").modeCategory == Opm::ProdNodeModeCategory::Group);
 }
 
+// A well that cannot be held already makes more than its group's target: nothing is
+// left to share, and the held well gets zero -- not a negative rate (GRPFLD-02:
+// -6.2e6 sm3/d on B-2H, and the route read the well as not held at all).
+BOOST_AUTO_TEST_CASE(nothing_left_to_share_gives_zero_not_a_negative_rate)
+{
+    Fixture f("GRUPTREE\n 'PLAT' 'FIELD' /\n 'G1' 'PLAT' /\n/\n"
+              "WELSPECS\n 'W1' 'G1' 1 1 7000 'OIL' /\n 'W2' 'G1' 2 1 7000 'OIL' /\n/\n"
+              "COMPDAT\n 'W1' 1 1 1 2 'OPEN' 1* 1* 0.2 /\n 'W2' 2 1 1 2 'OPEN' 1* 1* 0.2 /\n/\n"
+              "WCONPROD\n 'W1' 'OPEN' 'ORAT' 3500 4* 100 /\n 'W2' 'OPEN' 'GRUP' 2000 4* 100 /\n/\n"
+              "GCONPROD\n 'PLAT' 'ORAT' 3000 3* 'RATE' /\n/\n");
+    f.group("PLAT", "FIELD", Well::ProducerCMode::ORAT, 3000.0);
+    f.group("G1", "PLAT");
+    f.well("W1", "G1", {3500.0, 0.0, 350000.0}, {{Well::ProducerCMode::ORAT, 3500.0}});
+    auto& w1 = f.tree.at("W1");
+    w1.availableForGroupControl = false;
+    w1.modeCategory = Opm::ProdNodeModeCategory::Individual;
+    w1.mode = Well::ProducerCMode::ORAT;
+    f.well("W2", "G1", {1000.0, 0.0, 100000.0}, {{Well::ProducerCMode::ORAT, 2000.0}});
+    f.balance();
+    BOOST_TEST_MESSAGE("W2 oil " << f.oil("W2") << " category " << static_cast<int>(f.tree.at("W2").modeCategory));
+    BOOST_CHECK_GE(f.oil("W2"), 0.0);
+    BOOST_CHECK_SMALL(f.oil("W2"), 1e-6);
+    BOOST_CHECK_CLOSE(f.oil("W1"), 3500.0, 1e-6);
+    // Still holding its limit, with nothing left to give: the held well hangs off it.
+    BOOST_CHECK(f.tree.at("PLAT").modeCategory == Opm::ProdNodeModeCategory::Individual);
+    BOOST_CHECK(f.tree.at("W2").modeCategory == Opm::ProdNodeModeCategory::Group);
+}
+
 // With assignTargets the allocation is written as each well's group target: a
 // group-controlled well's target is its allocated rate in the group's mode.
 BOOST_AUTO_TEST_CASE(assign_targets_writes_the_allocation)
