@@ -79,6 +79,12 @@ public:
                           Dune::Partitions::all,
                           ThreadManager::maxThreads())
     {
+        // Assembly reads intensive quantities from the cache only.
+        if (!this->enableIntensiveQuantityCache_) {
+            OPM_THROW(std::invalid_argument,
+                      "--enable-intensive-quantity-cache=false is not supported "
+                      "by this simulator.");
+        }
     }
 
     void invalidateAndUpdateIntensiveQuantities(unsigned timeIdx) const
@@ -193,8 +199,8 @@ public:
     {
         if (!this->enableIntensiveQuantityCache_) {
             OPM_THROW(std::logic_error,
-                      "Run without intensive quantites not enabled: "
-                      "Use --enable-intensive-quantity=true");
+                      "Intensive quantity cache is disabled; "
+                      "use --enable-intensive-quantity-cache=true");
         }
 
         assert(timeIdx < this->cachedIntensiveQuantityHistorySize());
