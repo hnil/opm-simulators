@@ -36,6 +36,7 @@
 #include <opm/simulators/wells/network/NetworkJudge.hpp>
 #include <opm/simulators/wells/network/NetworkProductionSystem.hpp>
 #include <opm/simulators/wells/network/NetworkReducedSolve.hpp>
+#include <opm/simulators/wells/network/NetworkTubingExtension.hpp>
 
 #include <fmt/format.h>
 
@@ -937,8 +938,22 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                                                                : NetworkSolve::CliffRule::Die;
         }();
         const NetworkSolve::Parameters<Scalar> params{Scalar{1e-2}, 50};
-        auto rr = NetworkSolve::solveReduced(system, guess, params, /*eliminate=*/true,
-                                             cliff_rule);
+        // Stein's continuation: every inflow line crosses its tubing curve once, the shut decision
+        // is taken after the solve for every well at once.
+        const bool extension = param_.group_controller_tubing_extension_;
+        auto solveRoute = [&](const std::vector<Scalar>& start, const bool keep_dead) {
+            if (!extension) {
+                return NetworkSolve::solveReduced(system, start, params, /*eliminate=*/true, cliff_rule, keep_dead);
+            }
+            auto ex = NetworkSolve::solveReducedOnExtension(system, start, params, NetworkSolve::Closing::All,
+                                                            20, keep_dead);
+            auto r = std::move(ex.last);
+            r.converged = r.converged && ex.converged;
+            r.iterations = ex.iterations;
+            r.evaluations = ex.evaluations;
+            return r;
+        };
+        auto rr = solveRoute(guess, false);
         // A group with several limits holds the one its own answer violates most: solve,
         // look at every limit, switch and solve again. Bounded; a repeat ends it.
         // OPM_CONTROLLER_STEIN_LIMITS: the balancer's tree on the route's answer picks the
@@ -1184,8 +1199,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                 system.shutWell(w);
                 repaired_dead.insert(system.wells()[w].name);
             }
-            rr = NetworkSolve::solveReduced(system, rr.node_pressure, params, /*eliminate=*/true, cliff_rule,
-                                            /*keep_dead=*/true);
+            rr = solveRoute(rr.node_pressure, true);
             if (!rr.converged) { break; }
             verdict = judge();
         }

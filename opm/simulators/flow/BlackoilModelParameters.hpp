@@ -120,6 +120,7 @@ struct EnableGroupControllerThpRoute { static constexpr bool value = true; };
 struct GroupControllerMaxRepairs { static constexpr int value = 3; };
 struct GroupControllerRequireSettled { static constexpr bool value = true; };
 struct GroupControllerMaxUnsettledIterations { static constexpr int value = 3; };
+struct GroupControllerTubingExtension { static constexpr bool value = false; };
 template<class Scalar>
 struct GroupTreeBalancerTolerance { static constexpr Scalar value = 1e-5; };
 
@@ -472,6 +473,9 @@ public:
 
     /// Controller: consecutive Newton iterations an unsettled hand-over may block convergence
     int group_controller_max_unsettled_iterations_;
+
+    /// Controller: the route solves on tubing curves continued below the IPR's touching point
+    bool group_controller_tubing_extension_;
 
     template<class Serializer>
     void serializeOp(Serializer& serializer)

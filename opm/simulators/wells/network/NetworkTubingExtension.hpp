@@ -106,7 +106,8 @@ solveReducedOnExtension(Sys& system,
             const Scalar bhp = (qo - well.ipr_a[1]) / well.ipr_b[1];
             std::array<Scalar, NP> q{};
             for (int ph = 0; ph < NP; ++ph) { q[ph] = std::max(Sys::ipr(well, ph, bhp), Scalar{0}); }
-            const Scalar p_node = well.node == 0 ? system.terminalPressure() : p[well.node];
+            const Scalar p_node = well.own_thp > Scalar{0} ? well.own_thp
+                                : well.node == 0 ? system.terminalPressure() : p[well.node];
             const auto tp = system.touchingPoint(well, p_node, q);
             if (tp.valid && tp.gap > Scalar{0}) { on.push_back({w, tp.gap, tp.res, bhp}); }
         }
