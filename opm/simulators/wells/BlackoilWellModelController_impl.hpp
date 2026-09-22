@@ -211,6 +211,7 @@ bool
 BlackoilWellModel<TypeTag>::
 controllerNetworkDecide_(DeferredLogger& deferred_logger)
 {
+    this->controller_rejected_ = false;
     OPM_TIMEFUNCTION();
     using Sys = NetworkSolve::ProductionSystem<Scalar>;
     using Ctrl = typename Sys::Control;
@@ -345,6 +346,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
             && r->second >= param_.group_controller_max_revivals_;
     };
     std::set<std::string> kept_dead;
+    std::set<std::string> repaired_dead;   // shut by a repair of a rejected answer
     std::set<std::string> route_groups, switched;
     std::map<std::string, Group::ProductionCMode> holding;
     int n_judged_wrong = 0;
@@ -469,6 +471,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
             const bool owned = groupControllable(well);
             typename Sys::Well w;
             w.name = name;
+            w.group_controllable = owned;
             w.node = no_network ? 0 : index.at(well.groupName());
             w.vfp_table = controls.vfp_table_number;
             if (no_network && w.vfp_table > 0 && controls.thp_limit > 0.0) {
@@ -909,6 +912,19 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                         d.bind[g] = own[g] ? Sys::GroupBind::Own : Sys::GroupBind::Share;
                     }
                 }
+                if (std::getenv("OPM_CONTROLLER_TRACE") != nullptr) {
+                    std::string t = fmt::format("CTRLTRACE step={} it={} allocator individual {{", reportStepIdx,
+                                                simulator_.problem().iterationContext().iteration());
+                    for (const auto& n : individual) { t += " " + n; }
+                    t += " }";
+                    for (const auto& [name, node] : tree) {
+                        t += fmt::format(" | {} {} cat {} mode {} oil {:.1f} wat {:.1f}", name,
+                                         node.type == ProdNodeType::Well ? "w" : "g",
+                                         static_cast<int>(node.modeCategory), static_cast<int>(node.mode),
+                                         -node.rates[0] * 86400.0, -node.rates[1] * 86400.0);
+                    }
+                    deferred_logger.debug(t);
+                }
                 stein_last = std::move(tree);
                 return true;
             });
@@ -1097,18 +1113,103 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
             return giveUp(fmt::format("the reduced route did not converge under {} in {} iterations, residual {:.3g}",
                                       root.name(), rr.iterations, rr.residual));
         }
-        // The judge: every row, before anything is written.
+        // The judge: every row of the route's own problem, before anything is written.
         std::string letters;
-        for (int w = 0; w < system.numWells(); ++w) {
-            letters += system.controlLetter(w);
-        }
-        const auto verdict = NetworkSolve::verifyAnswer(system, rr.node_pressure, rr.well_rate, letters);
-        if (!verdict.ok) {
-            ++n_judged_wrong;
+        auto judge = [&] {
+            letters.clear();
+            for (int w = 0; w < system.numWells(); ++w) { letters += system.controlLetter(w); }
+            return NetworkSolve::verifyAnswer(system, rr.node_pressure, rr.well_rate, letters,
+                                              param_.group_controller_network_tolerance_,
+                                              param_.group_controller_rate_tolerance_);
+        };
+        auto verdict = judge();
+        auto describe = [](const NetworkSolve::Verdict& v) {
             std::string what;
-            for (const auto& [k, n] : verdict.violations) { what += fmt::format(" {}x{}", n, k); }
-            deferred_logger.debug(fmt::format("Controller: the judge rejects the network answer under {} at report step {}:{}",
-                                              root.name(), reportStepIdx, what));
+            for (const auto& [k, n] : v.violations) { what += fmt::format(" {}x{}", n, k); }
+            return what;
+        };
+        // A rejected answer is repaired toward a solution of the route's problem with shut allowed:
+        // a well that has no operating point is shut, and the problem solved again.
+        for (int repair = 0; !verdict.ok && repair < param_.group_controller_max_repairs_; ++repair) {
+            ++n_judged_wrong;
+            std::vector<int> shut;
+            std::string why;
+            if (rr.on_cliff && verdict.violations.count("node pressure off its branch")) {
+                // No fixed point with them flowing; dead is the consistent answer.
+                shut = rr.cliff_wells;
+                why = "no fixed point flowing";
+            }
+            // Held at a rate its tubing cannot lift: not holdable, and allocate again.
+            std::vector<int> unhold;
+            if (shut.empty()) {
+                for (const int w : verdict.wells_unliftable) {
+                    if (system.controlLetter(w) == 'R' || system.controlLetter(w) == 'G') { unhold.push_back(w); }
+                }
+            }
+            std::string names;
+            for (const int w : shut) { names += " " + system.wells()[w].name; }
+            for (const int w : unhold) { names += " " + system.wells()[w].name; }
+            if (shut.empty()) {
+                for (const int w : verdict.wells_unliftable) {
+                    names += fmt::format(" [cannot lift: {} {} {:.1f}]", system.wells()[w].name, system.controlLetter(w),
+                                         rr.well_rate[w] * 86400.0);
+                }
+                const auto& groups = system.groups();
+                for (std::size_t k = 0; k < verdict.groups_over.size(); ++k) {
+                    const int g = verdict.groups_over[k];
+                    names += fmt::format(" [{} mode {} target {:.1f} at {:.4f} of it:", groups[g].name,
+                                         static_cast<int>(groups[g].mode), groups[g].target * 86400.0,
+                                         verdict.over_ratio[k]);
+                    for (int w = 0; w < system.numWells(); ++w) {
+                        for (int a = system.wells()[w].group; a >= 0; a = groups[a].parent) {
+                            if (a == g) {
+                                names += fmt::format(" {} {} {:.1f}{}{}", system.wells()[w].name, system.controlLetter(w),
+                                                     rr.well_rate[w] * 86400.0,
+                                                     system.wells()[w].group_controllable ? "" : " (not group controllable)",
+                                                     system.holdable(w) ? " holdable" : "");
+                                break;
+                            }
+                        }
+                    }
+                    names += "]";
+                }
+            }
+            deferred_logger.debug(fmt::format("Controller: the judge rejects the network answer under {} at report step {}:{}; "
+                                              "{}", root.name(), reportStepIdx, describe(verdict),
+                                              !shut.empty() ? "shut" + names + " (" + why + ")"
+                                              : !unhold.empty() ? "not holdable" + names : "no repair" + names));
+            if (shut.empty() && unhold.empty()) { break; }
+            for (const int w : unhold) { system.forceNotHoldable(w); }
+            for (const int w : shut) {
+                system.shutWell(w);
+                repaired_dead.insert(system.wells()[w].name);
+            }
+            rr = NetworkSolve::solveReduced(system, rr.node_pressure, params, /*eliminate=*/true, cliff_rule,
+                                            /*keep_dead=*/true);
+            if (!rr.converged) { break; }
+            verdict = judge();
+        }
+        if (!verdict.ok || !rr.converged) {
+            // Nothing written for this root: its wells keep the previous decision, and the hand-over
+            // is marked unsettled.
+            this->controller_rejected_ = true;
+            deferred_logger.debug(fmt::format("Controller: under {} at report step {} no answer passes the judge ({}); "
+                                              "the previous decision stands", root.name(), reportStepIdx,
+                                              rr.converged ? describe(verdict) : std::string(" not converged")));
+            for (const auto& w : system.wells()) {
+                route_wells.insert(w.name);
+                repaired_dead.erase(w.name);
+                if (this->controller_decided_wells_.count(w.name)) {
+                    decided.insert(w.name);
+                    if (const auto it = this->controller_assigned_cmode_.find(w.name); it != this->controller_assigned_cmode_.end()) {
+                        assigned_cmode[w.name] = it->second;
+                    }
+                    if (const auto it = this->controller_assigned_rates_.find(w.name); it != this->controller_assigned_rates_.end()) {
+                        assigned_rates[w.name] = it->second;
+                    }
+                }
+            }
+            continue;
         }
         deferred_logger.debug(fmt::format("Controller: network route under {} at report step {}: {} iterations, {} evaluations, "
                                           "{} set changes, {} lookups, set {}, judge {}{}",
@@ -1349,6 +1450,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
     }
     // The shut decision handed to the wells: dead while the system holds it shut,
     // and cleared for every other well so a stopped one may be revived.
+    for (const auto& name : repaired_dead) { dead_now[name] = true; }
     for (const auto& wp : well_container_) {
         const auto it = dead_now.find(wp->name());
         wp->setNetworkDead(it != dead_now.end() && it->second);

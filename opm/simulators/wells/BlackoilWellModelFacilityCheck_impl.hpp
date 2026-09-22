@@ -121,7 +121,7 @@ facilityCheck_(DeferredLogger& deferred_logger)
     std::pair<Scalar, std::string> network_off{Scalar{0}, ""};
     std::pair<Scalar, std::string> group_over{Scalar{0}, ""};
     std::pair<Scalar, std::string> target_move{Scalar{0}, ""};
-    std::vector<std::string> idle, group_switches, well_switches;
+    std::vector<std::string> idle, group_switches, well_switches, unliftable_switches;
     std::string failure;
     {
         auto log_guard = this->groupStateHelper().pushLogger(/*do_mpi_gather*/ false);
@@ -260,9 +260,11 @@ facilityCheck_(DeferredLogger& deferred_logger)
             }
 
             for (const auto& well : well_container_) {
-                const auto to = well->legacyWouldSwitch(simulator_, this->groupStateHelper(), this->wellState());
+                const auto to = well->legacyWouldSwitch(simulator_, this->groupStateHelper(), this->wellState(),
+                                                        tol_pressure);
                 if (to.has_value()) {
-                    well_switches.push_back(well->name() + ":" + *to);
+                    (to->find("(unliftable)") != std::string::npos ? unliftable_switches : well_switches)
+                        .push_back(well->name() + ":" + *to);
                 }
             }
         } catch (const std::exception& e) {
@@ -297,12 +299,13 @@ facilityCheck_(DeferredLogger& deferred_logger)
         "Facility check: step {} iteration {}: physics {}, legacy {} | unsolved wells {} [{}] | "
         "network off {:.3f} bar ({}) | group over {:+.1f} % ({}) | well over {:+.1f} % ({}) | "
         "held without a binding limit {} [{}] | legacy would switch groups {} [{}] wells {} [{}], "
-        "move a target {:.1f} % ({}){}",
+        "move a target {:.1f} % ({}); unliftable, not counted {} [{}]{}",
         step, iterCtx.iteration(), physics_ok ? "ok" : "NO", legacy_ok ? "ok" : "NO",
         unsolved.size(), join(unsolved), network_off.first * 1.0e-5, network_off.second,
         100.0 * group_over.first, group_over.second, 100.0 * well_over.first, well_over.second,
         idle.size(), join(idle), group_switches.size(), join(group_switches),
         well_switches.size(), join(well_switches), 100.0 * target_move.first, target_move.second,
+        unliftable_switches.size(), join(unliftable_switches),
         failure.empty() ? "" : " | probe failed: " + failure));
 }
 

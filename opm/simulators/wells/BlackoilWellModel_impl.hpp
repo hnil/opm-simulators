@@ -709,12 +709,13 @@ namespace Opm {
             OpmLog::debug(fmt::format("Controller totals at day {:.1f}: {} calls, {} passes, {} decisions by the route "
                                       "({} iterations, {} evaluations, {} set changes, {} lookups), {} well solves, "
                                       "{} converged, {} stalled, {} cap hits, {} judge rejections, worst deviation {:.1f} %, "
-                                      "written against the balancer's tree: {} of {} decisions differ",
+                                      "written against the balancer's tree: {} of {} decisions differ, "
+                                      "{} unsettled iterations let through",
                                       simulationTime / 86400.0, st.calls, st.passes, st.decisions, st.route_iterations,
                                       st.route_evaluations, st.set_changes, st.lookups, st.well_solves, st.converged,
                                       st.stalled, st.cap_hits,
                                       this->controller_judge_rejections_, 100.0 * st.worst_deviation,
-                                      st.stein_inconsistent, st.stein_decisions));
+                                      st.stein_inconsistent, st.stein_decisions, this->controller_accepted_unsettled_));
         }
 
         // time step is finished and we are not any more at the beginning of an report step
@@ -1731,7 +1732,30 @@ namespace Opm {
 
         if (checkWellGroupControlsAndNetwork) {
             // the well_group_control_changed info is already communicated
-            report.setWellGroupTargetsViolated(this->lastReport().well_group_control_changed);
+            // A hand-over that is not a facility solution counts as a change: no converged iteration on
+            // it. Measured after the final well solve: the network against the solved rates, and a
+            // group limit off the route (on the route the judge tells an irreducible overshoot apart).
+            // Bounded: a facility that cannot settle (a well the route models poorly) must not turn
+            // into chops; after the budget the iteration is let through and counted.
+            bool unsettled = false;
+            if (param_.enable_group_controller_ && param_.group_controller_require_settled_) {
+                const int step = simulator_.episodeIndex();
+                const bool off = this->controller_unsettled_
+                    || (this->controller_network_owned_
+                        && this->network_.pressureImbalance(step).first > param_.group_controller_network_tolerance_)
+                    || (!this->controller_network_owned_ && controllerGroupLimitViolated_());
+                const std::pair<double, double> key{simulator_.time(), simulator_.timeStepSize()};
+                if (key != this->controller_unsettled_step_) {
+                    this->controller_unsettled_step_ = key;
+                    this->controller_unsettled_run_ = 0;
+                }
+                this->controller_unsettled_run_ = off ? this->controller_unsettled_run_ + 1 : 0;
+                unsettled = off && this->controller_unsettled_run_ <= param_.group_controller_max_unsettled_iterations_;
+                if (off && !unsettled) {
+                    ++this->controller_accepted_unsettled_;
+                }
+            }
+            report.setWellGroupTargetsViolated(this->lastReport().well_group_control_changed || unsettled);
             report.setNetworkNotYetBalancedForceAnotherNewtonIteration(network_needs_more_balancing_force_another_newton_iteration_);
             if (this->terminal_output_ && std::getenv("OPM_FACILITY_CHECK") != nullptr) {
                 std::string failed;
@@ -1938,7 +1962,7 @@ namespace Opm {
     {
         const int reportStepIdx = simulator_.episodeIndex();
         const auto& pu = this->phaseUsage();
-        constexpr Scalar tol = 0.01;
+        const Scalar tol = param_.group_controller_rate_tolerance_;
         auto rate = [&pu](const std::vector<Scalar>& r, const int canonical) {
             return pu.phaseIsActive(canonical) ? r[pu.canonicalToActivePhaseIdx(canonical)] : Scalar(0);
         };
@@ -2116,7 +2140,8 @@ namespace Opm {
                                            simulator_.gridView().comm());
                 this->updateAndCommunicateGroupData(episodeIdx, /*update_wellgrouptarget*/ true);
                 imbalance = this->network_.pressureImbalance(episodeIdx);
-                unsettled = comm.sum(static_cast<int>(switched)) > 0 || imbalance.first > ntol;
+                unsettled = comm.sum(static_cast<int>(switched)) > 0 || imbalance.first > ntol
+                    || this->controller_rejected_;
             }
             if (!moved && !unsettled) {
                 // The criterion: the solved wells deliver what they were assigned and no
@@ -2160,6 +2185,9 @@ namespace Opm {
                                               well_solves, ended, 100.0 * worst, worst_well,
                                               imbalance.first / 1e5, imbalance.second));
         }
+        // Whether the hand-over is a facility solution is judged where Newton sees it, after the
+        // final well solve (getWellConvergence); here only what that cannot see.
+        this->controller_unsettled_ = passes > 0 && this->controller_rejected_;
         // Only a decision that moved is a change; a rate off its assignment by the
         // IPR's error is not, or the step would never be allowed to converge.
         changed_any = changed_any || injection_changed || (this->controller_decision_signature_ != sig_before);

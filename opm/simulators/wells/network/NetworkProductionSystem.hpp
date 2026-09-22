@@ -179,6 +179,8 @@ public:
         /// Whether the node adds the well's lift gas to the stream, so a
         /// change of alq is a change of lift_gas too.
         bool node_adds_lift_gas = false;
+        /// Available for group control (not WGRUPCON NO): the tree may hold it to a share.
+        bool group_controllable = false;
         /// The well's own inflow, rates at a bhp, when it is not the linear
         /// IPR: ipr_a/ipr_b become its tangent, re-taken at the operating
         /// point on every evaluation (solveWells). The well model's solve at
@@ -510,6 +512,8 @@ public:
     /// start with, so the start does not shut it again.
     void reviveWell(const int w, const Scalar q) { reduced_dead_[w] = 0; wells_[w].q_start = q; }
     void killWell(const int w) { reduced_dead_[w] = 1; }
+    /// Shut for good in this system: no inflow, not a candidate for revival.
+    void shutWell(const int w) { wells_[w].shut = true; reduced_dead_[w] = 1; }
     void restoreDead(const std::vector<char>& dead) { reduced_dead_ = dead; }
     /// The other answer to a cliff: instead of dying, the well holds the
     /// rate its crossing had just before the crossing vanished -- a wellhead
@@ -591,6 +595,13 @@ public:
     long treeAllocatorCalls() const { return tree_allocator_calls_; }
     long treeAllocatorFallbacks() const { return tree_allocator_fallbacks_; }
     long treeUnholdable() const { return tree_unholdable_; }
+    /// A well the judge found held at a rate its tubing cannot lift: on its own limit from now on.
+    void forceNotHoldable(const int w) { forced_not_holdable_.push_back(w); }
+    /// Whether the tree could hold this well to a share at the last allocation.
+    bool holdable(const int w) const
+    {
+        return wells_[w].group_controllable && !(w < static_cast<int>(not_holdable_.size()) && not_holdable_[w]);
+    }
 
     /// A group's share of its parent, measured on the parent's mode; changes with it.
     void setGroupGuide(const int g, const Scalar guide) { groups_[g].guide = guide; }
@@ -1636,7 +1647,9 @@ public:
                 const CountScope probe(*this, false);
                 return tubingBhp(well, p_w, qp) - well.vfp_dp > bhp + lift_tol_;
             };
-            std::vector<char> not_holdable(numWells(), 0);
+            std::vector<char>& not_holdable = not_holdable_;
+            not_holdable.assign(numWells(), 0);
+            for (const int w : forced_not_holdable_) { not_holdable[w] = 1; }
             TreeDecision d;
             bool ok = false;
             for (int round = 0; round <= numWells(); ++round) {
@@ -1746,6 +1759,13 @@ public:
             const auto& w = wells_[mine[i]];
             guide[nk + i] = w.guide;
             cap[nk + i] = w.efficiency * wellCapOnMode(x, mine[i], own_allowance_[mine[i]], cg);
+            // A well its tubing cannot hold to a share is on its own limit, like an unavailable group.
+            const bool unholdable = std::find(forced_not_holdable_.begin(), forced_not_holdable_.end(), mine[i])
+                != forced_not_holdable_.end();
+            if (unholdable) {
+                pooled[nk + i] = 0;
+                outside += cap[nk + i];
+            }
         }
         const Scalar pool = (bound > Scalar{0}) ? std::max(bound - outside, Scalar{1e-30}) : bound;
         const auto split = shareByGuide<Scalar>(guide, pooled, cap, pool);
@@ -1768,7 +1788,7 @@ public:
                 tree_rate_[w] = own_allowance_[w];
                 continue;
             }
-            const bool held = split[nk + i] < cap[nk + i];
+            const bool held = pooled[nk + i] && split[nk + i] < cap[nk + i];
             // The split is on what reaches the group, so divide WEFAC back out
             // before asking the well for it -- as a child group does above.
             const Scalar eff = wells_[w].efficiency;
@@ -2797,6 +2817,8 @@ private:
     TreeAllocator tree_allocator_;
     long tree_allocator_calls_ = 0, tree_allocator_fallbacks_ = 0;
     long tree_unholdable_ = 0;     // re-allocations because a held well could not be lifted
+    std::vector<char> not_holdable_;   // the last allocation's wells that could not be lifted at a share
+    std::vector<int> forced_not_holdable_;   // from a rejected answer: held where the tubing could not lift
     Scalar lift_tol_ = Scalar{0.1} * unit::barsa;
     CapacityFractions capacity_fractions_ = CapacityFractions::Fixed;
     std::vector<GroupBind> group_bind_;

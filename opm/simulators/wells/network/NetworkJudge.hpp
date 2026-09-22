@@ -41,16 +41,24 @@ using Opm::unit::barsa;
 /// hysteresis: wells shut although a crossing exists at the settled
 /// pressure -- the cliff's answer, shut stays shut; not a violation of
 /// the rows, but not a strict solution either, so counted apart.
-struct Verdict { bool ok = true; int hysteresis = 0; std::map<std::string, int> violations; };
+struct Verdict
+{
+    bool ok = true;
+    int hysteresis = 0;
+    std::map<std::string, int> violations;
+    std::vector<int> groups_over;        // groups above their target with a well that could be reduced
+    std::vector<double> over_ratio;      // their rate on mode over the target
+    int over_irreducible = 0;            // groups above their target with nothing left to reduce
+    std::vector<int> wells_unliftable;   // non-thp wells whose tubing cannot lift their rate
+};
 
 template<class Sys>
 Verdict verifyAnswer(const Sys& sys, const std::vector<double>& p, const std::vector<double>& q_oil,
-                     const std::string& controls)
+                     const std::string& controls, const double dp_tol = 0.05 * barsa, const double r_tol = 0.005)
 {
     constexpr int NP = Sys::NP;
     Verdict v;
     auto fail = [&](const std::string& what) { v.ok = false; ++v.violations[what]; };
-    const double dp_tol = 0.05 * barsa, r_tol = 0.005;
     std::vector<std::array<double, NP>> q(sys.numWells());
     std::vector<double> bhp(sys.numWells());
     double in_group = 0.0;
@@ -87,6 +95,7 @@ Verdict verifyAnswer(const Sys& sys, const std::vector<double>& p, const std::ve
                 // A well held at nothing lifts nothing: at q -> 0 the table
                 // wants a full column, which a zero share never asks for.
                 fail("tubing cannot lift the rate");     // rate/bhp/group control needs the tubing to allow more
+                v.wells_unliftable.push_back(w);
             }
         }
         if (c == 'O' && well.oil_rate_limit > 0.0 && std::abs(qo - well.oil_rate_limit) > r_tol * well.oil_rate_limit) { fail("rate well off its limit"); }
@@ -119,7 +128,24 @@ Verdict verifyAnswer(const Sys& sys, const std::vector<double>& p, const std::ve
             }
             // Relative, with a floor of 1 sm3/d: a zero target ("produce
             // nothing") is otherwise violated by rounding.
-            if (groups[g].target > 0.0 && on_mode[g] > groups[g].target + std::max(r_tol * groups[g].target, 1.0 / 86400.0)) { fail("group above its target"); }
+            if (groups[g].target > 0.0 && on_mode[g] > groups[g].target + std::max(r_tol * groups[g].target, 1.0 / 86400.0)) {
+                // Over with every well under it on a control it cannot leave (not group controllable,
+                // or no liftable share) is the limit's RATE action exhausted, not a wrong answer.
+                bool reducible = false;
+                for (int w = 0; w < sys.numWells() && !reducible; ++w) {
+                    if (!(q_oil[w] > 0.0) || controls[w] == 'R' || controls[w] == 'G' || !sys.holdable(w)) { continue; }
+                    for (int a = sys.wells()[w].group; a >= 0; a = groups[a].parent) {
+                        if (a == g) { reducible = true; break; }
+                    }
+                }
+                if (reducible) {
+                    fail("group above its target");
+                    v.groups_over.push_back(g);
+                    v.over_ratio.push_back(on_mode[g] / groups[g].target);
+                } else {
+                    ++v.over_irreducible;
+                }
+            }
         }
         for (int w = 0; w < sys.numWells(); ++w) {
             if (controls[w] != 'R') { continue; }

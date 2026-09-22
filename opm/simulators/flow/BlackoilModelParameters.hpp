@@ -117,6 +117,9 @@ struct GroupControllerMaxPasses { static constexpr int value = 4; };
 struct GroupControllerMaxPassesNetwork { static constexpr int value = 6; };
 struct GroupControllerMaxRevivals { static constexpr int value = 3; };
 struct EnableGroupControllerThpRoute { static constexpr bool value = true; };
+struct GroupControllerMaxRepairs { static constexpr int value = 3; };
+struct GroupControllerRequireSettled { static constexpr bool value = true; };
+struct GroupControllerMaxUnsettledIterations { static constexpr int value = 3; };
 template<class Scalar>
 struct GroupTreeBalancerTolerance { static constexpr Scalar value = 1e-5; };
 
@@ -460,6 +463,15 @@ public:
 
     /// Controller without a network: producers with a thp limit on the route, each at its own thp
     bool enable_group_controller_thp_route_;
+
+    /// Controller: re-solves of a rejected route answer (a well shut per repair)
+    int group_controller_max_repairs_;
+
+    /// Controller: an unsettled hand-over (stall, cap, rejected answer) is not a converged Newton iteration
+    bool group_controller_require_settled_;
+
+    /// Controller: consecutive Newton iterations an unsettled hand-over may block convergence
+    int group_controller_max_unsettled_iterations_;
 
     template<class Serializer>
     void serializeOp(Serializer& serializer)

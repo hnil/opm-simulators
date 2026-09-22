@@ -591,6 +591,14 @@ protected:
     std::set<std::string> controller_decided_wells_{};
     /// Every well in the network route's systems, decided or pinned: solved in the pass loop.
     std::set<std::string> controller_route_wells_{};
+    /// The last decision kept a root's previous answer: the judge rejected every repair.
+    bool controller_rejected_ = false;
+    /// The last hand-over was not a settled facility: Newton may not converge on it.
+    bool controller_unsettled_ = false;
+    // Kept by the const convergence check.
+    mutable int controller_unsettled_run_ = 0;          // consecutive unsettled hand-overs in this time step
+    mutable std::pair<double, double> controller_unsettled_step_{-1.0, -1.0};
+    mutable long controller_accepted_unsettled_ = 0;    // iterations let through unsettled after the budget
     /// Per time step (time, dt): how often the route gave each zero-rate well a rate again.
     std::pair<double, double> controller_revival_step_{-1.0, -1.0};
     std::map<std::string, int> controller_revivals_{};

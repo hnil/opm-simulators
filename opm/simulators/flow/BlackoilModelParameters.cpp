@@ -139,6 +139,9 @@ BlackoilModelParameters<Scalar>::BlackoilModelParameters()
     group_controller_max_passes_network_ = Parameters::Get<Parameters::GroupControllerMaxPassesNetwork>();
     group_controller_max_revivals_ = Parameters::Get<Parameters::GroupControllerMaxRevivals>();
     enable_group_controller_thp_route_ = Parameters::Get<Parameters::EnableGroupControllerThpRoute>();
+    group_controller_max_repairs_ = Parameters::Get<Parameters::GroupControllerMaxRepairs>();
+    group_controller_require_settled_ = Parameters::Get<Parameters::GroupControllerRequireSettled>();
+    group_controller_max_unsettled_iterations_ = Parameters::Get<Parameters::GroupControllerMaxUnsettledIterations>();
     if (enable_group_controller_) {
         enable_group_tree_balancer_ = true;
     }
@@ -370,6 +373,15 @@ void BlackoilModelParameters<Scalar>::registerParameters()
     Parameters::Register<Parameters::EnableGroupControllerThpRoute>
         ("Group controller without a network: decide producers with a thp limit on the network "
          "route, each well at its own thp limit");
+    Parameters::Register<Parameters::GroupControllerMaxRepairs>
+        ("Group controller: how often a route answer the judge rejects is repaired (a well shut "
+         "that has no operating point) and solved again before the previous decision is kept");
+    Parameters::Register<Parameters::GroupControllerRequireSettled>
+        ("Group controller: a Newton iteration whose facility hand-over is not settled (the pass loop "
+         "stalled or hit its cap, or no route answer passed the judge) cannot be the converged one");
+    Parameters::Register<Parameters::GroupControllerMaxUnsettledIterations>
+        ("Group controller: consecutive Newton iterations an unsettled hand-over may block convergence; "
+         "after that the step may converge on it, and it is counted as accepted unsettled");
     Parameters::Register<Parameters::GroupControllerMaxRevivals>
         ("Group controller: how often a well the network route shut may be revived within "
          "a time step before it is kept shut for the rest of the step");

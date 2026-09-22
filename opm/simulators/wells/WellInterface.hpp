@@ -271,9 +271,11 @@ public:
 
     /// The control legacy's constraint check would switch this well to, if any.
     /// Only the given well state is written; the well and its switch log are not.
+    /// A THP-to-GRUP switch whose share the tubing cannot lift at the thp limit is tagged "(unliftable)".
     std::optional<std::string> legacyWouldSwitch(const Simulator& simulator,
                                                  const GroupStateHelperType& groupStateHelper,
-                                                 WellStateType& well_state) const;
+                                                 WellStateType& well_state,
+                                                 const Scalar lift_tol) const;
 
     bool updateWellControl(const Simulator& simulator,
                            const IndividualOrGroup iog,

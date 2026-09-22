@@ -46,6 +46,7 @@ struct ReducedResult
     /// a well that dies when the pressure rises and revives when it falls
     /// has no fixed point, and the answer taken is the one with it flowing.
     bool on_cliff = false;
+    std::vector<int> cliff_wells;   // on_cliff: flowing in the answer taken, dead in the other set
     int held_at_cliff = 0;    // wells given their cliff rate instead of dying
     int revived = 0;          // wells shut during the solve that the revive pass reopened
     int set_changes = 0;      // iterations after which the tree walk chose differently
@@ -202,6 +203,11 @@ solveReduced(Sys& system,
                 if (b.empty()) { b = set; } else if (set != b) { two = false; }
             }
             if (two && !b.empty() && dead(a) != dead(b) && worst < Scalar{50} * params.tolerance) {
+                const auto& other = (alive_set == a) ? b : a;
+                const auto wa = alive_set.find(':'), wb = other.find(':');
+                for (int w = 0; wa != std::string::npos && wb != std::string::npos && w < system.numWells(); ++w) {
+                    if (other[wb + 1 + w] == 'S' && alive_set[wa + 1 + w] != 'S') { out.cliff_wells.push_back(w); }
+                }
                 p = alive_p;
                 r = system.reducedResidual(p); ++out.evaluations;
                 out.residual = norm(r);

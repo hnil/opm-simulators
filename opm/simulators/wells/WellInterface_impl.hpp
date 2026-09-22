@@ -496,7 +496,8 @@ namespace Opm
     WellInterface<TypeTag>::
     legacyWouldSwitch(const Simulator& simulator,
                       const GroupStateHelperType& groupStateHelper,
-                      WellStateType& well_state) const
+                      WellStateType& well_state,
+                      const Scalar lift_tol) const
     {
         if (this->stoppedOrZeroRateTarget(groupStateHelper)) {
             return std::nullopt;
@@ -505,6 +506,7 @@ namespace Opm
         const bool inj = this->well_ecl_.isInjector();
         const std::string from = inj ? WellInjectorCMode2String(ws.injection_cmode)
                                      : WellProducerCMode2String(ws.production_cmode);
+        const auto from_mode = ws.production_cmode;
         const bool changed = this->checkConstraints(groupStateHelper,
                                                     simulator.vanguard().schedule(),
                                                     simulator.vanguard().summaryState(),
@@ -512,8 +514,26 @@ namespace Opm
         if (!changed) {
             return std::nullopt;
         }
-        return from + "->" + (inj ? WellInjectorCMode2String(ws.injection_cmode)
-                                  : WellProducerCMode2String(ws.production_cmode));
+        std::string to = from + "->" + (inj ? WellInjectorCMode2String(ws.injection_cmode)
+                                            : WellProducerCMode2String(ws.production_cmode));
+        // THP to GRUP at a share the tubing cannot lift at the thp limit: the well's own solve
+        // would switch it straight back (A3). Legacy's rule does not know; say so.
+        if (!inj && from_mode == Well::ProducerCMode::THP && ws.production_cmode == Well::ProducerCMode::GRUP) {
+            const int oil = FluidSystem::canonicalToActivePhaseIdx(FluidSystem::oilPhaseIdx);
+            const Scalar q_oil = -ws.surface_rates[oil];
+            if (q_oil > Scalar{0} && ws.implicit_ipr_b[oil] > Scalar{0}) {
+                const Scalar bhp_inflow = (ws.implicit_ipr_a[oil] - q_oil) / ws.implicit_ipr_b[oil];
+                auto rates = ws.surface_rates;
+                this->adaptRatesForVFP(rates);
+                auto& logger = groupStateHelper.deferredLogger();
+                const Scalar bhp_tubing = WellBhpThpCalculator(*this).calculateBhpFromThp(
+                    well_state, rates, this->well_ecl_, simulator.vanguard().summaryState(), this->getRefDensity(), logger);
+                if (bhp_inflow < bhp_tubing - lift_tol) {
+                    to += " (unliftable)";
+                }
+            }
+        }
+        return to;
     }
 
     template<typename TypeTag>
