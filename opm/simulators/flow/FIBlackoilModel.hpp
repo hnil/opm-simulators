@@ -139,7 +139,8 @@ public:
             return;
         }
 
-        if constexpr (!IntensiveQuantities::supportsElementContextFreeUpdate) {
+        // Intensive quantities without the trait (e.g. flowexperimental's) cannot do it.
+        if constexpr (!requires { requires IntensiveQuantities::supportsElementContextFreeUpdate; }) {
             throw std::logic_error("Auxiliary degrees of freedom need intensive quantities "
                                    "updated without an element context, which this model "
                                    "configuration does not support");
