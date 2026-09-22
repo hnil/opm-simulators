@@ -954,6 +954,52 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
             return r;
         };
         auto rr = solveRoute(guess, false);
+        // A shut decided on the inflow line alone is confirmed with the well model: a line taken far
+        // from the operating point (a well throttled by its group) can miss the tubing where the well
+        // lifts fine. Where the well model finds a crossing at the well-head pressure, the lines are
+        // re-anchored through it and the route solves again.
+        // Once per well: at a network cliff the well lifts at the pressure of the shut answer and still
+        // has no fixed point flowing; if the re-solve shuts it again, that shut stands.
+        std::set<int> confirmed;
+        for (int round = 0; rr.converged && round < param_.group_controller_max_repairs_; ++round) {
+            std::string revived;
+            for (int w = 0; w < system.numWells(); ++w) {
+                const auto& well = system.wells()[w];
+                if (system.controlLetter(w) != 'S' || well.shut || well.pinned || well.vfp_table <= 0
+                    || !confirmed.insert(w).second) { continue; }
+                const auto wit = std::find_if(well_container_.begin(), well_container_.end(),
+                                              [&](const auto& x) { return x->name() == well.name; });
+                if (wit == well_container_.end()) { continue; }
+                auto& wi = *wit;
+                const Scalar p_w = well.own_thp > Scalar{0} ? well.own_thp
+                                 : well.node == 0 ? terminal : rr.node_pressure[well.node];
+                const auto saved = wi->getDynamicThpLimit();
+                wi->setDynamicThpLimit(p_w);
+                const auto bhp = wi->computeBhpAtThpLimitProdWithAlq(simulator_, this->groupStateHelper(),
+                                                                     summary_state, well.alq, false);
+                wi->setDynamicThpLimit(saved);
+                if (!bhp) { continue; }
+                std::vector<Scalar> q(pu.numActivePhases(), Scalar{0});
+                wi->computeWellRatesWithBhp(simulator_, *bhp, q, deferred_logger);
+                std::array<Scalar, Sys::NP> a = well.ipr_a;
+                bool flows = false;
+                for (int ph = 0; ph < Sys::NP; ++ph) {
+                    const Scalar q_true = pos[ph] >= 0 ? std::max(-q[pos[ph]], Scalar{0}) : Scalar{0};
+                    a[ph] = q_true - well.ipr_b[ph] * *bhp;
+                    flows = flows || (ph == 1 && q_true > Scalar{0});
+                }
+                if (!flows) { continue; }
+                system.setWellIpr(w, a, well.ipr_b);
+                system.setWellDeadAbove(w, Scalar{0});
+                system.reviveWell(w, Sys::ipr(system.wells()[w], 1, *bhp));
+                revived += fmt::format(" {} ({:.1f} sm3/d at {:.2f} bar)", well.name,
+                                       Sys::ipr(system.wells()[w], 1, *bhp) * 86400.0, p_w / 1e5);
+            }
+            if (revived.empty()) { break; }
+            deferred_logger.debug(fmt::format("Controller: the well model lifts wells the route shut under {} at report step "
+                                              "{}:{}; solved again", root.name(), reportStepIdx, revived));
+            rr = solveRoute(rr.node_pressure, true);
+        }
         // A group with several limits holds the one its own answer violates most: solve,
         // look at every limit, switch and solve again. Bounded; a repeat ends it.
         // OPM_CONTROLLER_STEIN_LIMITS: the balancer's tree on the route's answer picks the

@@ -575,6 +575,13 @@ public:
     void setControl(const int w, const Control c) { controls_[w] = c; }
     /// Put a well the adapter or a dump added into a group of the tree.
     void setWellGroup(const int w, const int g) { wells_[w].group = g; }
+    /// Re-anchor a well's inflow lines, e.g. through the well model's own point at a thp.
+    void setWellIpr(const int w, const std::array<Scalar, NP>& a, const std::array<Scalar, NP>& b)
+    {
+        wells_[w].ipr_a = a;
+        wells_[w].ipr_b = b;
+    }
+    void setWellDeadAbove(const int w, const Scalar p) { wells_[w].dead_above = p; }
     /// The weight the tree splits by, once the adapter knows the deck's.
     void setWellGuide(const int w, const Scalar g) { wells_[w].guide = g; }
     /// The tree's active set and shares from outside, in place of resolveTree()'s own
