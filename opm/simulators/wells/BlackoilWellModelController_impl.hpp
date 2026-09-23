@@ -1698,6 +1698,10 @@ controllerInjectionDecide_(DeferredLogger& deferred_logger, const bool targets_o
         helper.updateVREPForGroups(field);
         helper.updateReservoirRatesInjectionGroups(field);
         helper.updateSurfaceRatesInjectionGroups(field);
+        // Each of those sums this rank's own wells; the targets are a fraction of the field's.
+        if (this->comm().size() > 1) {
+            this->groupState().communicate_rates(this->comm());
+        }
     }
     std::vector<Scalar> group_resv(this->numPhases(), Scalar{0});
     calcInjResvCoeff(/*fipnum=*/0, /*pvtreg=*/0, group_resv);
