@@ -127,6 +127,7 @@ template<class Scalar>
 struct GroupControllerInjectionDamping { static constexpr Scalar value = 0.0; };
 struct GroupControllerInjectionFeedback { static constexpr bool value = true; };
 struct GroupControllerShutPersistence { static constexpr int value = 1; };
+struct GroupControllerClosing { static constexpr auto value = "all"; };
 template<class Scalar>
 struct GroupTreeBalancerTolerance { static constexpr Scalar value = 1e-5; };
 
@@ -497,6 +498,9 @@ public:
 
     /// Controller: decisions in a row before the route may shut a well that is flowing (1 = at once)
     int group_controller_shut_persistence_;
+
+    /// Controller: which wells the route closes after a solve on continued tubing curves
+    std::string group_controller_closing_;
 
     template<class Serializer>
     void serializeOp(Serializer& serializer)

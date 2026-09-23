@@ -150,6 +150,7 @@ BlackoilModelParameters<Scalar>::BlackoilModelParameters()
         Parameters::Get<Parameters::GroupControllerInjectionDamping<Scalar>>();
     group_controller_injection_feedback_ = Parameters::Get<Parameters::GroupControllerInjectionFeedback>();
     group_controller_shut_persistence_ = Parameters::Get<Parameters::GroupControllerShutPersistence>();
+    group_controller_closing_ = Parameters::Get<Parameters::GroupControllerClosing>();
     if (enable_group_controller_) {
         enable_group_tree_balancer_ = true;
     }
@@ -393,6 +394,10 @@ void BlackoilModelParameters<Scalar>::registerParameters()
     Parameters::Register<Parameters::GroupControllerInjection>
         ("Group controller: injection groups are decided by the controller's tree; injection networks, "
          "satellite injection and MULTI injectors stay with the legacy rules");
+    Parameters::Register<Parameters::GroupControllerClosing>
+        ("Group controller: after a solve on continued tubing curves, which of the wells left on a "
+         "continuation are closed: all of them at once (all), the one furthest onto it and then solve "
+         "again (worst), or those past their own residual else the worst (tiered)");
     Parameters::Register<Parameters::GroupControllerShutPersistence>
         ("Group controller: how many decisions in a row must want a flowing well shut before the network "
          "route's shut is handed to it; 1 shuts it at once, more gives the decision hysteresis at the "

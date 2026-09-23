@@ -1025,8 +1025,15 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
             if (!extension) {
                 return NetworkSolve::solveReduced(system, start, params, /*eliminate=*/true, cliff_rule, keep_dead);
             }
-            auto ex = NetworkSolve::solveReducedOnExtension(system, start, params, NetworkSolve::Closing::All,
-                                                            20, keep_dead);
+            const auto rule = param_.group_controller_closing_ == "worst"  ? NetworkSolve::Closing::Sequential
+                            : param_.group_controller_closing_ == "tiered" ? NetworkSolve::Closing::Tiered
+                                                                           : NetworkSolve::Closing::All;
+            auto ex = NetworkSolve::solveReducedOnExtension(system, start, params, rule, 20, keep_dead);
+            if (std::getenv("OPM_CONTROLLER_TRACE")) {
+                deferred_logger.debug(fmt::format("EXTDBG step={} it={} passes={} closed={} of {} wells",
+                                                  reportStepIdx, simulator_.problem().iterationContext().iteration(),
+                                                  ex.passes, ex.closed, system.numWells()));
+            }
             auto r = std::move(ex.last);
             r.converged = r.converged && ex.converged;
             r.iterations = ex.iterations;
