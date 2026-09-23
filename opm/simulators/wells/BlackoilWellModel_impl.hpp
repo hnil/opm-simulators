@@ -1429,14 +1429,14 @@ namespace Opm {
             const auto& iterCtx = simulator_.problem().iterationContext();
             const int nupcol = wellhelpers::nupcol(this->schedule()[reportStepIdx].nupcol());
             if (iterCtx.withinNupcol(nupcol)) {
-                const auto balancerLimits = prepareWellsForBalancing_(local_deferredLogger);
+                const auto balancerWells = prepareWellsForBalancing_(local_deferredLogger);
                 this->updateAndCommunicateGroupData(reportStepIdx, /*update_wellgrouptarget*/ false);
                 ProdGroupTreeBalancer::runGroupTreeBalancer(
                     *this,
                     this->summaryState(),
                     reportStepIdx,
                     param_.group_tree_balancer_tolerance_,
-                    balancerLimits,
+                    balancerWells.limits,
                     local_deferredLogger);
                 this->updateAndCommunicateGroupData(reportStepIdx, /*update_wellgrouptarget*/ true);
             }
@@ -1924,7 +1924,7 @@ namespace Opm {
     template<typename TypeTag>
     void
     BlackoilWellModel<TypeTag>::
-    runControllerBalance_(const std::unordered_map<std::string, std::pair<int, Scalar>>& limits,
+    runControllerBalance_(const BalancerWells& wells,
                           DeferredLogger& deferred_logger,
                           const bool write_rates)
     {
@@ -1937,11 +1937,12 @@ namespace Opm {
                                                     this->summaryState(),
                                                     reportStepIdx,
                                                     param_.group_tree_balancer_tolerance_,
-                                                    limits,
+                                                    wells.limits,
                                                     deferred_logger,
                                                     /*assignTargets*/ own && !legacy_targets,
                                                     (own && !legacy_targets) ? &decided : nullptr,
-                                                    write_rates);
+                                                    write_rates,
+                                                    &wells.rates);
         this->controller_decided_wells_.clear();
         controllerMarkDecided_();
         this->controller_assigned_cmode_.clear();
@@ -2691,9 +2692,29 @@ namespace Opm {
 
     template<typename TypeTag>
     auto BlackoilWellModel<TypeTag>::
+    canonicalProductionRates_(const std::vector<Scalar>& surface_rates) const
+        -> std::array<Scalar, 3>
+    {
+        const auto& pu = this->phaseUsage();
+        const std::array<int, 3> canonical{IndexTraits::oilPhaseIdx,
+                                           IndexTraits::waterPhaseIdx,
+                                           IndexTraits::gasPhaseIdx};
+        std::array<Scalar, 3> r{};
+        for (int c = 0; c < 3; ++c) {
+            if (!pu.phaseIsActive(canonical[c])) continue;
+            const int a = pu.canonicalToActivePhaseIdx(canonical[c]);
+            if (a < static_cast<int>(surface_rates.size()))
+                r[c] = -surface_rates[a];
+        }
+        return r;
+    }
+
+    template<typename TypeTag>
+    auto BlackoilWellModel<TypeTag>::
     gatherWellLimits_(const std::unordered_map<std::string, std::pair<int, Scalar>>& localLimits,
+                      const std::map<std::string, std::array<Scalar, 3>>& localRates,
                       const std::vector<std::string>& allWellNames) const
-        -> std::unordered_map<std::string, std::pair<int, Scalar>>
+        -> BalancerWells
     {
         const int n_global = static_cast<int>(allWellNames.size());
 
@@ -2703,9 +2724,9 @@ namespace Opm {
         for (int i = 0; i < n_global; ++i)
             globalIndex.emplace(allWellNames[i], i);
 
-        // Encode into flat buffer: [mode+1, value] per well.
+        // Encode into flat buffer: [mode+1, value, has rates, oil, water, gas] per well.
         // Zero means "not set" (avoids ambiguity with CMODE_UNDEFINED which is -1).
-        constexpr int stride = 2;
+        constexpr int stride = 6;
         std::vector<Scalar> buf(n_global * stride, Scalar(0));
         for (const auto& [name, modeVal] : localLimits) {
             if (const auto it = globalIndex.find(name); it != globalIndex.end()) {
@@ -2713,19 +2734,31 @@ namespace Opm {
                 buf[it->second * stride + 1] = modeVal.second;
             }
         }
+        for (const auto& [name, rates] : localRates) {
+            if (const auto it = globalIndex.find(name); it != globalIndex.end()) {
+                buf[it->second * stride + 2] = Scalar(1);
+                for (int c = 0; c < 3; ++c)
+                    buf[it->second * stride + 3 + c] = rates[c];
+            }
+        }
 
         simulator_.vanguard().grid().comm().sum(buf.data(), static_cast<int>(buf.size()));
 
         // Decode into result map — identical on every rank after the reduction.
-        std::unordered_map<std::string, std::pair<int, Scalar>> result;
-        result.reserve(n_global);
+        BalancerWells result;
+        result.limits.reserve(n_global);
         for (int gi = 0; gi < n_global; ++gi) {
             const Scalar encodedMode = buf[gi * stride + 0];
             if (encodedMode > Scalar(0)) {
-                result[allWellNames[gi]] = {
+                result.limits[allWellNames[gi]] = {
                     static_cast<int>(std::round(encodedMode)) - 1,
                     buf[gi * stride + 1]
                 };
+            }
+            if (buf[gi * stride + 2] > Scalar(0.5)) {
+                result.rates[allWellNames[gi]] = {buf[gi * stride + 3],
+                                                  buf[gi * stride + 4],
+                                                  buf[gi * stride + 5]};
             }
         }
         return result;
@@ -2734,7 +2767,7 @@ namespace Opm {
     template<typename TypeTag>
     auto BlackoilWellModel<TypeTag>::
     prepareWellsForBalancingFromPotentials_([[maybe_unused]] DeferredLogger& deferred_logger)
-        -> std::unordered_map<std::string, std::pair<int, Scalar>>
+        -> BalancerWells
     {
         OPM_TIMEFUNCTION();
         const int reportStep = this->reportStepIndex();
@@ -2743,12 +2776,15 @@ namespace Opm {
 
         std::unordered_map<std::string, std::pair<int, Scalar>> localLimits;
         localLimits.reserve(well_container_.size());
+        std::map<std::string, std::array<Scalar, 3>> localRates;
 
         for (auto& well : well_container_) {
             const auto widx = well->indexOfWell();
             auto& ws = this->wellState().well(widx);
             if (!well->wellEcl().isProducer() || ws.status != WellStatus::OPEN)
                 continue;
+
+            localRates[well->name()] = canonicalProductionRates_(ws.surface_rates);
 
             // Use potentials as the pressure-constraint proxy — no IPR solve needed.
             const auto result =
@@ -2761,14 +2797,14 @@ namespace Opm {
             localLimits[well->name()] = {static_cast<int>(result->first), result->second};
         }
 
-        // Gather local limits from all ranks; returns a globally consistent map.
-        return gatherWellLimits_(localLimits, allWellNames);
+        // Gather from all ranks; the result is the same on every one.
+        return gatherWellLimits_(localLimits, localRates, allWellNames);
     }
 
     template<typename TypeTag>
     auto BlackoilWellModel<TypeTag>::
     prepareWellsForBalancing_(DeferredLogger& deferred_logger)
-        -> std::unordered_map<std::string, std::pair<int, Scalar>>
+        -> BalancerWells
     {
         OPM_TIMEFUNCTION();
         const int reportStep = this->reportStepIndex();
@@ -2777,12 +2813,16 @@ namespace Opm {
 
         std::unordered_map<std::string, std::pair<int, Scalar>> localLimits;
         localLimits.reserve(well_container_.size());
+        std::map<std::string, std::array<Scalar, 3>> localRates;
 
         for (auto& well : well_container_) {
             const auto widx = well->indexOfWell();
             auto& ws = this->wellState().well(widx);
             if (!well->wellEcl().isProducer() || ws.status != WellStatus::OPEN || well->wellIsStopped())
                 continue;
+
+            // The rates the well has now, not the ones the last group communication left.
+            localRates[well->name()] = canonicalProductionRates_(ws.surface_rates);
             // If well has zero rates, but still open, we have a problematic well. One could
             // include it using potentials as a proxy, but for now, we leave it out of the balancing.
             const auto sumRates = std::accumulate(ws.surface_rates.begin(), ws.surface_rates.end(), Scalar(0));
@@ -2874,7 +2914,7 @@ namespace Opm {
             localLimits[well->name()] = {static_cast<int>(result->first), result->second};
         }
 
-        return gatherWellLimits_(localLimits, allWellNames);
+        return gatherWellLimits_(localLimits, localRates, allWellNames);
     }
 
     template<typename TypeTag>

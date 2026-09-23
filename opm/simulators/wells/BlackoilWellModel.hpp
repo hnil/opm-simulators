@@ -76,6 +76,7 @@
 #include <opm/simulators/wells/WellState.hpp>
 #include <opm/simulators/wells/rescoup/RescoupProxy.hpp>
 
+#include <array>
 #include <cstddef>
 #include <map>
 #include <memory>
@@ -285,9 +286,18 @@ template<class Scalar> class WellContributions;
             /// switching does not run.
             bool updateWellControlsController_(DeferredLogger& deferred_logger);
 
-            /// Run the balancer on \p limits; under the controller its allocation
+            /// What a well tells the balancer, the same on every rank.
+            struct BalancerWells
+            {
+                //! well name → {ProducerCMode int, limit}
+                std::unordered_map<std::string, std::pair<int, Scalar>> limits;
+                //! well name → {oil, water, gas}, production positive
+                std::map<std::string, std::array<Scalar, 3>> rates;
+            };
+
+            /// Run the balancer on \p wells; under the controller its allocation
             /// becomes the wells' targets and the decided wells are recorded.
-            void runControllerBalance_(const std::unordered_map<std::string, std::pair<int, Scalar>>& limits,
+            void runControllerBalance_(const BalancerWells& wells,
                                        DeferredLogger& deferred_logger,
                                        bool write_rates = true);
 
@@ -815,26 +825,30 @@ template<class Scalar> class WellContributions;
             /// @brief Refresh the network's cached `active_` flag.
             void updateNetworkActiveState_();
 
-            /// @brief Gather per-well balancer limits across all MPI ranks.
-            /// Each rank contributes limits for its locally-owned wells via a flat
-            /// buffer; comm.sum() gathers all contributions.  The returned map is
-            /// identical on every rank and maps well name → {ProducerCMode int, limit}.
-            std::unordered_map<std::string, std::pair<int, Scalar>>
+            /// A well's surface rates as {oil, water, gas}, production positive.
+            std::array<Scalar, 3>
+            canonicalProductionRates_(const std::vector<Scalar>& surface_rates) const;
+
+            /// @brief Gather per-well balancer limits and rates across all MPI ranks.
+            /// Each rank contributes its locally-owned wells via a flat buffer; one
+            /// comm.sum() gathers all contributions. The result is identical on every rank.
+            BalancerWells
             gatherWellLimits_(const std::unordered_map<std::string, std::pair<int, Scalar>>& localLimits,
+                              const std::map<std::string, std::array<Scalar, 3>>& localRates,
                               const std::vector<std::string>& allWellNames) const;
 
             /// @brief Prepare wells for the group-tree balancer using the current
             ///   Newton iterate: reads production_cmode for individually-controlled
             ///   wells and runs updateIPRImplicit for GRUP-controlled wells.
-            /// Returns the globally gathered limits map (same on every MPI rank).
-            std::unordered_map<std::string, std::pair<int, Scalar>>
+            /// Returns the globally gathered limits and rates (same on every MPI rank).
+            BalancerWells
             prepareWellsForBalancing_(DeferredLogger& deferred_logger);
 
             /// @brief Prepare wells for the group-tree balancer using well potentials
             ///   as the pressure-based production capacity proxy.  Does not require a
             ///   converged Newton iterate.
-            /// Returns the globally gathered limits map (same on every MPI rank).
-            std::unordered_map<std::string, std::pair<int, Scalar>>
+            /// Returns the globally gathered limits and rates (same on every MPI rank).
+            BalancerWells
             prepareWellsForBalancingFromPotentials_(DeferredLogger& deferred_logger);
 
             BlackoilWellModelGasLift<TypeTag> gaslift_;

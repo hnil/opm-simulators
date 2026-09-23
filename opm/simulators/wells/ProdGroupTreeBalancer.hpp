@@ -57,6 +57,8 @@ using Tree = std::map<std::string, ProdGroupTreeNode<Scalar>>;
 /// \param[in]    assignTargets Also write the allocation as each well's group target
 ///                             (setTargets); otherwise legacy derives the targets from the modes
 /// \param[out]   decidedWells  If given, the wells the tree assigned a control to
+/// \param[in]    wellRates     If given, the wells' rates ({oil, water, gas}, production
+///                             positive) in place of the well state's; the groups are summed from them
 /// \return       true if the result passed checkTreeValidity
 template<class Scalar, typename IndexTraits>
 bool runGroupTreeBalancer(BlackoilWellModelGeneric<Scalar, IndexTraits>& wellModel,
@@ -67,7 +69,8 @@ bool runGroupTreeBalancer(BlackoilWellModelGeneric<Scalar, IndexTraits>& wellMod
                           DeferredLogger& logger,
                           bool assignTargets = false,
                           std::vector<std::string>* decidedWells = nullptr,
-                          bool writeRates = true);
+                          bool writeRates = true,
+                          const std::map<std::string, std::array<Scalar, 3>>* wellRates = nullptr);
 
 /// The algorithm as a function of someone else's answer: the tree built from the well
 /// model, with the given well rates ({oil, water, gas}, production positive) in place

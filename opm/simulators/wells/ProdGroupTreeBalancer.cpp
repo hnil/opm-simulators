@@ -2334,7 +2334,8 @@ bool runGroupTreeBalancer(BlackoilWellModelGeneric<Scalar, IndexTraits>& wellMod
                           DeferredLogger& logger,
                           const bool assignTargets,
                           std::vector<std::string>* decidedWells,
-                          const bool writeRates)
+                          const bool writeRates,
+                          const std::map<std::string, std::array<Scalar, 3>>* wellRates)
 {
     // Make early return if limits is empty, which means no wells are active/has positive potentials.
     if (limits.empty()) {
@@ -2348,7 +2349,7 @@ bool runGroupTreeBalancer(BlackoilWellModelGeneric<Scalar, IndexTraits>& wellMod
 
     const auto t0 = std::chrono::steady_clock::now();
 
-    auto tree = buildTree(wellModel, summaryState, reportStep, limits);
+    auto tree = buildTree(wellModel, summaryState, reportStep, limits, wellRates);
 
     const bool success = runBalancingAlgorithm(wellModel.guideRate(), wellModel.comm().rank(),
                                                tree, tol, logger, assignTargets);
@@ -2449,7 +2450,8 @@ template bool runGroupTreeBalancer<double, BlackOilDefaultFluidSystemIndices>(
     BlackoilWellModelGeneric<double, BlackOilDefaultFluidSystemIndices>&,
     const SummaryState&, int, double,
     const std::unordered_map<std::string, std::pair<int, double>>&,
-    DeferredLogger&, bool, std::vector<std::string>*, bool);
+    DeferredLogger&, bool, std::vector<std::string>*, bool,
+    const std::map<std::string, std::array<double, 3>>*);
 
 template bool balanceTreeForTesting<double>(Tree<double>&, const GuideRate&, double, DeferredLogger&, bool, bool);
 
@@ -2475,7 +2477,8 @@ template bool runGroupTreeBalancer<float, BlackOilDefaultFluidSystemIndices>(
     BlackoilWellModelGeneric<float, BlackOilDefaultFluidSystemIndices>&,
     const SummaryState&, int, float,
     const std::unordered_map<std::string, std::pair<int, float>>&,
-    DeferredLogger&, bool, std::vector<std::string>*, bool);
+    DeferredLogger&, bool, std::vector<std::string>*, bool,
+    const std::map<std::string, std::array<float, 3>>*);
 
 #endif
 
