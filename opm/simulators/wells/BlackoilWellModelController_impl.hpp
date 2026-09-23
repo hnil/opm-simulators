@@ -256,6 +256,10 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
     std::map<std::string, RouteWell> route_data;
     {
         const auto& names = schedule.wellNames(reportStepIdx);
+        std::map<std::string, const WellInterface<TypeTag>*> local;
+        for (const auto& wp : well_container_) {
+            local[wp->name()] = wp.get();
+        }
         const int np = this->numPhases();
         const int rec = 7 + 3 * np;
         std::vector<Scalar> buf(names.size() * rec, Scalar{0});
@@ -273,8 +277,10 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
             const auto& well = schedule.getWell(wname, reportStepIdx);
             const int table = well.isProducer()
                 ? well.productionControls(this->summaryState()).vfp_table_number : 0;
-            if (table > 0) {
-                const auto& wi = this->getWell(wname);
+            const auto lit = local.find(wname);
+            // A shut well is in the well state but not in the container, and has nothing to say here.
+            if (table > 0 && lit != local.end()) {
+                const auto& wi = *lit->second;
                 r[3] = wellhelpers::computeHydrostaticCorrection(
                     wi.refDepth(), this->getVFPProperties().getProd()->getTable(table).getDatumDepth(),
                     wi.refDensity(), wi.gravity());
