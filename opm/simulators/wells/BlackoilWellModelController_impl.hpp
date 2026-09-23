@@ -229,10 +229,6 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
     if (no_network && !controllerThpRouteApplies_()) {
         return false;
     }
-    if (this->comm().size() > 1) {
-        OPM_DEFLOG_THROW(std::runtime_error,
-                         "The group controller's network route is serial only for now", deferred_logger);
-    }
     auto giveUp = [&](const std::string& why) {
         deferred_logger.debug(fmt::format("Controller: the network route is not taken at report step {} ({}); "
                                           "the balancer decides and legacy balances the network", reportStepIdx, why));
@@ -250,6 +246,67 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
         return giveUp("the network needs all three phases");
     }
     controllerRefreshIpr_(deferred_logger);
+    // What the route reads about a well, gathered: every rank builds the same system.
+    struct RouteWell {
+        bool open{false};
+        Scalar eff{1}, alq{0}, vfp_dp{0}, wfr{0}, gfr{0};
+        bool explicit_vfp{false};
+        std::vector<Scalar> ipr_a, ipr_b, q;
+    };
+    std::map<std::string, RouteWell> route_data;
+    {
+        const auto& names = schedule.wellNames(reportStepIdx);
+        const int np = this->numPhases();
+        const int rec = 7 + 3 * np;
+        std::vector<Scalar> buf(names.size() * rec, Scalar{0});
+        for (std::size_t i = 0; i < names.size(); ++i) {
+            const auto& wname = names[i];
+            const auto idx = this->wellState().index(wname);
+            if (!idx.has_value() || !this->wellState().wellIsOwned(*idx, wname)) {
+                continue;
+            }
+            const auto& ws = this->wellState().well(*idx);
+            Scalar* r = buf.data() + i * rec;
+            r[0] = ws.status == WellStatus::OPEN ? 1 : 0;
+            r[1] = ws.efficiency_scaling_factor;
+            r[2] = ws.alq_state.get();
+            const auto& well = schedule.getWell(wname, reportStepIdx);
+            const int table = well.isProducer()
+                ? well.productionControls(this->summaryState()).vfp_table_number : 0;
+            if (table > 0) {
+                const auto& wi = this->getWell(wname);
+                r[3] = wellhelpers::computeHydrostaticCorrection(
+                    wi.refDepth(), this->getVFPProperties().getProd()->getTable(table).getDatumDepth(),
+                    wi.refDensity(), wi.gravity());
+                r[4] = this->getVFPProperties().getExplicitWFR(table, wi.indexOfWell());
+                r[5] = this->getVFPProperties().getExplicitGFR(table, wi.indexOfWell());
+                r[6] = wi.useVfpExplicit() ? 1 : 0;
+            }
+            for (int ph = 0; ph < np; ++ph) {
+                r[7 + ph] = ph < static_cast<int>(ws.implicit_ipr_a.size()) ? ws.implicit_ipr_a[ph] : Scalar{0};
+                r[7 + np + ph] = ph < static_cast<int>(ws.implicit_ipr_b.size()) ? ws.implicit_ipr_b[ph] : Scalar{0};
+                r[7 + 2 * np + ph] = ws.surface_rates[ph];
+            }
+        }
+        if (this->comm().size() > 1) {
+            this->comm().sum(buf.data(), buf.size());
+        }
+        for (std::size_t i = 0; i < names.size(); ++i) {
+            const Scalar* r = buf.data() + i * rec;
+            RouteWell d;
+            d.open = r[0] > Scalar{0.5};
+            d.eff = r[1];
+            d.alq = r[2];
+            d.vfp_dp = r[3];
+            d.wfr = r[4];
+            d.gfr = r[5];
+            d.explicit_vfp = r[6] > Scalar{0.5};
+            d.ipr_a.assign(r + 7, r + 7 + np);
+            d.ipr_b.assign(r + 7 + np, r + 7 + 2 * np);
+            d.q.assign(r + 7 + 2 * np, r + 7 + 3 * np);
+            route_data.emplace(names[i], std::move(d));
+        }
+    }
 
     // What the deck allows, not what legacy has the well on: available for group
     // control with a rate target somewhere above it.
@@ -460,17 +517,13 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
             if (schedule[reportStepIdx].glo().has_well(name)) {
                 return giveUp(fmt::format("{} is under gas lift optimisation", name));
             }
-            if (!this->wellState().has(name)) {
-                continue;
-            }
-            const auto& ws = this->wellState().well(name);
-            if (ws.status != WellStatus::OPEN) {
+            const auto& d = route_data.at(name);
+            if (!d.open) {
                 continue;
             }
             const auto controls = well.productionControls(summary_state);
-            const bool usable = static_cast<int>(ws.implicit_ipr_b.size()) >= pu.numActivePhases()
-                && ws.implicit_ipr_b[pos[1]] > Scalar{0};
-            const Scalar current = std::max(-ws.surface_rates[pos[1]], Scalar{0});
+            const bool usable = d.ipr_b[pos[1]] > Scalar{0};
+            const Scalar current = std::max(-d.q[pos[1]], Scalar{0});
             const bool owned = groupControllable(well);
             typename Sys::Well w;
             w.name = name;
@@ -483,20 +536,17 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                 w.vfp_table = 0;            // no thp limit: the table constrains nothing
             }
             if (w.vfp_table > 0) {
-                // The table's datum is not the well's reference depth.
-                const auto& wi = this->getWell(name);
-                w.vfp_dp = wellhelpers::computeHydrostaticCorrection(
-                    wi.refDepth(), this->getVFPProperties().getProd()->getTable(w.vfp_table).getDatumDepth(),
-                    wi.refDensity(), wi.gravity());
-                w.explicit_wfr = this->getVFPProperties().getExplicitWFR(w.vfp_table, wi.indexOfWell());
-                w.explicit_gfr = this->getVFPProperties().getExplicitGFR(w.vfp_table, wi.indexOfWell());
+                // The table's datum is not the well's reference depth; its owner worked these out.
+                w.vfp_dp = d.vfp_dp;
+                w.explicit_wfr = d.wfr;
+                w.explicit_gfr = d.gfr;
                 // The well model's flag, including the one its own failed solves set: ignoring
                 // it costs 5-8 % oil on the network decks.
-                w.explicit_vfp = wi.useVfpExplicit();
+                w.explicit_vfp = d.explicit_vfp;
             }
             w.bhp_limit = static_cast<Scalar>(controls.bhp_limit);
-            w.efficiency = static_cast<Scalar>(well.getEfficiencyFactor(/*network=*/true)) * ws.efficiency_scaling_factor;
-            w.alq = ws.alq_state.get();
+            w.efficiency = static_cast<Scalar>(well.getEfficiencyFactor(/*network=*/true)) * d.eff;
+            w.alq = d.alq;
             w.node_adds_lift_gas = !no_network && network.node(well.groupName()).add_gas_lift_gas();
             if (w.node_adds_lift_gas) {
                 w.lift_gas = w.alq;
@@ -519,13 +569,13 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
             for (int ph = 0; ph < Sys::NP; ++ph) {
                 // The well state holds q = b*bhp - a with production negative;
                 // the system wants production positive, falling with bhp.
-                w.ipr_a[ph] = ws.implicit_ipr_a[pos[ph]];
-                w.ipr_b[ph] = -ws.implicit_ipr_b[pos[ph]];
+                w.ipr_a[ph] = d.ipr_a[pos[ph]];
+                w.ipr_b[ph] = -d.ipr_b[pos[ph]];
             }
             if (current > Scalar{0}) {
                 // Half the ratio the well has now: see Sys::ipr().
                 for (const int ph : {0, 2}) {
-                    w.min_ratio[ph] = Scalar{0.5} * std::max(-ws.surface_rates[pos[ph]], Scalar{0}) / current;
+                    w.min_ratio[ph] = Scalar{0.5} * std::max(-d.q[pos[ph]], Scalar{0}) / current;
                 }
             }
             w.q_start = current;
@@ -596,8 +646,8 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                     // A well the well model has stopped produces nothing; the target
                     // applies to the rest. Only a producing well outside the system
                     // (another network, another rank) takes the target away.
-                    const bool open = this->wellState().has(wn)
-                        && this->wellState().well(wn).status == WellStatus::OPEN;
+                    const auto rit = route_data.find(wn);
+                    const bool open = rit != route_data.end() && rit->second.open;
                     if (well.isProducer() && well.predictionMode() && open && !here.count(wn)) {
                         return false;
                     }
@@ -964,11 +1014,21 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
         // has no fixed point flowing; if the re-solve shuts it again, that shut stands.
         std::set<int> confirmed;
         for (int round = 0; rr.converged && round < param_.group_controller_max_repairs_; ++round) {
-            std::string revived;
+            // The candidates are the system's, so every rank has the same list; each well's own
+            // rank answers whether it would flow, and one sum hands the answers to everyone.
+            std::vector<int> cand;
             for (int w = 0; w < system.numWells(); ++w) {
                 const auto& well = system.wells()[w];
                 if (system.controlLetter(w) != 'S' || well.shut || well.pinned || well.vfp_table <= 0
                     || !confirmed.insert(w).second) { continue; }
+                cand.push_back(w);
+            }
+            constexpr int stride = 2 + Sys::NP;
+            std::vector<Scalar> ans(cand.size() * stride, Scalar{0});
+            for (std::size_t c = 0; c < cand.size(); ++c) {
+                const auto& well = system.wells()[cand[c]];
+                const auto widx = this->wellState().index(well.name);
+                if (!widx.has_value() || !this->wellState().wellIsOwned(*widx, well.name)) { continue; }
                 const auto wit = std::find_if(well_container_.begin(), well_container_.end(),
                                               [&](const auto& x) { return x->name() == well.name; });
                 if (wit == well_container_.end()) { continue; }
@@ -991,11 +1051,29 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                     flows = flows || (ph == 1 && q_true > Scalar{0});
                 }
                 if (!flows) { continue; }
+                Scalar* r = ans.data() + c * stride;
+                r[0] = 1;
+                r[1] = *bhp;
+                for (int ph = 0; ph < Sys::NP; ++ph) { r[2 + ph] = a[ph]; }
+            }
+            if (this->comm().size() > 1 && !ans.empty()) {
+                this->comm().sum(ans.data(), ans.size());
+            }
+            std::string revived;
+            for (std::size_t c = 0; c < cand.size(); ++c) {
+                const Scalar* r = ans.data() + c * stride;
+                if (r[0] < Scalar{0.5}) { continue; }
+                const int w = cand[c];
+                const auto& well = system.wells()[w];
+                const Scalar p_w = well.own_thp > Scalar{0} ? well.own_thp
+                                 : well.node == 0 ? terminal : rr.node_pressure[well.node];
+                std::array<Scalar, Sys::NP> a{};
+                for (int ph = 0; ph < Sys::NP; ++ph) { a[ph] = r[2 + ph]; }
                 system.setWellIpr(w, a, well.ipr_b);
                 system.setWellDeadAbove(w, Scalar{0});
-                system.reviveWell(w, Sys::ipr(system.wells()[w], 1, *bhp));
+                system.reviveWell(w, Sys::ipr(system.wells()[w], 1, r[1]));
                 revived += fmt::format(" {} ({:.1f} sm3/d at {:.2f} bar)", well.name,
-                                       Sys::ipr(system.wells()[w], 1, *bhp) * 86400.0, p_w / 1e5);
+                                       Sys::ipr(system.wells()[w], 1, r[1]) * 86400.0, p_w / 1e5);
             }
             if (revived.empty()) { break; }
             deferred_logger.debug(fmt::format("Controller: the well model lifts wells the route shut under {} at report step "
@@ -1398,11 +1476,28 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
         for (int w = 0; w < system.numWells(); ++w) {
             const auto& well = system.wells()[w];
             route_wells.insert(well.name);
+            const auto& t = held[w];
+            if (!well.pinned) {
+                // The system's own answer, the same on every rank: what it shut, what it brought back,
+                // and which group holds it. held_dead() and the group controls read these, so they
+                // must not be one rank's own.
+                dead_now[well.name] = t.control == Ctrl::Shut && !well.shut;
+                if (!(well.q_start > Scalar{0}) && rr.well_rate[w] > Scalar{0}) {
+                    ++this->controller_revivals_[well.name];
+                }
+                if ((t.control == Ctrl::Tree || t.control == Ctrl::Grup) && t.group >= 0) {
+                    using GC = Group::ProductionCMode;
+                    holding[system.groups()[t.group].name]
+                        = t.mode == Mode::Gas    ? GC::GRAT
+                        : t.mode == Mode::Water  ? GC::WRAT
+                        : t.mode == Mode::Liquid ? GC::LRAT
+                        : t.mode == Mode::Resv   ? GC::RESV : GC::ORAT;
+                }
+            }
             if (well.pinned || !this->wellState().has(well.name)) {
                 continue;
             }
             auto& ws = this->wellState().well(well.name);
-            const auto& t = held[w];
             using GC = Group::ProductionCMode;
             const auto cmode_before = ws.production_cmode;
             switch (t.control) {
@@ -1429,7 +1524,6 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                         ws.group_target->target_value = node->second.groupTarget.value;
                     }
                 }
-                holding[ws.group_target->group_name] = cmode;
                 ws.group_target_fallback = std::nullopt;
                 ws.use_group_target_fallback = false;
                 break;
@@ -1451,10 +1545,6 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                 switched.insert(well.name);
             }
             assigned_cmode[well.name] = ws.production_cmode;
-            dead_now[well.name] = t.control == Ctrl::Shut && !well.shut;
-            if (!(well.q_start > Scalar{0}) && rr.well_rate[w] > Scalar{0}) {
-                ++this->controller_revivals_[well.name];
-            }
             // The other phases where the inflow puts them at the bhp this oil rate needs.
             std::vector<Scalar> q(ws.surface_rates.size(), Scalar{0});
             const Scalar q_oil = rr.well_rate[w];
