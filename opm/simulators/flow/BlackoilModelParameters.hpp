@@ -124,6 +124,9 @@ struct GroupControllerTubingExtension { static constexpr bool value = false; };
 struct GroupControllerInjection { static constexpr bool value = true; };
 struct GroupControllerInjectionCurrentProduction { static constexpr bool value = true; };
 template<class Scalar>
+struct GroupControllerInjectionDamping { static constexpr Scalar value = 0.0; };
+struct GroupControllerInjectionFeedback { static constexpr bool value = true; };
+template<class Scalar>
 struct GroupTreeBalancerTolerance { static constexpr Scalar value = 1e-5; };
 
 struct UseMultisegmentWell { static constexpr bool value = true; };
@@ -484,6 +487,12 @@ public:
 
     /// Controller: REIN and VREP targets from the producers as just decided, not the NUPCOL state
     bool group_controller_injection_current_production_;
+
+    /// Controller: the most an injection group's target may move per decision, relative (0 = off)
+    Scalar group_controller_injection_damping_;
+
+    /// Controller: an injector reports back what it can do, and only a switch is a control change
+    bool group_controller_injection_feedback_;
 
     template<class Serializer>
     void serializeOp(Serializer& serializer)

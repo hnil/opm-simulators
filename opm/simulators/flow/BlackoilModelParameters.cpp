@@ -146,6 +146,9 @@ BlackoilModelParameters<Scalar>::BlackoilModelParameters()
     group_controller_injection_ = Parameters::Get<Parameters::GroupControllerInjection>();
     group_controller_injection_current_production_ =
         Parameters::Get<Parameters::GroupControllerInjectionCurrentProduction>();
+    group_controller_injection_damping_ =
+        Parameters::Get<Parameters::GroupControllerInjectionDamping<Scalar>>();
+    group_controller_injection_feedback_ = Parameters::Get<Parameters::GroupControllerInjectionFeedback>();
     if (enable_group_controller_) {
         enable_group_tree_balancer_ = true;
     }
@@ -389,6 +392,13 @@ void BlackoilModelParameters<Scalar>::registerParameters()
     Parameters::Register<Parameters::GroupControllerInjection>
         ("Group controller: injection groups are decided by the controller's tree; injection networks, "
          "satellite injection and MULTI injectors stay with the legacy rules");
+    Parameters::Register<Parameters::GroupControllerInjectionFeedback>
+        ("Group controller: an injector pinned at its bhp limit is capped at what it delivers, a released "
+         "one's target follows its own cap, and a target that only moves is not a control change");
+    Parameters::Register<Parameters::GroupControllerInjectionDamping<Scalar>>
+        ("Group controller: the most an injection group's target may move per decision, relative to its "
+         "previous one (0, the default, disables it); it damps a voidage transient after a restart, but it "
+         "costs more than it saves on the gas reinjection and sales decks");
     Parameters::Register<Parameters::GroupControllerInjectionCurrentProduction>
         ("Group controller: reinjection and voidage targets follow the producers as just decided "
          "instead of the NUPCOL state");

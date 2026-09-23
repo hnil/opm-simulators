@@ -1667,6 +1667,15 @@ controllerInjectionDecide_(DeferredLogger& deferred_logger, const bool targets_o
                 cap = now;
                 cap_mode = on_grup ? cap_mode : ws.injection_cmode;
             }
+            // Its own feasibility report: pinned at its bhp limit and short of the share it was given,
+            // it cannot do more than it does, whatever its potential says.
+            if (param_.group_controller_injection_feedback_
+                && on_grup && ws.group_target && ws.bhp >= controls.bhp_limit * (1 - Scalar{1e-3})
+                && now < ws.group_target->target_value * (1 - param_.group_controller_rate_tolerance_)
+                && now < cap) {
+                cap = now;
+                cap_mode = Well::InjectorCMode::BHP;
+            }
             Node n;
             n.name = wp->name();
             n.type = ProdNodeType::Well;
@@ -1735,6 +1744,18 @@ controllerInjectionDecide_(DeferredLogger& deferred_logger, const bool targets_o
                 }
             }
             if (limit < std::numeric_limits<Scalar>::max()) {
+                // A target that follows the current production is damped: after a restart the voidage is
+                // transiently far off and the target follows it. GPMAINT and deck rates are not damped.
+                const auto m = binding.count(gname) ? binding.at(gname) : Group::InjectionCMode::NONE;
+                const bool follows = m == Group::InjectionCMode::REIN || m == Group::InjectionCMode::VREP
+                    || m == Group::InjectionCMode::SALE;
+                const auto key = fmt::format("{}|{}", gname, static_cast<int>(ph.phase));
+                const Scalar d = param_.group_controller_injection_damping_;
+                if (const auto it = this->controller_injection_limit_.find(key);
+                    follows && d > Scalar{0} && it != this->controller_injection_limit_.end() && it->second > Scalar{0}) {
+                    limit = std::clamp(limit, it->second * (1 - d), it->second * (1 + d));
+                }
+                this->controller_injection_limit_[key] = limit;
                 n.Limits[ph.mode] = limit;
             }
             tree.emplace(gname, n);
@@ -1827,6 +1848,22 @@ controllerInjectionDecide_(DeferredLogger& deferred_logger, const bool targets_o
                 }
             }
         }
+        if (std::getenv("OPM_CONTROLLER_TRACE")) {
+            std::string d;
+            for (const auto& [name, inj] : injectors) {
+                const auto& ws = this->wellState().well(inj.w->indexOfWell());
+                d += fmt::format(" [{} {} q {:.1f} tgt {:.1f} tree {:.1f} cap {:.1f} holder {} {}]", name,
+                                 WellInjectorCMode2String(ws.injection_cmode), std::abs(ws.surface_rates[pos]) * 86400.0,
+                                 ws.group_target ? ws.group_target->target_value * 86400.0 : -1.0,
+                                 tree.count(name) ? -tree.at(name).rates[ph.slot] * 86400.0 : -1.0,
+                                 tree.count(name) && tree.at(name).Limits.count(ph.mode) ? tree.at(name).Limits.at(ph.mode) * 86400.0 : -1.0,
+                                 holder.count(name) ? holder.at(name) : std::string("-"),
+                                 holder.count(name) && stands.count(holder.at(name)) ? "stands" : "");
+            }
+            deferred_logger.debug(fmt::format("CTRLDBG step={} it={} ph{} targets_only={}{}", step,
+                                              simulator_.problem().iterationContext().iteration(),
+                                              static_cast<int>(ph.phase), targets_only, d));
+        }
         std::string trace;
         for (const auto& [name, inj] : injectors) {
             auto& ws = this->wellState().well(inj.w->indexOfWell());
@@ -1835,22 +1872,25 @@ controllerInjectionDecide_(DeferredLogger& deferred_logger, const bool targets_o
                 continue;       // outside group control, on its own control
             }
             auto h = holder.find(name);
-            if (targets_only && (before != Well::InjectorCMode::GRUP || h == holder.end()
-                                 || !ws.group_target || ws.group_target->group_name != h->second)) {
-                // After NUPCOL the modes stand; only a held well's share follows production.
+            const Scalar rate = std::max(-tree.at(name).rates[ph.slot], Scalar{0});
+            const Scalar cap = tree.at(name).Limits.count(ph.mode) ? tree.at(name).Limits.at(ph.mode) : rate;
+            const bool released = param_.group_controller_injection_feedback_
+                && before == Well::InjectorCMode::GRUP && h == holder.end()
+                && ws.group_target && tree.count(ws.group_target->group_name);
+            if (targets_only && !released
+                && (before != Well::InjectorCMode::GRUP || h == holder.end()
+                    || !ws.group_target || ws.group_target->group_name != h->second)) {
+                // After NUPCOL the modes stand; only the targets follow production.
                 if (before == Well::InjectorCMode::GRUP) { decided_injectors.insert(name); }
                 continue;
             }
-            const Scalar rate = std::max(-tree.at(name).rates[ph.slot], Scalar{0});
-            const Scalar cap = tree.at(name).Limits.count(ph.mode) ? tree.at(name).Limits.at(ph.mode) : rate;
             const bool at_cap = rate >= cap * (1 - param_.group_controller_rate_tolerance_);
             if (h != holder.end() && before != Well::InjectorCMode::GRUP && at_cap) {
                 // Held at its own cap within the tolerance: the switch is not worth an iteration.
                 trace += fmt::format(" {} kept {}", name, WellInjectorCMode2String(before));
                 continue;
             }
-            if (h == holder.end() && before == Well::InjectorCMode::GRUP && ws.group_target
-                && tree.count(ws.group_target->group_name)) {
+            if (released) {
                 // Released at its cap: it stays on GRUP with the cap as its share.
                 ws.group_target->target_value = cap;
                 trace += fmt::format(" {} GRUP at cap {:.1f}", name, cap * 86400.0);

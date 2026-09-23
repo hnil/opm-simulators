@@ -592,6 +592,7 @@ protected:
     // Injectors the controller's injection tree decided (B8); kept apart, the producers' set is rewritten per pass.
     std::set<std::string> controller_injection_decided_{};
     bool controller_injection_moved_{false};
+    std::map<std::string, Scalar> controller_injection_limit_{};   //!< group|phase -> the last target set
     bool controller_injection_owned_{false};
     /// Every well in the network route's systems, decided or pinned: solved in the pass loop.
     std::set<std::string> controller_route_wells_{};

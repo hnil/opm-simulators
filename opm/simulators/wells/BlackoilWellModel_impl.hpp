@@ -28,6 +28,7 @@
 #include <config.h>
 #include <cstdlib>
 #include <opm/simulators/wells/BlackoilWellModel.hpp>
+#include <opm/simulators/wells/WellHelpers.hpp>
 #endif
 
 #include <opm/simulators/wells/FacilityCounters.hpp>
@@ -1426,7 +1427,7 @@ namespace Opm {
         // The controller re-decides inside updateWellControls instead.
         if (param_.enable_group_tree_balancer_ && !param_.enable_group_controller_ && well_group_control_changed) {
             const auto& iterCtx = simulator_.problem().iterationContext();
-            const int nupcol = this->schedule()[reportStepIdx].nupcol();
+            const int nupcol = wellhelpers::nupcol(this->schedule()[reportStepIdx].nupcol());
             if (iterCtx.withinNupcol(nupcol)) {
                 const auto balancerLimits = prepareWellsForBalancing_(local_deferredLogger);
                 this->updateAndCommunicateGroupData(reportStepIdx, /*update_wellgrouptarget*/ false);
@@ -1835,7 +1836,7 @@ namespace Opm {
         // only updated during the first NUPCOL iterations of each timestep
         // and kept frozen for the remaining iterations.
         {
-            const auto nupcol = this->schedule()[episodeIdx].nupcol();
+            const auto nupcol = wellhelpers::nupcol(this->schedule()[episodeIdx].nupcol());
             const auto& iter_ctx = simulator_.problem().iterationContext();
             if (iter_ctx.withinNupcol(nupcol)) {
                 OPM_BEGIN_PARALLEL_TRY_CATCH()
@@ -2018,7 +2019,7 @@ namespace Opm {
         OPM_TIMEFUNCTION();
         const int episodeIdx = simulator_.episodeIndex();
         const auto& comm = simulator_.vanguard().grid().comm();
-        const int nupcol = this->schedule()[episodeIdx].nupcol();
+        const int nupcol = wellhelpers::nupcol(this->schedule()[episodeIdx].nupcol());
         const bool may_redecide = simulator_.problem().iterationContext().withinNupcol(nupcol);
         // A well that cannot honour its target ends up on one of its own limits, here
         // or inside its solve; that is the feasibility report, and the balancer
@@ -2038,8 +2039,11 @@ namespace Opm {
         if (param_.group_controller_injection_) {
             const bool targets_only = !may_redecide && this->controller_injection_owned_;
             this->controller_injection_owned_ = controllerInjectionDecide_(deferred_logger, targets_only);
-            injection_changed = this->controller_injection_owned_ && !targets_only
-                && (this->controller_injection_moved_ || controllerInjectionSignature_() != inj_sig_before);
+            // A moving target is not a control change (legacy's move every iteration too); a switch is.
+            injection_changed = this->controller_injection_owned_
+                && ((!param_.group_controller_injection_feedback_ && !targets_only
+                     && this->controller_injection_moved_)
+                    || controllerInjectionSignature_() != inj_sig_before);
         }
         if (!(param_.group_controller_injection_ && this->controller_injection_owned_)) {
             this->controller_injection_owned_ = false;
@@ -2291,7 +2295,7 @@ namespace Opm {
         const auto& iterCtx = simulator_.problem().iterationContext();
         bool changed = false;
         // restrict the number of group switches but only after nupcol iterations.
-        const int nupcol = this->schedule()[reportStepIdx].nupcol();
+        const int nupcol = wellhelpers::nupcol(this->schedule()[reportStepIdx].nupcol());
         const bool update_group_switching_log = !iterCtx.withinNupcol(nupcol);
         const bool changed_hc = this->checkGroupHigherConstraints(
             group, deferred_logger, reportStepIdx, update_group_switching_log, injection_only);
