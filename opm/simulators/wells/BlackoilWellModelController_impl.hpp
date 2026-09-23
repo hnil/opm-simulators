@@ -405,6 +405,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
     if (step_key != this->controller_revival_step_) {
         this->controller_revival_step_ = step_key;
         this->controller_revivals_.clear();
+        this->controller_shut_streak_.clear();
     }
     auto held_dead = [&](const std::string& name, const Scalar rate_now) {
         const auto r = this->controller_revivals_.find(name);
@@ -1487,7 +1488,15 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                 // The system's own answer, the same on every rank: what it shut, what it brought back,
                 // and which group holds it. held_dead() and the group controls read these, so they
                 // must not be one rank's own.
-                dead_now[well.name] = t.control == Ctrl::Shut && !well.shut;
+                // Hysteresis at the lifting cliff: a well that is flowing is not shut on one answer
+                // unless the parameter says so, because the pressure that kills it moves with the
+                // partition's own rounding and a hair either way is a different decision.
+                const bool wants_shut = t.control == Ctrl::Shut && !well.shut;
+                auto& streak = this->controller_shut_streak_[well.name];
+                streak = wants_shut ? streak + 1 : 0;
+                const bool hold_open = wants_shut && well.q_start > Scalar{0}
+                    && streak < param_.group_controller_shut_persistence_;
+                dead_now[well.name] = wants_shut && !hold_open;
                 if (!(well.q_start > Scalar{0}) && rr.well_rate[w] > Scalar{0}) {
                     ++this->controller_revivals_[well.name];
                 }

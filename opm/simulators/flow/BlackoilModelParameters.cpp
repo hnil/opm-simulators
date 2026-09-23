@@ -149,6 +149,7 @@ BlackoilModelParameters<Scalar>::BlackoilModelParameters()
     group_controller_injection_damping_ =
         Parameters::Get<Parameters::GroupControllerInjectionDamping<Scalar>>();
     group_controller_injection_feedback_ = Parameters::Get<Parameters::GroupControllerInjectionFeedback>();
+    group_controller_shut_persistence_ = Parameters::Get<Parameters::GroupControllerShutPersistence>();
     if (enable_group_controller_) {
         enable_group_tree_balancer_ = true;
     }
@@ -392,6 +393,10 @@ void BlackoilModelParameters<Scalar>::registerParameters()
     Parameters::Register<Parameters::GroupControllerInjection>
         ("Group controller: injection groups are decided by the controller's tree; injection networks, "
          "satellite injection and MULTI injectors stay with the legacy rules");
+    Parameters::Register<Parameters::GroupControllerShutPersistence>
+        ("Group controller: how many decisions in a row must want a flowing well shut before the network "
+         "route's shut is handed to it; 1 shuts it at once, more gives the decision hysteresis at the "
+         "tubing's lifting cliff");
     Parameters::Register<Parameters::GroupControllerInjectionFeedback>
         ("Group controller: an injector pinned at its bhp limit is capped at what it delivers, a released "
          "one's target follows its own cap, and a target that only moves is not a control change");
