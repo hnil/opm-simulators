@@ -120,7 +120,7 @@ struct EnableGroupControllerThpRoute { static constexpr bool value = true; };
 struct GroupControllerMaxRepairs { static constexpr int value = 3; };
 struct GroupControllerRequireSettled { static constexpr bool value = true; };
 struct GroupControllerMaxUnsettledIterations { static constexpr int value = 3; };
-struct GroupControllerTubingExtension { static constexpr bool value = false; };
+struct GroupControllerTubingExtension { static constexpr bool value = true; };
 struct GroupControllerInjection { static constexpr bool value = true; };
 struct GroupControllerInjectionCurrentProduction { static constexpr bool value = true; };
 template<class Scalar>

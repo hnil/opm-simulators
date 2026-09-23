@@ -409,7 +409,9 @@ void BlackoilModelParameters<Scalar>::registerParameters()
          "instead of the NUPCOL state");
     Parameters::Register<Parameters::GroupControllerTubingExtension>
         ("Group controller: the network route solves on tubing curves continued below the point where "
-         "each well's inflow line touches them, then shuts every well left on a continuation at once");
+         "each well's inflow line touches them, then shuts every well left on a continuation at once; "
+         "the continuation makes the tubing single-valued, which is what keeps a well on the cliff from "
+         "being a different decision on a different partition. False restores the bare tables");
     Parameters::Register<Parameters::GroupControllerMaxRevivals>
         ("Group controller: how often a well the network route shut may be revived within "
          "a time step before it is kept shut for the rest of the step");
