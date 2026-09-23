@@ -2044,6 +2044,7 @@ namespace Opm {
                 && ((!param_.group_controller_injection_feedback_ && !targets_only
                      && this->controller_injection_moved_)
                     || controllerInjectionSignature_() != inj_sig_before);
+            injection_changed = comm.max(static_cast<int>(injection_changed)) > 0;
         }
         if (!(param_.group_controller_injection_ && this->controller_injection_owned_)) {
             this->controller_injection_owned_ = false;
@@ -2136,7 +2137,8 @@ namespace Opm {
             // Writing the tree's rates here cost 6 % more Newton on FLOW-CGC.
             controllerDecide_(deferred_logger, /*write_rates*/ false);
             const std::string sig = controllerDecisionSignature_();
-            const bool moved = sig != this->controller_decision_signature_;
+            // The signature covers this rank's wells only: a decision that moved anywhere moved.
+            const bool moved = comm.max(static_cast<int>(sig != this->controller_decision_signature_)) > 0;
             this->controller_decision_signature_ = sig;
             unsettled = false;
             // Diagnostic: OPM_CONTROLLER_PASS_SOLVES=0 decides once on the linearised wells and
@@ -2173,7 +2175,7 @@ namespace Opm {
                 this->updateAndCommunicateGroupData(episodeIdx, /*update_wellgrouptarget*/ true);
                 imbalance = this->network_.pressureImbalance(episodeIdx);
                 unsettled = comm.sum(static_cast<int>(switched)) > 0 || imbalance.first > ntol
-                    || this->controller_rejected_;
+                    || comm.max(static_cast<int>(this->controller_rejected_)) > 0;
             }
             if (!moved && !unsettled) {
                 // The criterion: the solved wells deliver what they were assigned and no
@@ -2186,7 +2188,7 @@ namespace Opm {
                         off = std::max(off, std::abs(r[p] - q[p]) / std::max(std::abs(q[p]), Scalar(1e-7)));
                     }
                 }
-                const bool met = off <= rtol && !controllerGroupLimitViolated_();
+                const bool met = comm.max(off) <= rtol && !controllerGroupLimitViolated_();
                 ended = met ? "converged" : "stalled: the decision stands and the wells do not follow";
                 ++(met ? this->controller_stats_.converged : this->controller_stats_.stalled);
                 break;
@@ -2219,7 +2221,7 @@ namespace Opm {
         }
         // Whether the hand-over is a facility solution is judged where Newton sees it, after the
         // final well solve (getWellConvergence); here only what that cannot see.
-        this->controller_unsettled_ = passes > 0 && this->controller_rejected_;
+        this->controller_unsettled_ = comm.max(static_cast<int>(passes > 0 && this->controller_rejected_)) > 0;
         // Only a decision that moved is a change; a rate off its assignment by the
         // IPR's error is not, or the step would never be allowed to converge.
         changed_any = changed_any || injection_changed || (this->controller_decision_signature_ != sig_before);
@@ -2249,7 +2251,7 @@ namespace Opm {
             exceed("FIELD");
         }
         this->updateWsolvent(this->schedule().getGroup("FIELD", episodeIdx), episodeIdx, this->nupcolWellState());
-        return changed_any;
+        return comm.max(static_cast<int>(changed_any)) > 0;
     }
 
     template<typename TypeTag>
