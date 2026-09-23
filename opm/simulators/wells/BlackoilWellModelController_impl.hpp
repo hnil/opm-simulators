@@ -1601,7 +1601,7 @@ controllerInjectionDecide_(DeferredLogger& deferred_logger, const bool targets_o
     if (param_.group_controller_injection_current_production_) {
         // The current production, not the NUPCOL state the helper holds: after NUPCOL too.
         auto guard = helper.pushWellState(this->wellState());
-        helper.updateREINForGroups(field, /*sum_rank=*/true);
+        helper.updateREINForGroups(field, /*sum_rank=*/this->comm().rank() == 0);
         helper.updateVREPForGroups(field);
         helper.updateReservoirRatesInjectionGroups(field);
         helper.updateSurfaceRatesInjectionGroups(field);
@@ -1622,6 +1622,7 @@ controllerInjectionDecide_(DeferredLogger& deferred_logger, const bool targets_o
         }
     }
     std::set<std::string> decided_injectors;
+    std::map<std::string, std::map<int, Scalar>> decided_resv;   // group -> active phase -> reservoir rate
     this->controller_injection_moved_ = false;
     for (const auto& ph : phases) {
         if (!pu.phaseIsActive(ph.canonical) || schedule[step].injectionNetwork.has(ph.phase)) {
@@ -1737,7 +1738,16 @@ controllerInjectionDecide_(DeferredLogger& deferred_logger, const bool targets_o
                 if (!(own || sale || group.has_gpmaint_control(ph.phase, m))) {
                     continue;
                 }
-                const Scalar t = helper.injectionGroupTargetForMode(group, ph.phase, group_resv, m);
+                Scalar t = helper.injectionGroupTargetForMode(group, ph.phase, group_resv, m);
+                if (m == Group::InjectionCMode::RESV || m == Group::InjectionCMode::VREP) {
+                    // Its share of the reservoir volume is what the phases already decided leave it.
+                    const auto& state_resv = this->groupState().injection_reservoir_rates(gname);
+                    Scalar moved = 0;
+                    for (const auto& [p_slot, value] : decided_resv[gname]) {
+                        if (p_slot != pos) { moved += value - state_resv[p_slot]; }
+                    }
+                    if (group_resv[pos] > Scalar{0}) { t -= moved / group_resv[pos]; }
+                }
                 if (t < limit) {
                     limit = std::max(t, Scalar{0});
                     binding[gname] = m;
@@ -1939,8 +1949,9 @@ controllerInjectionDecide_(DeferredLogger& deferred_logger, const bool targets_o
                                      static_cast<int>(gn.modeCategory), -gn.rates[ph.slot] * 86400.0);
             }
         }
-        // The next phase's VREP reads this phase's injection as decided, at each well's own
-        // reservoir/surface ratio (a field-average gas factor was 22 % off).
+        // The next phase's RESV and VREP see this phase's injection as decided, at each well's own
+        // reservoir/surface ratio (a field-average gas factor was 22 % off). Held here, not in the group
+        // state: those containers hold each rank's own share until communicate_rates sums them.
         std::map<std::string, Scalar> resv_sum;
         for (const auto& [name, inj] : injectors) {
             const auto& ws = this->wellState().well(inj.w->indexOfWell());
@@ -1954,11 +1965,7 @@ controllerInjectionDecide_(DeferredLogger& deferred_logger, const bool targets_o
             }
         }
         for (const auto& [gname, r] : resv_sum) {
-            if (this->groupState().has_injection_reservoir_rates(gname)) {
-                auto resv = this->groupState().injection_reservoir_rates(gname);
-                resv[pos] = r;
-                this->groupState().update_injection_reservoir_rates(gname, resv);
-            }
+            decided_resv[gname][pos] = r;
         }
         for (const auto& [well, g] : holder) {
             if (const auto b = binding.find(g); b != binding.end()) {

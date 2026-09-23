@@ -214,7 +214,21 @@ facilityCheck_(DeferredLogger& deferred_logger)
     {
         auto log_guard = this->groupStateHelper().pushLogger(/*do_mpi_gather*/ false);
         DeferredLogger scratch;
-        try {
+        // Each stage runs everywhere or nowhere: a rank that throws before a collective would
+        // otherwise leave the others waiting in it.
+        auto stage = [&](auto&& body) {
+            int failed = failure.empty() ? 0 : 1;
+            if (failed == 0) {
+                try {
+                    body();
+                } catch (const std::exception& e) {
+                    failure = e.what();
+                    failed = 1;
+                }
+            }
+            return this->comm().max(failed) == 0;
+        };
+        stage([&] {
             // A legacy pass at the current rates, its switch budgets unspent.
             this->controller_decided_wells_.clear();
             this->controller_injection_decided_.clear();
@@ -224,9 +238,13 @@ facilityCheck_(DeferredLogger& deferred_logger)
             this->nupcol_wgstate_ = this->active_wgstate_;
             this->switched_prod_groups_.clear();
             this->switched_inj_groups_.clear();
+        })
+        && stage([&] {
             this->updateAndCommunicateGroupData(step, /*update_wellgrouptarget*/ true);
 
             network_off = this->network_.pressureImbalance(step);
+        })
+        && stage([&] {
 
             std::set<std::string> binding;
             for (const auto& name : schedule.groupNames(step)) {
@@ -356,9 +374,7 @@ facilityCheck_(DeferredLogger& deferred_logger)
                         .push_back(well->name() + ":" + *to);
                 }
             }
-        } catch (const std::exception& e) {
-            failure = e.what();
-        }
+        });
         log_guard.discard();
     }
     this->active_wgstate_ = saved_active;
@@ -368,6 +384,24 @@ facilityCheck_(DeferredLogger& deferred_logger)
     this->closed_offending_wells_ = saved_closed;
     this->controller_decided_wells_ = saved_decided;
     this->controller_injection_decided_ = saved_inj_decided;
+
+    if (this->comm().size() > 1) {
+        // Each rank sees its own wells: the check is the worst of them, and the counts are the totals.
+        for (auto* p : {&network_off, &group_over, &target_move, &well_over, &inj_over, &group_inj_over}) {
+            p->first = this->comm().max(p->first);
+        }
+        const int any_failure = this->comm().max(failure.empty() ? 0 : 1);
+        if (any_failure != 0 && failure.empty()) {
+            failure = "another rank";
+        }
+        const auto counts = [this](std::vector<std::string>& v) {
+            const int n = this->comm().sum(static_cast<int>(v.size()));
+            if (n > 0 && v.empty()) { v.emplace_back("(another rank)"); }
+        };
+        for (auto* v : {&unsolved, &idle, &group_switches, &well_switches, &unliftable_switches}) {
+            counts(*v);
+        }
+    }
 
     const bool physics_ok = failure.empty() && unsolved.empty() && idle.empty()
         && network_off.first <= tol_pressure && group_over.first <= tol && well_over.first <= tol
