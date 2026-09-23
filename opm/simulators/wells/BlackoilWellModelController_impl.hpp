@@ -1587,9 +1587,6 @@ controllerInjectionDecide_(DeferredLogger& deferred_logger, const bool targets_o
     const auto& summary_state = this->summaryState();
     const auto& pu = this->phaseUsage();
     const Group& field = schedule.getGroup("FIELD", step);
-    if (this->comm().size() > 1) {
-        return false;
-    }
     for (const auto& name : schedule.groupNames(step)) {
         if (schedule.getGroup(name, step).hasSatelliteInjection()) {
             deferred_logger.debug(fmt::format("Controller: injection left to legacy at report step {} ({} has satellite "
@@ -1616,10 +1613,77 @@ controllerInjectionDecide_(DeferredLogger& deferred_logger, const bool targets_o
         {Phase::GAS, IndexTraits::gasPhaseIdx, InjectorType::GAS, Well::ProducerCMode::GRAT, Group::ProductionCMode::GRAT, 2},
         {Phase::OIL, IndexTraits::oilPhaseIdx, InjectorType::OIL, Well::ProducerCMode::ORAT, Group::ProductionCMode::ORAT, 0},
         {Phase::WATER, IndexTraits::waterPhaseIdx, InjectorType::WATER, Well::ProducerCMode::WRAT, Group::ProductionCMode::WRAT, 1}}};
-    for (const auto& wp : well_container_) {
-        if (wp->isInjector() && wp->wellEcl().injectionControls(summary_state).injector_type == InjectorType::MULTI) {
+    for (const auto& wname : schedule.wellNames(step)) {
+        const auto& well = schedule.getWell(wname, step);
+        if (well.isInjector() && well.injectionControls(summary_state).injector_type == InjectorType::MULTI) {
             return false;
         }
+    }
+    // What the decision reads about a well, gathered: every rank then decides from the same numbers,
+    // and each writes the answer for the wells it owns.
+    struct InjWell {
+        bool usable{false};
+        Well::InjectorCMode cmode{Well::InjectorCMode::CMODE_UNDEFINED};
+        std::string holder{};
+        Scalar target{0}, bhp{0}, eff{1};
+        int pvtreg{0};
+        std::vector<Scalar> q, resv, pot;
+    };
+    const auto& well_names = schedule.wellNames(step);
+    const auto& group_names = schedule.groupNames(step);
+    const int np = this->numPhases();
+    const int record = 7 + 3 * np;
+    std::vector<Scalar> buf(well_names.size() * record, Scalar{0});
+    std::map<std::string, WellInterface<TypeTag>*> local_wells;
+    for (const auto& wp : well_container_) {
+        local_wells[wp->name()] = wp.get();
+    }
+    for (std::size_t i = 0; i < well_names.size(); ++i) {
+        const auto& wname = well_names[i];
+        const auto index = this->wellState().index(wname);
+        if (!index.has_value() || !this->wellState().wellIsOwned(*index, wname)) {
+            continue;
+        }
+        const auto& ws = this->wellState().well(*index);
+        const auto it = local_wells.find(wname);
+        Scalar* r = buf.data() + i * record;
+        r[0] = (ws.status == WellStatus::OPEN && it != local_wells.end() && !it->second->wellIsStopped()) ? 1 : 0;
+        r[1] = static_cast<Scalar>(static_cast<int>(ws.injection_cmode));
+        if (ws.group_target) {
+            const auto g = std::find(group_names.begin(), group_names.end(), ws.group_target->group_name);
+            r[2] = g == group_names.end() ? Scalar{0} : static_cast<Scalar>(std::distance(group_names.begin(), g) + 1);
+            r[3] = ws.group_target->target_value;
+        }
+        r[4] = ws.bhp;
+        r[5] = ws.efficiency_scaling_factor;
+        r[6] = it != local_wells.end() ? static_cast<Scalar>(it->second->pvtRegionIdx()) : Scalar{0};
+        for (int p = 0; p < np; ++p) {
+            r[7 + p] = ws.surface_rates[p];
+            r[7 + np + p] = ws.reservoir_rates[p];
+            r[7 + 2 * np + p] = p < static_cast<int>(ws.well_potentials.size()) ? ws.well_potentials[p] : Scalar{0};
+        }
+    }
+    if (this->comm().size() > 1) {
+        this->comm().sum(buf.data(), buf.size());
+    }
+    std::map<std::string, InjWell> gathered;
+    for (std::size_t i = 0; i < well_names.size(); ++i) {
+        const Scalar* r = buf.data() + i * record;
+        InjWell d;
+        d.usable = r[0] > Scalar{0.5};
+        d.cmode = static_cast<Well::InjectorCMode>(static_cast<int>(std::lround(r[1])));
+        const int holder = static_cast<int>(std::lround(r[2]));
+        if (holder > 0) {
+            d.holder = group_names[holder - 1];
+            d.target = r[3];
+        }
+        d.bhp = r[4];
+        d.eff = r[5];
+        d.pvtreg = static_cast<int>(std::lround(r[6]));
+        d.q.assign(r + 7, r + 7 + np);
+        d.resv.assign(r + 7 + np, r + 7 + 2 * np);
+        d.pot.assign(r + 7 + 2 * np, r + 7 + 3 * np);
+        gathered.emplace(well_names[i], std::move(d));
     }
     std::set<std::string> decided_injectors;
     std::map<std::string, std::map<int, Scalar>> decided_resv;   // group -> active phase -> reservoir rate
@@ -1630,17 +1694,17 @@ controllerInjectionDecide_(DeferredLogger& deferred_logger, const bool targets_o
         }
         const int pos = pu.canonicalToActivePhaseIdx(ph.canonical);
         Tree<Scalar> tree;
-        struct Inj { WellInterface<TypeTag>* w; Well::InjectorCMode cap_mode; };
+        struct Inj { Well::InjectorCMode cap_mode; };
         std::map<std::string, Inj> injectors;
         std::map<std::string, Group::InjectionCMode> binding;   // group -> the limit it holds
         const auto target = helper.getInjectionGuideTargetMode(ph.phase);
-        for (const auto& wp : well_container_) {
-            const auto& well = wp->wellEcl();
-            if (!wp->isInjector() || !well.predictionMode() || !this->wellState().has(wp->name())) { continue; }
+        for (const auto& wname : schedule.wellNames(step)) {
+            const auto& well = schedule.getWell(wname, step);
+            if (!well.isInjector() || !well.predictionMode()) { continue; }
             const auto controls = well.injectionControls(summary_state);
             if (controls.injector_type != ph.type) { continue; }
-            const auto& ws = this->wellState().well(wp->indexOfWell());
-            if (ws.status != WellStatus::OPEN || wp->wellIsStopped()) { continue; }
+            const auto& d = gathered.at(wname);
+            if (!d.usable) { continue; }
             Scalar cap = std::numeric_limits<Scalar>::max();
             auto cap_mode = Well::InjectorCMode::BHP;
             if (controls.hasControl(Well::InjectorCMode::RATE) && controls.surface_rate >= 0.0) {
@@ -1649,36 +1713,36 @@ controllerInjectionDecide_(DeferredLogger& deferred_logger, const bool targets_o
             }
             if (controls.hasControl(Well::InjectorCMode::RESV) && controls.reservoir_rate >= 0.0) {
                 std::vector<Scalar> c(this->numPhases(), Scalar{0});
-                calcInjResvCoeff(0, wp->pvtRegionIdx(), c);
+                calcInjResvCoeff(0, d.pvtreg, c);
                 if (c[pos] > Scalar{0} && controls.reservoir_rate / c[pos] < cap) {
                     cap = controls.reservoir_rate / c[pos];
                     cap_mode = Well::InjectorCMode::RESV;
                 }
             }
-            const Scalar pot = pos < static_cast<int>(ws.well_potentials.size()) ? std::abs(ws.well_potentials[pos]) : Scalar{0};
+            const Scalar pot = std::abs(d.pot[pos]);
             if (pot > Scalar{0} && pot < cap) {
                 cap = pot;
                 cap_mode = Well::InjectorCMode::BHP;
             }
             // On its own control a well is what it injects (the tree may still pull it onto GRUP);
             // on GRUP a stale potential below its current rate is no cap.
-            const Scalar now = std::abs(ws.surface_rates[pos]);
-            const bool on_grup = ws.injection_cmode == Well::InjectorCMode::GRUP && well.isAvailableForGroupControl();
+            const Scalar now = std::abs(d.q[pos]);
+            const bool on_grup = d.cmode == Well::InjectorCMode::GRUP && well.isAvailableForGroupControl();
             if (!on_grup || now > cap) {
                 cap = now;
-                cap_mode = on_grup ? cap_mode : ws.injection_cmode;
+                cap_mode = on_grup ? cap_mode : d.cmode;
             }
             // Its own feasibility report: pinned at its bhp limit and short of the share it was given,
             // it cannot do more than it does, whatever its potential says.
             if (param_.group_controller_injection_feedback_
-                && on_grup && ws.group_target && ws.bhp >= controls.bhp_limit * (1 - Scalar{1e-3})
-                && now < ws.group_target->target_value * (1 - param_.group_controller_rate_tolerance_)
+                && on_grup && !d.holder.empty() && d.bhp >= controls.bhp_limit * (1 - Scalar{1e-3})
+                && now < d.target * (1 - param_.group_controller_rate_tolerance_)
                 && now < cap) {
                 cap = now;
                 cap_mode = Well::InjectorCMode::BHP;
             }
             Node n;
-            n.name = wp->name();
+            n.name = wname;
             n.type = ProdNodeType::Well;
             n.parent = well.groupName();
             n.availableForGroupControl = well.isAvailableForGroupControl();
@@ -1692,7 +1756,7 @@ controllerInjectionDecide_(DeferredLogger& deferred_logger, const bool targets_o
                 // Just opened, no potential yet: a zero guide would leave its branch without a share.
                 n.fixedGuideRate = cap < std::numeric_limits<Scalar>::max() ? cap : Scalar{1};
             }
-            n.efficiencyFactor = well.getEfficiencyFactor() * ws.efficiency_scaling_factor;
+            n.efficiencyFactor = well.getEfficiencyFactor() * d.eff;
             // At capacity: a group may hold its injectors at zero now.
             const bool grup = on_grup;
             n.rates = {};
@@ -1707,7 +1771,7 @@ controllerInjectionDecide_(DeferredLogger& deferred_logger, const bool targets_o
                 n.modeCategory = ProdNodeModeCategory::Individual;
             }
             tree.emplace(n.name, n);
-            injectors.emplace(n.name, Inj{wp.get(), cap_mode});
+            injectors.emplace(n.name, Inj{cap_mode});
         }
         if (injectors.empty()) {
             continue;
@@ -1846,9 +1910,9 @@ controllerInjectionDecide_(DeferredLogger& deferred_logger, const bool targets_o
             std::map<std::string, std::pair<Scalar, Scalar>> sums;     // group -> (previous, new) held total
             std::set<std::string> fresh;
             for (const auto& [name, g] : holder) {
-                const auto& ws = this->wellState().well(injectors.at(name).w->indexOfWell());
-                if (!ws.group_target || ws.group_target->group_name != g) { fresh.insert(g); continue; }
-                sums[g].first += ws.group_target->target_value;
+                const auto& d = gathered.at(name);
+                if (d.holder != g) { fresh.insert(g); continue; }
+                sums[g].first += d.target;
                 sums[g].second += std::max(-tree.at(name).rates[ph.slot], Scalar{0});
             }
             for (const auto& [g, s] : sums) {
@@ -1861,10 +1925,10 @@ controllerInjectionDecide_(DeferredLogger& deferred_logger, const bool targets_o
         if (std::getenv("OPM_CONTROLLER_TRACE")) {
             std::string d;
             for (const auto& [name, inj] : injectors) {
-                const auto& ws = this->wellState().well(inj.w->indexOfWell());
+                const auto& g = gathered.at(name);
                 d += fmt::format(" [{} {} q {:.1f} tgt {:.1f} tree {:.1f} cap {:.1f} holder {} {}]", name,
-                                 WellInjectorCMode2String(ws.injection_cmode), std::abs(ws.surface_rates[pos]) * 86400.0,
-                                 ws.group_target ? ws.group_target->target_value * 86400.0 : -1.0,
+                                 WellInjectorCMode2String(g.cmode), std::abs(g.q[pos]) * 86400.0,
+                                 g.holder.empty() ? -1.0 : g.target * 86400.0,
                                  tree.count(name) ? -tree.at(name).rates[ph.slot] * 86400.0 : -1.0,
                                  tree.count(name) && tree.at(name).Limits.count(ph.mode) ? tree.at(name).Limits.at(ph.mode) * 86400.0 : -1.0,
                                  holder.count(name) ? holder.at(name) : std::string("-"),
@@ -1876,8 +1940,10 @@ controllerInjectionDecide_(DeferredLogger& deferred_logger, const bool targets_o
         }
         std::string trace;
         for (const auto& [name, inj] : injectors) {
-            auto& ws = this->wellState().well(inj.w->indexOfWell());
-            const auto before = ws.injection_cmode;
+            const auto& d = gathered.at(name);
+            const auto before = d.cmode;
+            // The decision is the same on every rank; only its owner writes it.
+            auto* ws = this->wellState().has(name) ? &this->wellState().well(name) : nullptr;
             if (!tree.count(name)) {
                 continue;       // outside group control, on its own control
             }
@@ -1886,10 +1952,10 @@ controllerInjectionDecide_(DeferredLogger& deferred_logger, const bool targets_o
             const Scalar cap = tree.at(name).Limits.count(ph.mode) ? tree.at(name).Limits.at(ph.mode) : rate;
             const bool released = param_.group_controller_injection_feedback_
                 && before == Well::InjectorCMode::GRUP && h == holder.end()
-                && ws.group_target && tree.count(ws.group_target->group_name);
+                && !d.holder.empty() && tree.count(d.holder);
             if (targets_only && !released
                 && (before != Well::InjectorCMode::GRUP || h == holder.end()
-                    || !ws.group_target || ws.group_target->group_name != h->second)) {
+                    || d.holder != h->second)) {
                 // After NUPCOL the modes stand; only the targets follow production.
                 if (before == Well::InjectorCMode::GRUP) { decided_injectors.insert(name); }
                 continue;
@@ -1902,43 +1968,49 @@ controllerInjectionDecide_(DeferredLogger& deferred_logger, const bool targets_o
             }
             if (released) {
                 // Released at its cap: it stays on GRUP with the cap as its share.
-                ws.group_target->target_value = cap;
+                if (ws != nullptr && ws->group_target) { ws->group_target->target_value = cap; }
                 trace += fmt::format(" {} GRUP at cap {:.1f}", name, cap * 86400.0);
                 decided_injectors.insert(name);
                 continue;
             }
             if (h != holder.end()) {
-                const Scalar old = ws.group_target ? ws.group_target->target_value : Scalar{-1};
+                const Scalar old = d.holder.empty() ? Scalar{-1} : d.target;
                 const bool moved = std::abs(rate - old) > param_.group_controller_rate_tolerance_ * std::abs(rate) + Scalar{1e-7};
                 // After NUPCOL a group whose previous shares still meet its target within the tolerance
                 // keeps them, or the targets chase Newton's iterate.
                 const Scalar share = (targets_only && stands.count(h->second)) ? old : rate;
                 this->controller_injection_moved_ = this->controller_injection_moved_ || moved;
-                ws.injection_cmode = Well::InjectorCMode::GRUP;
-                ws.group_target.emplace();
-                ws.group_target->group_name = h->second;
-                ws.group_target->target_value = share;
-                ws.group_target->injection_cmode = Group::InjectionCMode::NONE;
-                if (const auto b = binding.find(h->second); b != binding.end()) {
-                    ws.group_target->injection_cmode = b->second;
+                if (ws != nullptr) {
+                    ws->injection_cmode = Well::InjectorCMode::GRUP;
+                    ws->group_target.emplace();
+                    ws->group_target->group_name = h->second;
+                    ws->group_target->target_value = share;
+                    ws->group_target->injection_cmode = Group::InjectionCMode::NONE;
+                    if (const auto b = binding.find(h->second); b != binding.end()) {
+                        ws->group_target->injection_cmode = b->second;
+                    }
                 }
                 for (std::string g = tree.at(name).parent; g != h->second; g = tree.at(g).parent) { carries.insert(g); }
                 trace += fmt::format(" {} GRUP {:.1f} under {}", name, share * 86400.0, h->second);
             } else if (before == Well::InjectorCMode::GRUP) {
-                ws.injection_cmode = inj.cap_mode;
-                ws.group_target.reset();
+                if (ws != nullptr) {
+                    ws->injection_cmode = inj.cap_mode;
+                    ws->group_target.reset();
+                }
                 trace += fmt::format(" {} {} (cap {:.1f}, q {:.1f})", name, WellInjectorCMode2String(inj.cap_mode),
                                      tree.at(name).Limits.count(ph.mode) ? tree.at(name).Limits.at(ph.mode) * 86400.0 : -1.0,
                                      -tree.at(name).rates[ph.slot] * 86400.0);
             }
             decided_injectors.insert(name);
-            if (ws.injection_cmode != before) {
-                inj.w->updateWellStateWithTarget(simulator_, this->groupStateHelper(), this->wellState());
-                inj.w->updatePrimaryVariables(this->groupStateHelper());
+            if (ws != nullptr && ws->injection_cmode != before) {
+                auto* w = local_wells.at(name);
+                w->updateWellStateWithTarget(simulator_, this->groupStateHelper(), this->wellState());
+                w->updatePrimaryVariables(this->groupStateHelper());
             }
         }
         for (const auto& [name, inj] : injectors) {
-            const auto& w = this->wellState().well(inj.w->indexOfWell());
+            if (!this->wellState().has(name)) { continue; }
+            const auto& w = this->wellState().well(name);
             trace += fmt::format(" <{}{} {} {:.1f}>", name, tree.count(name) ? "" : " fixed",
                                  WellInjectorCMode2String(w.injection_cmode),
                                  w.group_target ? w.group_target->target_value * 86400.0 : -1.0);
@@ -1954,12 +2026,13 @@ controllerInjectionDecide_(DeferredLogger& deferred_logger, const bool targets_o
         // state: those containers hold each rank's own share until communicate_rates sums them.
         std::map<std::string, Scalar> resv_sum;
         for (const auto& [name, inj] : injectors) {
-            const auto& ws = this->wellState().well(inj.w->indexOfWell());
+            const auto& d = gathered.at(name);
+            const auto& well = schedule.getWell(name, step);
             const Scalar q = tree.count(name) ? -tree.at(name).rates[ph.slot] : fixed_rate[name];
-            const Scalar s = std::abs(ws.surface_rates[pos]);
-            const Scalar ratio = s > Scalar{1e-12} ? std::abs(ws.reservoir_rates[pos]) / s : group_resv[pos];
-            Scalar r = q * ratio * inj.w->wellEcl().getEfficiencyFactor() * ws.efficiency_scaling_factor;
-            for (std::string g = inj.w->wellEcl().groupName(); tree.count(g); g = tree.at(g).parent) {
+            const Scalar s = std::abs(d.q[pos]);
+            const Scalar ratio = s > Scalar{1e-12} ? std::abs(d.resv[pos]) / s : group_resv[pos];
+            Scalar r = q * ratio * well.getEfficiencyFactor() * d.eff;
+            for (std::string g = well.groupName(); tree.count(g); g = tree.at(g).parent) {
                 resv_sum[g] += r;
                 r *= tree.at(g).efficiencyFactor;
             }
