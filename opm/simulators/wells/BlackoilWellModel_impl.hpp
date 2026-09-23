@@ -1761,7 +1761,7 @@ namespace Opm {
                 const bool off = this->controller_unsettled_
                     || (this->controller_network_owned_
                         && this->network_.pressureImbalance(step).first > param_.group_controller_network_tolerance_)
-                    || (!this->controller_network_owned_ && controllerGroupLimitViolated_());
+                    || controllerGroupLimitViolated_();
                 const std::pair<double, double> key{simulator_.time(), simulator_.timeStepSize()};
                 if (key != this->controller_unsettled_step_) {
                     this->controller_unsettled_step_ = key;
@@ -1992,10 +1992,20 @@ namespace Opm {
             const auto controls = group.productionControls(this->summaryState());
             const auto& action = controls.group_limit_action;
             const bool all_rate = action.allRates == Group::ExceedAction::RATE;
-            const auto& r = this->groupState().production_rates(name);
-            const Scalar oil = rate(r, IndexTraits::oilPhaseIdx);
-            const Scalar wat = rate(r, IndexTraits::waterPhaseIdx);
-            const Scalar gas = rate(r, IndexTraits::gasPhaseIdx);
+            // Summed from the wells as they stand, not read from the group state: that is only
+            // as fresh as the last updateAndCommunicateGroupData, which is before this iteration's
+            // well solves. A group can be over its limit by then and the state not say so.
+            const auto& helper = this->groupStateHelper();
+            const auto& group_ref = group;
+            auto live = [&](const int canonical) {
+                if (!pu.phaseIsActive(canonical)) { return Scalar(0); }
+                return this->comm().sum(helper.sumWellSurfaceRates(group_ref,
+                                                                   pu.canonicalToActivePhaseIdx(canonical),
+                                                                   /*injector=*/false));
+            };
+            const Scalar oil = live(IndexTraits::oilPhaseIdx);
+            const Scalar wat = live(IndexTraits::waterPhaseIdx);
+            const Scalar gas = live(IndexTraits::gasPhaseIdx);
             auto over = [&](const Group::ProductionCMode mode, const Group::ExceedAction act,
                             const Scalar target, const Scalar current) {
                 return group.has_control(mode) && (all_rate || act == Group::ExceedAction::RATE)
