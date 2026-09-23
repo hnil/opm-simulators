@@ -19,6 +19,7 @@
 
 #include <config.h>
 #include <opm/simulators/wells/GasLiftGroupInfo.hpp>
+#include <opm/simulators/wells/WellHelpers.hpp>
 
 #include <opm/material/fluidsystems/BlackOilDefaultFluidSystemIndices.hpp>
 
@@ -427,7 +428,7 @@ bool GasLiftGroupInfo<Scalar, IndexTraits>::
 checkNewtonIterationIdxOk_(const std::string& well_name)
 {
     if (this->glo_.all_newton()) {
-        const int nupcol = this->schedule_[this->report_step_idx_].nupcol();
+        const int nupcol = wellhelpers::nupcol(this->schedule_[this->report_step_idx_].nupcol());
         const bool optimize = this->iterCtx_.withinNupcol(nupcol);
         if (this->debug) {
             const std::string msg = fmt::format(

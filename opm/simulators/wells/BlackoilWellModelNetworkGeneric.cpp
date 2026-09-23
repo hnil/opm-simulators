@@ -22,6 +22,7 @@
 
 #include <config.h>
 #include <opm/simulators/wells/BlackoilWellModelNetworkGeneric.hpp>
+#include <opm/simulators/wells/WellHelpers.hpp>
 
 #include <opm/common/TimingMacros.hpp>
 
@@ -145,7 +146,7 @@ shouldBalance(const int reportStepIdx) const
     if (balance.mode() == Network::Balance::CalcMode::TimeStepStart) {
         return iterCtx.isFirstGlobalIteration();
     } else if (balance.mode() == Network::Balance::CalcMode::NUPCOL) {
-        const int nupcol = well_model_.schedule()[reportStepIdx].nupcol();
+        const int nupcol = wellhelpers::nupcol(well_model_.schedule()[reportStepIdx].nupcol());
         return iterCtx.withinNupcol(nupcol);
     } else {
         // We do not support any other rebalancing modes,
@@ -167,7 +168,7 @@ willBalanceOnNextIteration(const int reportStepIdx) const
     }
 
     if (schedule_state.network_balance().mode() == Network::Balance::CalcMode::NUPCOL) {
-        const int nupcol = schedule_state.nupcol();
+        const int nupcol = wellhelpers::nupcol(schedule_state.nupcol());
         return well_model_.iterationContext().withinNupcol(nupcol - 1); // Note the -1 here!
     } else {
         // Any other rebalancing mode will only rebalance

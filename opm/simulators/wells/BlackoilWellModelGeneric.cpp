@@ -23,6 +23,7 @@
 #include <config.h>
 
 #include <opm/simulators/wells/BlackoilWellModelGeneric.hpp>
+#include <opm/simulators/wells/WellHelpers.hpp>
 
 #include <opm/common/ErrorMacros.hpp>
 #include <opm/common/TimingMacros.hpp>
@@ -1422,7 +1423,7 @@ updateAndCommunicateGroupData(const int reportStepIdx,
 {
     OPM_TIMEFUNCTION();
     const Group& fieldGroup = schedule().getGroup("FIELD", reportStepIdx);
-    const int nupcol = schedule()[reportStepIdx].nupcol();
+    const int nupcol = wellhelpers::nupcol(schedule()[reportStepIdx].nupcol());
 
     // Update accumulated group consumption/import rates for current report step
     if (iter_ctx_.isFirstGlobalIteration()) {

@@ -424,7 +424,7 @@ namespace Opm
 
         const int episodeIdx = simulator.episodeIndex();
         const auto& iterCtx = simulator.problem().iterationContext();
-        const int nupcol = schedule[episodeIdx].nupcol();
+        const int nupcol = wellhelpers::nupcol(schedule[episodeIdx].nupcol());
         const bool oscillating =
             std::ranges::count(this->well_control_log_, from) >= this->param_.max_number_of_well_switches_;
         if (oscillating && !is_grup) { // we would like to avoid ending up as GRUP
@@ -999,7 +999,7 @@ namespace Opm
                 const int episodeIdx = simulator.episodeIndex();
                 const auto& iterCtx = simulator.problem().iterationContext();
                 const auto& schedule = simulator.vanguard().schedule();
-                const int nupcol = schedule[episodeIdx].nupcol();
+                const int nupcol = wellhelpers::nupcol(schedule[episodeIdx].nupcol());
                 // We always store the current control as it is used for output
                 // and only after iteration >= nupcol
                 // we log all switches to check if the well controls oscillates

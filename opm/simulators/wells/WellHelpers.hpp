@@ -28,6 +28,8 @@
 
 #include <cstdint>
 
+#include <cstdlib>
+
 namespace Opm {
 
 template<class Scalar> class ParallelWellInfo;
@@ -37,6 +39,18 @@ enum class WellProducerCMode : std::uint16_t;
 enum class WellInjectorCMode : std::uint16_t;
 
 namespace wellhelpers {
+
+/// NUPCOL as the run sees it. OPM_NUPCOL replaces the deck's value everywhere, for legacy and the
+/// controller alike: with it large, nothing is frozen mid-step and two runs can be compared without
+/// the answer depending on which iteration a target happened to be frozen at.
+inline int nupcol(const int deck_value)
+{
+    static const int override_value = [] {
+        const char* v = std::getenv("OPM_NUPCOL");
+        return v != nullptr ? std::atoi(v) : 0;
+    }();
+    return override_value > 0 ? override_value : deck_value;
+}
 
 /// \brief A wrapper around the B matrix for distributed wells
 ///
