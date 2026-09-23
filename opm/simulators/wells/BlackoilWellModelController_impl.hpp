@@ -249,11 +249,12 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
     // What the route reads about a well, gathered: every rank builds the same system.
     struct RouteWell {
         bool open{false};
-        Scalar eff{1}, alq{0}, vfp_dp{0}, wfr{0}, gfr{0};
+        Scalar eff{1}, alq{0}, vfp_dp{0}, wfr{0}, gfr{0}, thp{0};
         bool explicit_vfp{false};
-        std::vector<Scalar> ipr_a, ipr_b, q;
+        std::vector<Scalar> ipr_a, ipr_b, q, pot;
     };
     std::map<std::string, RouteWell> route_data;
+    this->controller_off_thp_.clear();
     {
         const auto& names = schedule.wellNames(reportStepIdx);
         std::map<std::string, const WellInterface<TypeTag>*> local;
@@ -261,7 +262,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
             local[wp->name()] = wp.get();
         }
         const int np = this->numPhases();
-        const int rec = 7 + 3 * np;
+        const int rec = 8 + 4 * np;
         std::vector<Scalar> buf(names.size() * rec, Scalar{0});
         for (std::size_t i = 0; i < names.size(); ++i) {
             const auto& wname = names[i];
@@ -288,10 +289,12 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                 r[5] = this->getVFPProperties().getExplicitGFR(table, wi.indexOfWell());
                 r[6] = wi.useVfpExplicit() ? 1 : 0;
             }
+            r[7] = ws.thp;
             for (int ph = 0; ph < np; ++ph) {
-                r[7 + ph] = ph < static_cast<int>(ws.implicit_ipr_a.size()) ? ws.implicit_ipr_a[ph] : Scalar{0};
-                r[7 + np + ph] = ph < static_cast<int>(ws.implicit_ipr_b.size()) ? ws.implicit_ipr_b[ph] : Scalar{0};
-                r[7 + 2 * np + ph] = ws.surface_rates[ph];
+                r[8 + ph] = ph < static_cast<int>(ws.implicit_ipr_a.size()) ? ws.implicit_ipr_a[ph] : Scalar{0};
+                r[8 + np + ph] = ph < static_cast<int>(ws.implicit_ipr_b.size()) ? ws.implicit_ipr_b[ph] : Scalar{0};
+                r[8 + 2 * np + ph] = ws.surface_rates[ph];
+                r[8 + 3 * np + ph] = ph < static_cast<int>(ws.well_potentials.size()) ? ws.well_potentials[ph] : Scalar{0};
             }
         }
         if (this->comm().size() > 1) {
@@ -307,9 +310,11 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
             d.wfr = r[4];
             d.gfr = r[5];
             d.explicit_vfp = r[6] > Scalar{0.5};
-            d.ipr_a.assign(r + 7, r + 7 + np);
-            d.ipr_b.assign(r + 7 + np, r + 7 + 2 * np);
-            d.q.assign(r + 7 + 2 * np, r + 7 + 3 * np);
+            d.thp = r[7];
+            d.ipr_a.assign(r + 8, r + 8 + np);
+            d.ipr_b.assign(r + 8 + np, r + 8 + 2 * np);
+            d.q.assign(r + 8 + 2 * np, r + 8 + 3 * np);
+            d.pot.assign(r + 8 + 3 * np, r + 8 + 4 * np);
             route_data.emplace(names[i], std::move(d));
         }
     }
@@ -538,7 +543,23 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
             w.node = no_network ? 0 : index.at(well.groupName());
             w.vfp_table = controls.vfp_table_number;
             if (no_network && w.vfp_table > 0 && controls.thp_limit > 0.0) {
-                w.own_thp = static_cast<Scalar>(controls.thp_limit);
+                // WVFPEXP item 4: where the deck says so, a well whose rate would rise on thp is left
+                // where it is rather than moved onto it, as WellConstraints does for legacy.
+                const auto& wvfpexp = well.getWVFPEXP();
+                bool rate_below_potential = true;
+                if (wvfpexp.prevent() && controls.thp_limit > d.thp) {
+                    for (int ph = 0; ph < pu.numActivePhases(); ++ph) {
+                        rate_below_potential = rate_below_potential && std::abs(d.q[ph]) <= std::abs(d.pot[ph]);
+                    }
+                } else {
+                    rate_below_potential = false;
+                }
+                if (rate_below_potential) {
+                    w.vfp_table = 0;    // the deck keeps it off thp; its own limits still hold
+                    this->controller_off_thp_.insert(name);
+                } else {
+                    w.own_thp = static_cast<Scalar>(controls.thp_limit);
+                }
             } else if (no_network) {
                 w.vfp_table = 0;            // no thp limit: the table constrains nothing
             }

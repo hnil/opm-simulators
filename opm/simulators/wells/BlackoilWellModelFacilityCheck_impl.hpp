@@ -102,7 +102,9 @@ facilityCheck_(DeferredLogger& deferred_logger)
         if (controls.hasControl(Well::ProducerCMode::BHP) && controls.bhp_limit > Scalar(0)) {
             worse(well_over, Scalar(1) - ws.bhp / controls.bhp_limit, well->name() + ":BHP");
         }
-        if (well->wellHasTHPConstraints(summary_state)) {
+        if (well->wellHasTHPConstraints(summary_state)
+            && this->controller_off_thp_.count(well->name()) == 0) {
+            // WVFPEXP item 4 keeps some wells off their thp on purpose; that is not a violation.
             const Scalar limit = well->getTHPConstraint(summary_state);
             if (limit > Scalar(0)) {
                 worse(well_over, Scalar(1) - ws.thp / limit, well->name() + ":THP");
