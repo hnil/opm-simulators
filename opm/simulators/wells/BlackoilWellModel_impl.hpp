@@ -2041,43 +2041,8 @@ namespace Opm {
         const bool network_route = param_.enable_group_controller_network_
             && (this->schedule()[episodeIdx].network().active() || controllerThpRouteApplies_());
         this->controller_network_owned_ = false;
-        // Injection groups are decided by the controller's tree; what it gives up on (injection
-        // network, satellite injection, MULTI, parallel) stays with legacy's rules.
         bool injection_changed = false;
         const std::string inj_sig_before = controllerInjectionSignature_();
-        // Decided within NUPCOL, as the producers; after it the modes stand and only the held
-        // wells' shares follow the production REIN and VREP are a fraction of, not counted as a change.
-        if (param_.group_controller_injection_) {
-            const bool targets_only = !may_redecide && this->controller_injection_owned_;
-            this->controller_injection_owned_ = controllerInjectionDecide_(deferred_logger, targets_only);
-            // A moving target is not a control change (legacy's move every iteration too); a switch is.
-            injection_changed = this->controller_injection_owned_
-                && ((!param_.group_controller_injection_feedback_ && !targets_only
-                     && this->controller_injection_moved_)
-                    || controllerInjectionSignature_() != inj_sig_before);
-            injection_changed = comm.max(static_cast<int>(injection_changed)) > 0;
-        }
-        if (!(param_.group_controller_injection_ && this->controller_injection_owned_)) {
-            this->controller_injection_owned_ = false;
-            this->controller_injection_decided_.clear();
-            controllerMarkDecided_();
-            const Group& fieldGroup = this->schedule().getGroup("FIELD", episodeIdx);
-            injection_changed = updateGroupControls(fieldGroup, deferred_logger, episodeIdx, /*injection_only*/ true);
-            bool to_group = false;
-            OPM_BEGIN_PARALLEL_TRY_CATCH()
-            for (const auto& well : well_container_) {
-                if (well->isInjector()) {
-                    to_group = well->updateWellControl(simulator_, WellInterface<TypeTag>::IndividualOrGroup::Group,
-                                                       this->groupStateHelper(), this->wellState()) || to_group;
-                }
-            }
-            OPM_END_PARALLEL_TRY_CATCH("BlackoilWellModel: updating injector controls failed: ",
-                                       simulator_.gridView().comm());
-            if (comm.sum(static_cast<int>(to_group)) > 0) {
-                updateAndCommunicate(episodeIdx, /*injectors_only*/ true);
-                injection_changed = true;
-            }
-        }
         const int max_passes = network_route ? param_.group_controller_max_passes_network_
                                              : param_.group_controller_max_passes_;
         const Scalar rtol = param_.group_controller_rate_tolerance_;
@@ -2207,6 +2172,42 @@ namespace Opm {
             ended = pass + 1 == max_passes ? (unsettled ? "cap reached, wells or network not settled"
                                                         : "cap reached, decision still moving")
                                            : "moved";
+        }
+        // After the producers: REIN and VREP follow them as this pass loop left them, not one iteration late.
+        // Injection groups are decided by the controller's tree; what it gives up on (injection
+        // network, satellite injection, MULTI, parallel) stays with legacy's rules.
+        // Decided within NUPCOL, as the producers; after it the modes stand and only the held
+        // wells' shares follow the production REIN and VREP are a fraction of, not counted as a change.
+        if (param_.group_controller_injection_) {
+            const bool targets_only = !may_redecide && this->controller_injection_owned_;
+            this->controller_injection_owned_ = controllerInjectionDecide_(deferred_logger, targets_only);
+            // A moving target is not a control change (legacy's move every iteration too); a switch is.
+            injection_changed = this->controller_injection_owned_
+                && ((!param_.group_controller_injection_feedback_ && !targets_only
+                     && this->controller_injection_moved_)
+                    || controllerInjectionSignature_() != inj_sig_before);
+            injection_changed = comm.max(static_cast<int>(injection_changed)) > 0;
+        }
+        if (!(param_.group_controller_injection_ && this->controller_injection_owned_)) {
+            this->controller_injection_owned_ = false;
+            this->controller_injection_decided_.clear();
+            controllerMarkDecided_();
+            const Group& fieldGroup = this->schedule().getGroup("FIELD", episodeIdx);
+            injection_changed = updateGroupControls(fieldGroup, deferred_logger, episodeIdx, /*injection_only*/ true);
+            bool to_group = false;
+            OPM_BEGIN_PARALLEL_TRY_CATCH()
+            for (const auto& well : well_container_) {
+                if (well->isInjector()) {
+                    to_group = well->updateWellControl(simulator_, WellInterface<TypeTag>::IndividualOrGroup::Group,
+                                                       this->groupStateHelper(), this->wellState()) || to_group;
+                }
+            }
+            OPM_END_PARALLEL_TRY_CATCH("BlackoilWellModel: updating injector controls failed: ",
+                                       simulator_.gridView().comm());
+            if (comm.sum(static_cast<int>(to_group)) > 0) {
+                updateAndCommunicate(episodeIdx, /*injectors_only*/ true);
+                injection_changed = true;
+            }
         }
         // How far the solved wells sit from what they were assigned: the closing
         // check of decision against well solve, reported, not enforced.

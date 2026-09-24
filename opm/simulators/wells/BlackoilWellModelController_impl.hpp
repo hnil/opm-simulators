@@ -2168,8 +2168,8 @@ controllerInjectionDecide_(DeferredLogger& deferred_logger, const bool targets_o
             }
         }
         // The next phase's RESV and VREP see this phase's injection as decided, at each well's own
-        // reservoir/surface ratio (a field-average gas factor was 22 % off). Held here, not in the group
-        // state: those containers hold each rank's own share until communicate_rates sums them.
+        // reservoir/surface ratio (a field-average gas factor was 22 % off). Held here: the group state
+        // keeps the injection as last solved, which the next phase's target subtracts it from.
         std::map<std::string, Scalar> resv_sum;
         for (const auto& [name, inj] : injectors) {
             const auto& d = gathered.at(name);
