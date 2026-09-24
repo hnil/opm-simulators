@@ -362,12 +362,24 @@ namespace Opm
                             std::vector<Scalar>& well_flux,
                             DeferredLogger& deferred_logger) const
     {
+        computeWellRatesWithBhp(simulator, bhp, simulator.problem().wellModel().wellState(),
+                                well_flux, deferred_logger);
+    }
+
+    template<typename TypeTag>
+    void
+    MultisegmentWell<TypeTag>::
+    computeWellRatesWithBhp(const Simulator& simulator,
+                            const Scalar& bhp,
+                            const WellStateType& well_state,
+                            std::vector<Scalar>& well_flux,
+                            DeferredLogger& deferred_logger) const
+    {
         const int np = this->number_of_phases_;
 
         well_flux.resize(np, 0.0);
         const bool allow_cf = this->getAllowCrossFlow();
         const int nseg = this->numberOfSegments();
-        const WellStateType& well_state = simulator.problem().wellModel().wellState();
         const auto& ws = well_state.well(this->indexOfWell());
         auto segments_copy = ws.segments;
         segments_copy.scale_pressure(bhp);
@@ -1261,7 +1273,7 @@ namespace Opm
     template<typename TypeTag>
     void
     MultisegmentWell<TypeTag>::
-    checkOperabilityUnderBHPLimit(const WellStateType& /*well_state*/,
+    checkOperabilityUnderBHPLimit(const WellStateType& well_state,
                                   const Simulator& simulator,
                                   DeferredLogger& deferred_logger)
     {
@@ -1296,7 +1308,7 @@ namespace Opm
                 // option 2: stick with the above IPR curve
                 // we use IPR here
                 std::vector<Scalar> well_rates_bhp_limit;
-                computeWellRatesWithBhp(simulator, bhp_limit, well_rates_bhp_limit, deferred_logger);
+                computeWellRatesWithBhp(simulator, bhp_limit, well_state, well_rates_bhp_limit, deferred_logger);
 
                 const Scalar thp_limit = this->getTHPConstraint(summaryState);
                 const Scalar thp = WellBhpThpCalculator(*this).calculateThpFromBhp(well_rates_bhp_limit,
@@ -2228,14 +2240,14 @@ namespace Opm
         OPM_TIMEFUNCTION();
         auto& deferred_logger = groupStateHelper.deferredLogger();
         // Make the frates() function.
-        auto frates = [this, &simulator, &deferred_logger](const Scalar bhp) {
+        auto frates = [this, &simulator, &groupStateHelper, &deferred_logger](const Scalar bhp) {
             // Not solving the well equations here, which means we are
             // calculating at the current Fg/Fw values of the
             // well. This does not matter unless the well is
             // crossflowing, and then it is likely still a good
             // approximation.
             std::vector<Scalar> rates(3);
-            computeWellRatesWithBhp(simulator, bhp, rates, deferred_logger);
+            computeWellRatesWithBhp(simulator, bhp, groupStateHelper.wellState(), rates, deferred_logger);
             return rates;
         };
 

@@ -314,6 +314,13 @@ namespace Opm {
                                      std::vector<Scalar>& well_flux,
                                      DeferredLogger& deferred_logger) const override;
 
+        // The segment pressures are taken from well_state, shifted to bhp.
+        void computeWellRatesWithBhp(const Simulator& simulator,
+                                     const Scalar& bhp,
+                                     const WellStateType& well_state,
+                                     std::vector<Scalar>& well_flux,
+                                     DeferredLogger& deferred_logger) const;
+
         void computeWellRatesWithBhpIterations(const Simulator& simulator,
                                                const Scalar& bhp,
                                                const GroupStateHelperType& groupStateHelper,
