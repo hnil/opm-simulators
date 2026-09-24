@@ -129,7 +129,9 @@ controllerRefreshIpr_(DeferredLogger& deferred_logger)
             const char* v = std::getenv("OPM_CONTROLLER_IPR_INTERCEPT");
             return v == nullptr || std::string(v) != "stale";
         }();
-        if (!zero && true_intercept) {
+        // Not for a multisegment well: its rates-at-bhp read the stored segment pressures against the
+        // well's own densities and fractions, and missed its solved rate by up to 2300 sm3/d (MODEL5 MSW).
+        if (!zero && true_intercept && !well->wellEcl().isMultiSegment()) {
             std::vector<Scalar> q(ws.implicit_ipr_a.size(), Scalar{0});
             well->computeWellRatesWithBhp(simulator_, ws.bhp, q, deferred_logger);
             for (std::size_t ph = 0; ph < q.size(); ++ph) {
