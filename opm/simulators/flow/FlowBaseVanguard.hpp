@@ -308,7 +308,22 @@ protected:
             std::array<double,dimensionworld> centroid;
             const auto rank = this->gridView().comm().rank();
             const auto maxLevel = this->gridView().grid().maxLevel();
-            bool useEclipse = !isCpGrid || (isCpGrid && (rank == 0) && (maxLevel == 0));
+            // refine-before-redistribute: the distributed grid is the flat
+            // refined leaf (maxLevel()==0 but it carries refined cells).  Reading
+            // the centroid from the EclipseGrid input grid by Cartesian index would
+            // give every refined sibling the *parent* coarse-cell centre (siblings
+            // share a Cartesian index) - a wrong centroid that collapses the
+            // transmissibility distance vector and yields NaN where the parent
+            // cell has zero permeability.  Use the per-leaf-cell geometry centroid
+            // (LookUpCellCentroid) for such a leaf instead.
+            // Testing the grid *type* is not enough: not every CpGrid backend
+            // has this query, so test for the member itself.
+            bool refinedFlatLeaf = false;
+            if constexpr (requires { this->gridView().grid().leafHasParentCellIndices(); }) {
+                refinedFlatLeaf = this->gridView().grid().leafHasParentCellIndices();
+            }
+            bool useEclipse = !isCpGrid ||
+                (isCpGrid && (rank == 0) && (maxLevel == 0) && !refinedFlatLeaf);
             if (useEclipse)
             {
                 centroid =  this->eclState().getInputGrid().getCellCenter(cartMapper.cartesianIndex(elemIdx));
@@ -338,12 +353,28 @@ protected:
         std::size_t num_cells = asImp_().grid().leafGridView().size(0);
         is_interior_.resize(num_cells);
 
+        // May run again after the grid changed (local refinement), so start
+        // from scratch rather than leaving entries for cells that no longer
+        // exist in the leaf.
+        cartesianToCompressed_.clear();
+
         ElementMapper elemMapper(this->gridView(), Dune::mcmgElementLayout());
         for (const auto& element : elements(this->gridView()))
         {
             const auto elemIdx = elemMapper.index(element);
-            unsigned cartesianCellIdx = cartesianIndex(elemIdx);
-            cartesianToCompressed_[cartesianCellIdx] = elemIdx;
+            // On a refined grid a level-zero Cartesian index is not a unique
+            // key: every child of a refined cell reports its ancestor's
+            // index, so inserting them would make the winner arbitrary.
+            // Only unrefined cells enter the map, making it a mapping for
+            // existing cells on level zero only; cells inside a refinement
+            // are addressed through the LGR-aware lookup instead, and a
+            // level-zero index that has been refined away resolves to
+            // "not present" rather than to an arbitrary child.
+            if (!element.hasFather())
+            {
+                unsigned cartesianCellIdx = cartesianIndex(elemIdx);
+                cartesianToCompressed_[cartesianCellIdx] = elemIdx;
+            }
             if (element.partitionType() == Dune::InteriorEntity)
             {
                 is_interior_[elemIdx] = 1;

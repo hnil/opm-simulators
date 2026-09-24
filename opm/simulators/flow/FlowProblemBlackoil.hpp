@@ -39,6 +39,8 @@
 
 #include <opm/simulators/flow/ActionHandler.hpp>
 #include <opm/simulators/aquifers/NumericalAquiferAuxCells.hpp>
+#include <opm/grid/LookUpData.hh>
+
 #include <opm/simulators/flow/FlowProblem.hpp>
 #include <opm/simulators/flow/FlowProblemBlackoilProperties.hpp>
 #include <opm/simulators/flow/FlowThresholdPressure.hpp>
@@ -361,8 +363,15 @@ public:
         // we try to avoid for the parallel running, has both global trans_ and transmissibilities_ allocated at the same time
         if (enableEclOutput_) {
             if (simulator.vanguard().grid().comm().size() > 1) {
-                if (simulator.vanguard().grid().comm().rank() == 0)
-                    eclWriter_->setTransmissibilities(&simulator.vanguard().globalTransmissibility());
+                if (simulator.vanguard().grid().comm().rank() == 0) {
+                    // A parallel LGR run writes from the I/O rank's refined
+                    // reference grid; the transmissibility must live there too.
+                    if constexpr (requires { simulator.vanguard().eclOutputTransmissibility(); }) {
+                        eclWriter_->setTransmissibilities(&simulator.vanguard().eclOutputTransmissibility());
+                    } else {
+                        eclWriter_->setTransmissibilities(&simulator.vanguard().globalTransmissibility());
+                    }
+                }
             } else {
                 finishTransmissibilities();
                 eclWriter_->setTransmissibilities(&simulator.problem().eclTransmissibilities());
@@ -516,6 +525,17 @@ public:
                                 this->episodeIndex(),
                                 eclState.runspec().tabdims().getNumPVTTables());
 
+        // Seed the DRSDT/DRVDT history from the initial composition.  Left at
+        // zero, the limiter caps Rs at DRSDT * dt on the first step and boils
+        // the dissolved gas out of an undersaturated reservoir.  A restarted
+        // run seeds it from the restart solution instead.
+        if (!initconfig.restartRequested()) {
+            for (std::size_t elemIdx = 0; elemIdx < this->initialFluidStates_.size(); ++elemIdx) {
+                const auto& fs = this->initialFluidStates_[elemIdx];
+                this->mixControls_.updateLastValues(elemIdx, fs.Rs(), fs.Rv());
+            }
+        }
+
         if (this->enableVtkOutput_() && eclState.getIOConfig().initOnly()) {
             simulator.setTimeStepSize(0.0);
             simulator.model().applyInitialSolution();
@@ -530,6 +550,23 @@ public:
                              "Manually tuning the simulator with the TUNING keyword may "
                              "increase run time.\nIt is recommended using the simulator's "
                              "default tuning (--enable-tuning=false).");
+            }
+        }
+
+        // Opt-in LGR canary, post-init variant (OPM_LGR_POISON_REFINED_POSTINIT=1):
+        // the one-time materialization (CartesianIndexMapper -> globalCell ->
+        // props/EQUIL/trans/rock) is now complete, so poison the refined leaf
+        // cells' global Cartesian index here. If the *solve* still completes,
+        // it never re-derives a refined cell's property from globalCell() after
+        // init (the invariant we want); if it fails, it pinpoints a per-step
+        // dependency to replace later with an LGR-convertible index. Default off.
+        // poisonRefinedGlobalCell is a CpGrid-only LGR diagnostic; guard it at
+        // compile time so non-CpGrid backends (ALUGrid, polyhedral) still build.
+        if constexpr (requires { this->simulator().vanguard().grid().poisonRefinedGlobalCell(-1); }) {
+            if (std::getenv("OPM_LGR_POISON_REFINED_POSTINIT") != nullptr) {
+                this->simulator().vanguard().grid().poisonRefinedGlobalCell(-1);
+                OpmLog::info("\n[canary] post-finishInit: poisoned refined leaf cells' global "
+                             "Cartesian index; a clean solve proves no post-init re-derivation.");
             }
         }
     }
@@ -549,14 +586,12 @@ public:
         // also updated.
         this->eclWriter().mutableOutputModule().invalidateLocalData();
 
-        // For CpGrid with LGRs, ecl/vtk output is not supported yet.
-        const auto& grid = this->simulator().vanguard().gridView().grid();
-
-        using GridType = std::remove_cv_t<std::remove_reference_t<decltype(grid)>>;
-        constexpr bool isCpGrid = std::is_same_v<GridType, Dune::CpGrid>;
-        if (!isCpGrid || (grid.maxLevel() == 0)) {
-            this->eclWriter_->evalSummaryState(!this->episodeWillBeOver());
-        }
+        // Evaluate the summary state for CpGrid with LGRs as well.  In serial
+        // the CollectDataOnIORank maps are the identity and the leaf-grid data
+        // is written directly; in parallel the name-keyed summary data (wells,
+        // groups, region values) is gathered to the I/O rank while cell-based
+        // restart/block output on refined grids is still being wired up.
+        this->eclWriter_->evalSummaryState(!this->episodeWillBeOver());
 
         {
             OPM_TIMEBLOCK(applyActions);
@@ -666,16 +701,10 @@ public:
         // the initial solution.
         this->thresholdPressures_.finishInit();
 
-        // For CpGrid with LGRs, ecl-output is not supported yet.
-        const auto& grid = this->simulator().vanguard().gridView().grid();
-
-        using GridType = std::remove_cv_t<std::remove_reference_t<decltype(grid)>>;
-        constexpr bool isCpGrid = std::is_same_v<GridType, Dune::CpGrid>;
-        // Skip - for now -  calculate the initial fip values for CpGrid with LGRs.
-        if (!isCpGrid || (grid.maxLevel() == 0)) {
-            if (this->simulator().episodeIndex() == 0) {
-                eclWriter_->writeInitialFIPReport();
-            }
+        // Compute the initial FIP report (also for CpGrid with LGRs) so the
+        // in-place reference values are available for the summary balance.
+        if (this->simulator().episodeIndex() == 0) {
+            eclWriter_->writeInitialFIPReport();
         }
     }
 
@@ -1135,6 +1164,19 @@ public:
             this->bioeffects_ = this->eclWriter_->outputModule().getBioeffects().getSolution();
         }
 
+        // TEMPI is given on the input grid while the loop below indexes by leaf
+        // cell; map it across once (identity without LGRs) rather than reading
+        // past the end of the input-grid array for every refined cell.
+        std::vector<double> tempiOnLeaf{};
+        if constexpr (energyModuleType != EnergyModules::NoTemperature) {
+            if (eclState.runspec().co2Storage() || eclState.runspec().h2Storage()) {
+                using LeafGrid = GetPropType<TypeTag, Properties::Grid>;
+                const LookUpData<LeafGrid, GridView> lookUpData(simulator.gridView());
+                tempiOnLeaf = lookUpData
+                    .assignFieldPropsDoubleOnLeaf(eclState.fieldProps(), "TEMPI");
+            }
+        }
+
         for (std::size_t elemIdx = 0; elemIdx < numElems; ++elemIdx) {
             auto& elemFluidState = this->initialFluidStates_[elemIdx];
             elemFluidState.setPvtRegionIndex(pvtRegionIndex(elemIdx));
@@ -1164,8 +1206,7 @@ public:
             if constexpr (energyModuleType != EnergyModules::NoTemperature) {
                 bool needTemperature = (eclState.runspec().co2Storage() || eclState.runspec().h2Storage());
                 if (needTemperature) {
-                    const auto& fp = simulator.vanguard().eclState().fieldProps();
-                    elemFluidState.setTemperature(fp.get_double("TEMPI")[elemIdx]);
+                    elemFluidState.setTemperature(tempiOnLeaf[elemIdx]);
                 }
             }
 
@@ -1354,9 +1395,18 @@ protected:
 
     void readEclRestartSolution_()
     {
-        // Throw an exception if the grid has LGRs. Refined grid are not supported for restart.
-        if(this->simulator().vanguard().grid().maxLevel() > 0) {
-            throw std::invalid_argument("Refined grids are not yet supported for restart ");
+        // Restarting a refined run reads the solution section each level was
+        // written to and puts the leaf back together. In parallel the reference
+        // grid holding that leaf ordering exists only on the I/O rank, and
+        // handing the assembled solution to the others is not solved yet, so
+        // say so rather than fail somewhere further in.
+        if ((this->simulator().vanguard().grid().maxLevel() > 0) &&
+            (this->simulator().vanguard().grid().comm().size() > 1))
+        {
+            throw std::invalid_argument {
+                "Restarting a run with LGRs is supported on a single MPI process "
+                "only. Run the restart in serial, or drop the refinement."
+            };
         }
 
         // Set the start time of the simulation
@@ -1448,6 +1498,18 @@ protected:
 
         initialFluidStates_.resize(numDof);
 
+        // The arrays below are given on the (unrefined) input grid but are read
+        // per leaf cell.  Refinement makes the leaf longer, so map them across --
+        // a refined cell inherits its parent cell's value.  Reading the input-grid
+        // array by leaf index instead runs off its end, and the refined cells come
+        // up initialised from whatever follows in memory; the run then fails to
+        // converge on step one, which reads as a solver problem rather than an
+        // initialisation one.  LookUpData is the identity without LGRs.
+        using LeafGrid = GetPropType<TypeTag, Properties::Grid>;
+        const LookUpData<LeafGrid, GridView> lookUpData(this->simulator().gridView());
+        const auto onLeaf = [&lookUpData, &fp](const std::string& kw)
+        { return lookUpData.assignFieldPropsDoubleOnLeaf(fp, kw); };
+
         std::vector<double> waterSaturationData;
         std::vector<double> gasSaturationData;
         std::vector<double> pressureData;
@@ -1460,38 +1522,38 @@ protected:
         std::vector<double> saltpData;
 
         if (FluidSystem::phaseIsActive(waterPhaseIdx) && Indices::numPhases > 1)
-            waterSaturationData = fp.get_double("SWAT");
+            waterSaturationData = onLeaf("SWAT");
         else
             waterSaturationData.resize(numDof);
 
         if (FluidSystem::phaseIsActive(gasPhaseIdx) && FluidSystem::phaseIsActive(oilPhaseIdx))
-            gasSaturationData = fp.get_double("SGAS");
+            gasSaturationData = onLeaf("SGAS");
         else
             gasSaturationData.resize(numDof);
 
-        pressureData = fp.get_double("PRESSURE");
+        pressureData = onLeaf("PRESSURE");
         if (FluidSystem::enableDissolvedGas())
-            rsData = fp.get_double("RS");
+            rsData = onLeaf("RS");
 
         if (FluidSystem::enableDissolvedGasInWater() && has_rsw)
-            rswData = fp.get_double("RSW");
+            rswData = onLeaf("RSW");
 
         if (FluidSystem::enableVaporizedOil())
-            rvData = fp.get_double("RV");
+            rvData = onLeaf("RV");
 
         if (FluidSystem::enableVaporizedWater())
-            rvwData = fp.get_double("RVW");
+            rvwData = onLeaf("RVW");
 
         // initial reservoir temperature
-        tempiData = fp.get_double("TEMPI");
+        tempiData = onLeaf("TEMPI");
 
         // initial salt concentration data
         if constexpr (enableBrine)
-            saltData = fp.get_double("SALT");
+            saltData = onLeaf("SALT");
 
         // initial precipitated salt saturation data
         if constexpr (enableSaltPrecipitation)
-            saltpData = fp.get_double("SALTP");
+            saltpData = onLeaf("SALTP");
 
         // calculate the initial fluid states
         for (std::size_t dofIdx = 0; dofIdx < numDof; ++dofIdx) {
@@ -1835,6 +1897,26 @@ protected:
     HybridNewton hybridNewton_;
 
 private:
+    /// Whether ECL summary/FIP evaluation is wired up for this grid
+    /// configuration.
+    ///
+    /// The only unsupported case is a *distributed* CpGrid with LGRs:
+    /// CollectDataOnIORank does not build its index maps for a distributed
+    /// refined grid yet.  In serial the index maps are the identity and the
+    /// leaf-grid well/cell data is written directly, so refined serial runs
+    /// are fine.  Kept in one place so no call site can miss a condition.
+    bool eclOutputEvalSupported_() const
+    {
+        const auto& grid = this->simulator().vanguard().gridView().grid();
+
+        using GridType = std::remove_cv_t<std::remove_reference_t<decltype(grid)>>;
+        constexpr bool isCpGrid = std::is_same_v<GridType, Dune::CpGrid>;
+
+        return !isCpGrid
+            || (grid.maxLevel() == 0)
+            || (grid.comm().size() == 1);
+    }
+
     /// Whether or not the current epsiode will end at the end of the
     /// current time step.
     ///

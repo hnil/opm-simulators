@@ -66,7 +66,8 @@ public:
                      std::function<std::array<double,dimWorld>(int)> centroids,
                      bool enableEnergy,
                      bool enableDiffusivity,
-                     bool enableDispersivity);
+                     bool enableDispersivity,
+                     bool lgrTransFromHost = false);
 
     /*!
      * \brief Return the permeability for an element.
@@ -230,6 +231,11 @@ protected:
     std::array<std::vector<double>,3>
     createTransmissibilityArrays_(const std::array<bool,3>& is_tran);
 
+    /// Per transmissibility-array entry, the active cell whose TRAN* modifier
+    /// applies to it, or -1. Only meaningful for a refined grid, where the
+    /// arrays are longer than the deck's cell count.
+    std::array<std::vector<int>,3> tranActionIndex_(const std::array<bool,3>& is_tran);
+
     /// \brief overwrites calculated transmissibilities
     ///
     /// \param is_tran Whether TRAN{XYZ} have been modified.
@@ -263,25 +269,47 @@ protected:
      *                              cells) as the element at the cartesian index.
      * \return Nothing.
      */
-    void applyNncToGridTrans_(const std::unordered_map<std::size_t,int>& cartesianToCompressed);
+    //! \brief Children of each deck cell, for connections stated in deck indices.
+    //!
+    //! Without refinement each deck cell is one leaf cell. With it, a connection
+    //! stated between deck cells became a connection between each pair of the two
+    //! cells' children that the grid joined, so every one of them is needed.
+    using CartesianToLeaf = std::unordered_map<std::size_t,std::vector<int>>;
+
+    void applyNncToGridTrans_(const CartesianToLeaf& cartesianToCompressed);
+
+    /// Zero-based IJK of a level-zero Cartesian index, for diagnostics.
+    std::array<int,3> ijkFromCartesian_(std::size_t cartIdx) const;
+
+    //! \brief Replace refined transmissibilities across a host cell's own faces
+    //!        with the host's, scaled by the refinement factor.
+    void applyHostTransToRefinedFaces_();
+
+    //! \brief Render one deck cell as (i,j,k).
+    std::string ijkString_(std::size_t cartIdx) const;
+
+    //! \brief Render a sample of dropped connections as deck (i,j,k) pairs.
+    std::string describeDroppedNnc_(const std::vector<std::pair<std::size_t,std::size_t>>& sample,
+                                    std::size_t total) const;
+
 
     /// \brief Applies the previous calculate transmissibilities to the NNCs created via PINCH
     ///
     /// \param cartesianToCompressed Vector containing the compressed index (or -1 for inactive
     ///                              cells) as the element at the cartesian index.
     /// \param applyNncMultregT      True to apply NNC to region transmissibility multipliers
-    void applyPinchNncToGridTrans_(const std::unordered_map<std::size_t,int>& cartesianToCompressed,
+    void applyPinchNncToGridTrans_(const CartesianToLeaf& cartesianToCompressed,
                                    bool applyNncMultregT);
 
     /// \brief Multiplies the grid transmissibilities according to EDITNNC.
-    void applyEditNncToGridTrans_(const std::unordered_map<std::size_t,int>& globalToLocal);
+    void applyEditNncToGridTrans_(const CartesianToLeaf& globalToLocal);
 
     /// \brief Resets the grid transmissibilities according to EDITNNCR.
-    void applyEditNncrToGridTrans_(const std::unordered_map<std::size_t,int>& globalToLocal);
+    void applyEditNncrToGridTrans_(const CartesianToLeaf& globalToLocal);
 
-    void applyNncMultreg_(const std::unordered_map<std::size_t,int>& globalToLocal);
+    void applyNncMultreg_(const CartesianToLeaf& globalToLocal);
 
-    void applyEditNncToGridTransHelper_(const std::unordered_map<std::size_t,int>& globalToLocal,
+    void applyEditNncToGridTransHelper_(const CartesianToLeaf& globalToLocal,
                                         const std::string& keyword, const std::vector<NNCdata>& nncs,
                                         const std::function<KeywordLocation(const NNCdata&)>& getLocation,
                                         const std::function<void(Scalar&, const Scalar&)>& apply);
@@ -315,6 +343,18 @@ protected:
                           const FaceInfo& face,
                           const std::vector<double>& ntg);
 
+    /// Look a connection up, reporting which one is missing rather than
+    /// leaving std::unordered_map::at to say only "key not found".
+    Scalar lookupTrans_(const std::unordered_map<std::uint64_t, Scalar>& map,
+                        unsigned elemIdx1, unsigned elemIdx2,
+                        std::string_view what) const;
+
+    /// Cell index, its Cartesian index, and on a refined grid its level.
+    std::string describeCell_(unsigned elemIdx) const;
+
+    /// Whether the grid has an intersection between the two cells.
+    bool gridJoins_(unsigned elemIdx1, unsigned elemIdx2) const;
+
     std::vector<DimMatrix> permeability_;
     std::vector<Scalar> porosity_;
     std::vector<Scalar> dispersion_;
@@ -331,6 +371,7 @@ protected:
     bool enableEnergy_;
     bool enableDiffusivity_;
     bool enableDispersivity_;
+    bool lgrTransFromHost_{false};
     bool warnEditNNC_ = true;
     std::unordered_map<std::uint64_t, Scalar> thermalHalfTrans_; //NB this is based on direction map size is ca 2*trans_ (diffusivity_)
     std::unordered_map<std::uint64_t, Scalar> halfTrans_; // directional, only filled when storeHalfTrans_
