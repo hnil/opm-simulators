@@ -84,6 +84,42 @@ public:
         const WellState<Scalar, IndexTraits>* previous_state_ptr_;
     };
 
+    /// A well's rates as the well state holds them (production negative), gathered so
+    /// that every rank has every well.
+    struct GatheredWellRates
+    {
+        std::vector<Scalar> surface;
+        std::vector<Scalar> reservoir;
+        Scalar efficiency_scaling{1};
+    };
+    using GatheredRates = std::map<std::string, GatheredWellRates>;
+
+    // RAII guard: group sums read the gathered rates instead of this rank's well state.
+    class GatheredRatesGuard
+    {
+    public:
+        GatheredRatesGuard(GroupStateHelper& groupStateHelper, const GatheredRates& rates)
+            : groupStateHelper_ {groupStateHelper}
+            , previous_ {groupStateHelper_.gathered_rates_}
+        {
+            groupStateHelper_.gathered_rates_ = &rates;
+        }
+
+        ~GatheredRatesGuard()
+        {
+            groupStateHelper_.gathered_rates_ = previous_;
+        }
+
+        GatheredRatesGuard(const GatheredRatesGuard&) = delete;
+        GatheredRatesGuard& operator=(const GatheredRatesGuard&) = delete;
+        GatheredRatesGuard(GatheredRatesGuard&&) = delete;
+        GatheredRatesGuard& operator=(GatheredRatesGuard&&) = delete;
+
+    private:
+        GroupStateHelper& groupStateHelper_;
+        const GatheredRates* previous_;
+    };
+
     // RAII guard for temporarily setting groupstate pointer
     class GroupStateGuard
     {
@@ -381,6 +417,12 @@ public:
     WellStateGuard pushWellState(WellState<Scalar, IndexTraits>& well_state)
     {
         return WellStateGuard(*this, well_state);
+    }
+
+    /// The group sums are then whole on every rank; no reduction of the group state follows.
+    GatheredRatesGuard pushGatheredRates(const GatheredRates& rates)
+    {
+        return GatheredRatesGuard(*this, rates);
     }
 
     int reportStepIdx() const
@@ -778,6 +820,7 @@ private:
 #endif  // RESERVOIR_COUPLING_ENABLED
 
     const WellState<Scalar, IndexTraits>* well_state_ {nullptr};
+    const GatheredRates* gathered_rates_ {nullptr};
     GroupState<Scalar>* group_state_ {nullptr};
     const Schedule& schedule_;
     const SummaryState& summary_state_;

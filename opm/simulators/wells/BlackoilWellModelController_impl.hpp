@@ -1728,17 +1728,8 @@ controllerInjectionDecide_(DeferredLogger& deferred_logger, const bool targets_o
         }
     }
     auto& helper = this->groupStateHelper();
-    if (param_.group_controller_injection_current_production_) {
-        // The current production, not the NUPCOL state the helper holds: after NUPCOL too.
-        auto guard = helper.pushWellState(this->wellState());
-        helper.updateREINForGroups(field, /*sum_rank=*/this->comm().rank() == 0);
-        helper.updateVREPForGroups(field);
-        helper.updateReservoirRatesInjectionGroups(field);
-        helper.updateSurfaceRatesInjectionGroups(field);
-        // Each of those sums this rank's own wells; the targets are a fraction of the field's.
-        if (this->comm().size() > 1) {
-            this->groupState().communicate_rates(this->comm());
-        }
+    if (helper.isReservoirCouplingMaster()) {
+        return false;
     }
     std::vector<Scalar> group_resv(this->numPhases(), Scalar{0});
     calcInjResvCoeff(/*fipnum=*/0, /*pvtreg=*/0, group_resv);
@@ -1759,7 +1750,7 @@ controllerInjectionDecide_(DeferredLogger& deferred_logger, const bool targets_o
     // What the decision reads about a well, gathered: every rank then decides from the same numbers,
     // and each writes the answer for the wells it owns.
     struct InjWell {
-        bool usable{false};
+        bool usable{false}, counted{false};
         Well::InjectorCMode cmode{Well::InjectorCMode::CMODE_UNDEFINED};
         std::string holder{};
         Scalar target{0}, bhp{0}, eff{1};
@@ -1784,7 +1775,9 @@ controllerInjectionDecide_(DeferredLogger& deferred_logger, const bool targets_o
         const auto& ws = this->wellState().well(*index);
         const auto it = local_wells.find(wname);
         Scalar* r = buf.data() + i * record;
-        r[0] = (ws.status == WellStatus::OPEN && it != local_wells.end() && !it->second->wellIsStopped()) ? 1 : 0;
+        // 0 shut, 1 counted in the group sums, 2 also usable by the decision.
+        r[0] = ws.status == WellStatus::SHUT ? 0
+             : (ws.status == WellStatus::OPEN && it != local_wells.end() && !it->second->wellIsStopped()) ? 2 : 1;
         r[1] = static_cast<Scalar>(static_cast<int>(ws.injection_cmode));
         if (ws.group_target) {
             const auto g = std::find(group_names.begin(), group_names.end(), ws.group_target->group_name);
@@ -1807,7 +1800,8 @@ controllerInjectionDecide_(DeferredLogger& deferred_logger, const bool targets_o
     for (std::size_t i = 0; i < well_names.size(); ++i) {
         const Scalar* r = buf.data() + i * record;
         InjWell d;
-        d.usable = r[0] > Scalar{0.5};
+        d.usable = r[0] > Scalar{1.5};
+        d.counted = r[0] > Scalar{0.5};
         d.cmode = static_cast<Well::InjectorCMode>(static_cast<int>(std::lround(r[1])));
         const int holder = static_cast<int>(std::lround(r[2]));
         if (holder > 0) {
@@ -1821,6 +1815,21 @@ controllerInjectionDecide_(DeferredLogger& deferred_logger, const bool targets_o
         d.resv.assign(r + 7 + np, r + 7 + 2 * np);
         d.pot.assign(r + 7 + 2 * np, r + 7 + 3 * np);
         gathered.emplace(well_names[i], std::move(d));
+    }
+    if (param_.group_controller_injection_current_production_) {
+        // The current production, not the NUPCOL state: after NUPCOL too. From the gathered
+        // wells, so every rank forms the whole group sums and the group state needs no reduction.
+        typename GroupStateHelper<Scalar, IndexTraits>::GatheredRates rates;
+        for (const auto& [wname, d] : gathered) {
+            if (d.counted) {
+                rates[wname] = {d.q, d.resv, d.eff};
+            }
+        }
+        auto guard = helper.pushGatheredRates(rates);
+        helper.updateREINForGroups(field, /*sum_rank=*/true);
+        helper.updateVREPForGroups(field);
+        helper.updateReservoirRatesInjectionGroups(field);
+        helper.updateSurfaceRatesInjectionGroups(field);
     }
     std::set<std::string> decided_injectors;
     std::map<std::string, std::map<int, Scalar>> decided_resv;   // group -> active phase -> reservoir rate
