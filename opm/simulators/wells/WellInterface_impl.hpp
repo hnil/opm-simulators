@@ -1039,11 +1039,21 @@ namespace Opm
         auto& ws = well_state.well(this->index_of_well_);
         // The network route decided: no reopening attempt of its own.
         if (this->wellIsStopped() && (this->networkDead() || this->networkHeld())) {
+            // Held: stopped for this step only, unless the well model finds no operable bhp
+            // either, which is what closes a stopped well in legacy (WTEST-MSW-01's B-1H at 80 bar).
+            bool dead = this->networkDead();
+            if (!dead) {
+                const bool use_vfpexplicit = this->operability_status_.use_vfpexplicit;
+                this->operability_status_.use_vfpexplicit = true;
+                this->openWell();
+                dead = !estimateOperableBhp(simulator, dt, groupStateHelper, summary_state, well_state).has_value();
+                this->stopWell();
+                this->operability_status_.use_vfpexplicit = use_vfpexplicit;
+            }
             const bool solved = solveWellWithZeroRate(simulator, dt, groupStateHelper, well_state);
             // Dead: not operable (the zero-rate solve resets that), so the step's end closes
-            // the well as legacy would and WTEST decides when it is tried again. Held: stopped
-            // for this step only.
-            if (this->networkDead()) {
+            // the well as legacy would and WTEST decides when it is tried again.
+            if (dead) {
                 this->operability_status_.can_obtain_bhp_with_thp_limit = false;
                 this->operability_status_.obey_thp_limit_under_bhp_limit = false;
             }
