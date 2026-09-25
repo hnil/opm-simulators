@@ -1513,6 +1513,7 @@ struct ModeSwitchResult {
     Well::ProducerCMode newMode;
     Scalar newTarget      = Scalar(0);
     int newTopSwitchCount = 0;
+    bool reduced          = false;   ///< kept the mode, lowered its target
 };
 
 /// Check whether a stricter limit than the current mode is violated after one
@@ -1539,13 +1540,10 @@ checkAndSwitchMode(ProdGroupTreeNode<Scalar>& node,
                    const GuideRate& guideRate,
                    int topSwitchCount,
                    int maxTopSwitchCount,
-                   Scalar tol)
+                   Scalar tol,
+                   const std::set<Well::ProducerCMode>& tried)
 {
     ModeSwitchResult<Scalar> result{false, currentMode, Scalar(0), topSwitchCount};
-
-    if (topSwitchCount >= maxTopSwitchCount) {
-        return result;
-    }
 
     const auto& rateSums = node.rateSums;
     Scalar maxViolation = Scalar(0);
@@ -1559,6 +1557,18 @@ checkAndSwitchMode(ProdGroupTreeNode<Scalar>& node,
             maxViolation = violation;
             newMode = limitMode;
         }
+    }
+
+    // Two limits can each be broken by the distribution on the other's mode (model2 9_4A:
+    // GRAT puts liquid over LRAT, LRAT puts gas over GRAT); switching between them never ends.
+    const bool cycling = topSwitchCount >= maxTopSwitchCount || tried.count(newMode) > 0;
+    if (cycling) {
+        if (currentMode != newMode && maxViolation > Scalar(1) + tol) {
+            result.limitViolated = true;
+            result.reduced = true;
+            result.newTarget = projectOnMode(rateSums, currentMode, node.resvCoeff) / maxViolation;
+        }
+        return result;
     }
 
     if (maxViolation > Scalar(1) - tol && currentMode != newMode) {
@@ -1676,6 +1686,7 @@ void balanceGroupTree(Tree<Scalar>& tree,
     // phase guiderate ratios sufficiently far from actual phase rate ratios.
     const int maxResortingCount = 5;
     const int maxTopSwitchCount = 3;
+    const int maxReductions = 10;
 
     auto [mode, qm] = tightenModeAndTarget(node, targetMode, targetRate, tol);
 
@@ -1690,6 +1701,8 @@ void balanceGroupTree(Tree<Scalar>& tree,
         int resortingCount = 0;
         int topSwitchCount = 0;
         int iterationCount = 0;
+        int reductions = 0;
+        std::set<Well::ProducerCMode> tried{mode};
 
         // Main distribution: typically a single pass is sufficient
         while (!balanced && resortingCount <= maxResortingCount && topSwitchCount <= maxTopSwitchCount) {
@@ -1740,12 +1753,16 @@ void balanceGroupTree(Tree<Scalar>& tree,
 
             auto switchResult = checkAndSwitchMode(
                 node, nodeName, mode, targetMode, targetRate,
-                guideRate, topSwitchCount, maxTopSwitchCount, tol);
+                guideRate, topSwitchCount, maxTopSwitchCount, tol, tried);
 
+            if (switchResult.reduced && ++reductions > maxReductions) {
+                switchResult.limitViolated = false;
+            }
             if (switchResult.limitViolated) {
                 mode           = switchResult.newMode;
                 qm             = switchResult.newTarget;
                 topSwitchCount = switchResult.newTopSwitchCount;
+                tried.insert(mode);
             }
 
             balanced = !switchResult.limitViolated;
@@ -2049,7 +2066,16 @@ bool checkTreeValidity(const Tree<Scalar>& tree,
                                        [](Scalar s, Scalar r){ return s + (-r); })
                     : -projectOnMode(node.rates, node.mode, node.resvCoeff);
                 const Scalar relErr = std::abs(current - limit) / (std::abs(limit) + kFeasibilityTolerance<Scalar>);
-                if (relErr > tol) {
+                // Held below this limit because another one of its limits binds (see checkAndSwitchMode).
+                const bool atAnother = current < limit && std::any_of(node.Limits.begin(), node.Limits.end(),
+                    [&](const auto& ml) {
+                        if (ml.first == node.mode || ml.first == Well::ProducerCMode::BHP || !(ml.second > Scalar(0))) {
+                            return false;
+                        }
+                        const Scalar on = -projectOnMode(node.rates, ml.first, node.resvCoeff);
+                        return std::abs(on - ml.second) <= tol * (std::abs(ml.second) + kFeasibilityTolerance<Scalar>);
+                    });
+                if (relErr > tol && !atAnother) {
                     logger.warning("ProdGroupTreeBalancer",
                         fmt::format("Node '{}' is Individual but current rate ({:.4g}) "
                                     "differs from limit ({:.4g}) by {:.2g}%%",

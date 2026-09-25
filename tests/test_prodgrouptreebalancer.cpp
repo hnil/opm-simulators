@@ -313,3 +313,28 @@ BOOST_AUTO_TEST_CASE(a_node_guide_rate_overrides_the_lookup)
     BOOST_CHECK_CLOSE(water("W1"), 750.0, 1e-6);
     BOOST_CHECK_CLOSE(water("W2"), 2250.0, 1e-6);
 }
+
+// Two limits each broken by the distribution on the other's mode (as model2 9_4A's RES
+// with the route's guides): held on GRAT the wet well puts liquid far over LRAT, held on
+// LRAT the gas-rich well puts gas over GRAT. The balancer switched between them until its
+// switch cap and then kept the last mode with the other limit broken, calling it balanced.
+BOOST_AUTO_TEST_CASE(two_limits_broken_by_each_others_distribution_both_hold)
+{
+    Fixture f("GRUPTREE\n 'PLAT' 'FIELD' /\n/\n"
+              "WELSPECS\n 'W1' 'PLAT' 1 1 7000 'OIL' /\n 'W2' 'PLAT' 2 1 7000 'OIL' /\n/\n"
+              "COMPDAT\n 'W1' 1 1 1 2 'OPEN' 1* 1* 0.2 /\n 'W2' 2 1 1 2 'OPEN' 1* 1* 0.2 /\n/\n"
+              "WCONPROD\n 'W1' 'OPEN' 'GRUP' 1e5 4* 100 /\n 'W2' 'OPEN' 'GRUP' 1e5 4* 100 /\n/\n");
+    using M = Well::ProducerCMode;
+    f.group("PLAT", "FIELD", M::ORAT, 1.0e5);
+    f.tree.at("PLAT").Limits[M::GRAT] = 5.0e5;
+    f.tree.at("PLAT").Limits[M::LRAT] = 2000.0;
+    f.well("W1", "PLAT", {1000.0, 0.0, 1.0e6}, {{M::ORAT, 1.0e5}});
+    f.well("W2", "PLAT", {1000.0, 3000.0, 1.0e5}, {{M::ORAT, 1.0e5}});
+    f.tree.at("W1").fixedGuideRate = 1.0;
+    f.tree.at("W2").fixedGuideRate = 1.0;
+    // Held below its own limit by the other one, and valid for it.
+    BOOST_CHECK(f.balance());
+    const auto liquid = [&f](const std::string& n) { return -f.tree.at(n).rates[0] - f.tree.at(n).rates[1]; };
+    BOOST_CHECK_LE(f.gas("PLAT"), 5.0e5 * (1.0 + 1e-6));
+    BOOST_CHECK_LE(liquid("PLAT"), 2000.0 * (1.0 + 1e-6));
+}
