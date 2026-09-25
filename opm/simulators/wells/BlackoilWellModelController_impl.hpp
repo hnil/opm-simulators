@@ -549,7 +549,8 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                 // where it is rather than moved onto it, as WellConstraints does for legacy.
                 const auto& wvfpexp = well.getWVFPEXP();
                 bool rate_below_potential = true;
-                if (wvfpexp.prevent() && controls.thp_limit > d.thp) {
+                // Not a well at zero rate: it is not below its thp, it cannot lift (GRPFLD-06's C-1H).
+                if (wvfpexp.prevent() && controls.thp_limit > d.thp && current > Scalar{0}) {
                     for (int ph = 0; ph < pu.numActivePhases(); ++ph) {
                         rate_below_potential = rate_below_potential && std::abs(d.q[ph]) <= std::abs(d.pot[ph]);
                     }
