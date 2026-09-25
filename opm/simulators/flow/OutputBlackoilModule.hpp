@@ -253,9 +253,10 @@ public:
         if constexpr (std::is_same_v<Grid, Dune::CpGrid>) {
             if (simulator.vanguard().grid().maxLevel() > 0) {
                 const auto& lgrs = simulator.vanguard().eclState().getLgrs();
-                const auto& inputGrid = simulator.vanguard().eclState().getInputGrid();
-                const int nx = static_cast<int>(inputGrid.getNX());
-                const int ny = static_cast<int>(inputGrid.getNY());
+                // The input grid exists on rank 0 only.
+                const auto& dims = simulator.vanguard().cartesianDimensions();
+                const int nx = dims[0];
+                const int ny = dims[1];
                 // Deck-declared boxes are replicated on every rank, so this
                 // classification is identical everywhere (nested LGR boxes
                 // address their parent LGR's local space and are inside the
@@ -1059,9 +1060,11 @@ private:
             }
 
             auto names = std::string{};
+            const auto& dims = vanguard.cartesianDimensions();
             for (const auto& [kw, num] : refined) {
-                const auto ijk = vanguard.eclState().getInputGrid().getIJK(num - 1);
-                names += fmt::format("\n  {}:{},{},{}", kw, ijk[0] + 1, ijk[1] + 1, ijk[2] + 1);
+                const int c = num - 1;
+                names += fmt::format("\n  {}:{},{},{}", kw, c % dims[0] + 1,
+                                     (c / dims[0]) % dims[1] + 1, c / (dims[0] * dims[1]) + 1);
             }
             OpmLog::warning(fmt::format
                             ("{} block summary vector(s) name a cell inside a refined (CARFIN) "
