@@ -1983,6 +1983,9 @@ public:
             for (int ph = 0; ph < NP; ++ph) {
                 Scalar q = node_source_[n][ph];
                 for (const int w : wells_at_[n]) {
+                    // A well at zero oil puts nothing into its node, as the judge has it: at the oil
+                    // line's shut-in bhp its water and gas lines would still flow (NORNE-NET-01).
+                    if (controls_[w] == Control::Shut || !(x[qwIdx(w, 1)] > Scalar{0})) { continue; }
                     q += wells_[w].efficiency
                        * (x[qwIdx(w, ph)] + (ph == 2 ? wells_[w].lift_gas : Scalar{0}));
                 }

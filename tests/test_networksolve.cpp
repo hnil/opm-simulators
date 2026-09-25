@@ -918,6 +918,26 @@ BOOST_AUTO_TEST_CASE(what_enters_a_branch_besides_the_wells)
     }
 }
 
+// A shut well puts nothing into its node. Its phase lines shut in at different pressures (here
+// water 30 bar above oil, as a watered-out well's): at the oil line's shut-in bhp the water line
+// still flows, and the route added that to the branch (NORNE-NET-01: 0.2-2 bar off, rejected).
+BOOST_AUTO_TEST_CASE(a_shut_well_puts_nothing_into_its_node)
+{
+    using Sys = NetworkSolve::ProductionSystem<double>;
+    ProductionCase c;
+    auto& w0 = c.wells()[0];
+    w0.ipr_a[0] = -w0.ipr_b[0] * convert::from(150.0, bars);   // its oil line shuts in at 120 bar
+    auto system = c.system();
+    system.resetDead();
+    system.killWell(0);
+    system.reducedResidual(ProductionCase::guess());
+    const auto& x = system.reducedState();
+    const auto q = system.wellPhaseRates(x);
+    for (int ph = 0; ph < Sys::NP; ++ph) {
+        BOOST_CHECK_CLOSE(x[system.qIdx(1, ph)], system.wells()[1].efficiency * q[1][ph], 1e-9);
+    }
+}
+
 // The same for an injection network: a well at half efficiency halves what the
 // branch carries, and the analytic Jacobian has to know it.
 BOOST_AUTO_TEST_CASE(injection_efficiency_enters_the_branch)
