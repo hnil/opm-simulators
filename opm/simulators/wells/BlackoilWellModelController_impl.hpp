@@ -640,7 +640,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
         // Every deck limit of every group in the tree, and the satellite production counted
         // on it: the route holds one limit per group, chosen again from its own answer.
         std::map<std::string, int> gidx;
-        std::map<int, std::vector<std::pair<Mode, Scalar>>> group_limits;
+        std::map<int, std::vector<std::pair<Mode, Scalar>>> group_limits, every_limit;
         std::map<int, std::array<Scalar, Sys::NP>> satellite_on;
         std::function<void()> refreshGuides = [] {};
         // The deck's group tree, parents first.
@@ -729,6 +729,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                     pending_limits = std::move(limits_here);
                 }
                 const int me = system.addGroup(std::move(node));
+                if (!pending_limits.empty()) { every_limit[me] = pending_limits; }
                 if (pending_limits.size() > 1) { group_limits[me] = std::move(pending_limits); }
                 pending_limits.clear();
                 gidx[g] = me;
@@ -825,7 +826,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
             return std::string(v != nullptr ? v : "stein");
         }();
         const bool stein_set = group_set == "stein" && !tree_wells.empty();
-        int stein_mode_switches = 0;
+        int stein_mode_switches = 0, stein_trims = 0;
         ProdGroupTreeBalancer::Tree<Scalar> stein_last;   // the tree behind the set in force
         if (stein_set) {
             system.setLiftTolerance(param_.group_controller_network_tolerance_);
@@ -917,6 +918,55 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                         break;
                     }
                 }
+                // The tree allocates at its last sweep's fractions; the wells sit on their inflow
+                // lines at the oil it hands them, which can put a group over one of its limits
+                // (GRUPCNTL-30, 9_4B). Scale that group's held wells down.
+                for (int pass = 0; pass < 4 && !every_limit.empty(); ++pass) {
+                    bool trimmed = false;
+                    for (const auto& [g, limits] : every_limit) {
+                        std::array<Scalar, Sys::NP> held{}, other{};
+                        std::vector<int> under;
+                        for (int w = 0; w < system.numWells(); ++w) {
+                            Scalar eff = wells[w].efficiency;
+                            int a = wells[w].group;
+                            for (; a >= 0 && a != g; a = system.groups()[a].parent) { eff *= system.groups()[a].efficiency; }
+                            const auto rt = rates.find(wells[w].name);
+                            if (a != g || rt == rates.end()) { continue; }
+                            const auto it = tree.find(wells[w].name);
+                            const bool is_held = it != tree.end() && it->second.modeCategory == ProdNodeModeCategory::Group;
+                            const std::array<Scalar, Sys::NP> q{rt->second[1], rt->second[0], rt->second[2]};
+                            auto& sum = is_held ? held : other;
+                            for (int ph = 0; ph < Sys::NP; ++ph) { sum[ph] += eff * q[ph]; }
+                            if (is_held) { under.push_back(w); }
+                        }
+                        Scalar f = 1;
+                        for (const auto& [m, limit] : limits) {
+                            const auto c = Sys::modeWeights(m, system.groups()[g].resv_coeff);
+                            Scalar on_held = 0, on_other = 0, sat = 0;
+                            for (int ph = 0; ph < Sys::NP; ++ph) { on_held += c[ph] * held[ph]; on_other += c[ph] * other[ph]; }
+                            if (const auto is = satellite_on.find(g); is != satellite_on.end()) {
+                                for (int ph = 0; ph < Sys::NP; ++ph) { sat += c[ph] * is->second[ph]; }
+                            }
+                            const Scalar room = limit - sat - on_other;
+                            if (on_held > Scalar{0} && on_held + on_other + sat > limit * (Scalar{1} + Scalar{1e-4})) {
+                                f = std::min(f, std::max(room, Scalar{0}) / on_held);
+                            }
+                        }
+                        if (f < Scalar{1}) {
+                            for (const int w : under) {
+                                auto& node = tree.at(wells[w].name);
+                                const auto at = phases(wells[w], std::max(-node.rates[0], Scalar{0}) * f);
+                                rates[wells[w].name] = at;
+                                node.rates = {-at[0], -at[1], -at[2]};
+                            }
+                            trimmed = true;
+                            ++stein_trims;
+                        }
+                    }
+                    if (!trimmed) {
+                        break;
+                    }
+                }
                 // A group on a limit the system does not hold for it: hold that one.
                 bool switched = false;
                 for (const auto& [g, limits] : group_limits) {
@@ -933,9 +983,14 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                     case Well::ProducerCMode::LRAT: held = Mode::Liquid; break;
                     default: break;
                     }
-                    if (held == Mode::None || held == grp.mode) {
+                    if (held == Mode::None) {
                         continue;
                     }
+                    // The tree may hold a mode below its limit so that another limit holds too.
+                    const auto& tr = it->second.rates;
+                    const Scalar tree_on = held == Mode::Oil   ? -tr[0]
+                                         : held == Mode::Water ? -tr[1]
+                                         : held == Mode::Gas   ? -tr[2] : -tr[0] - tr[1];
                     for (const auto& lim : limits) {
                         if (lim.first != held) {
                             continue;
@@ -945,7 +1000,12 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                         if (const auto is = satellite_on.find(g); is != satellite_on.end()) {
                             for (int ph = 0; ph < Sys::NP; ++ph) { sat += c[ph] * is->second[ph]; }
                         }
-                        system.setGroupLimit(g, held, std::max(lim.second - sat, Scalar{1e-12}));
+                        const Scalar value = tree_on < lim.second * (Scalar{1} - Scalar{1e-6}) ? tree_on : lim.second;
+                        const Scalar target = std::max(value - sat, Scalar{1e-12});
+                        if (held == grp.mode && std::abs(target - grp.target) <= Scalar{1e-9} * lim.second) {
+                            continue;
+                        }
+                        system.setGroupLimit(g, held, target);
                         switched = true;
                         ++stein_mode_switches;
                     }
@@ -1279,9 +1339,9 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
         }
         if (stein_set) {
             deferred_logger.debug(fmt::format("Controller: the balancer's tree set the groups under {}: {} calls, "
-                                              "{} fell back to the route's walk, {} limit switches", root.name(),
+                                              "{} fell back to the route's walk, {} limit switches, {} trims", root.name(),
                                               system.treeAllocatorCalls(), system.treeAllocatorFallbacks(),
-                                              stein_mode_switches));
+                                              stein_mode_switches, stein_trims));
         }
         if (stein_limits && !group_limits.empty()) {
             deferred_logger.debug(fmt::format("Controller: balancer on the route's answer under {}: {}, "
