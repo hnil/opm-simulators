@@ -1,0 +1,236 @@
+-- This reservoir simulation deck is made available under the Open Database
+-- License: http://opendatacommons.org/licenses/odbl/1.0/. Any rights in
+-- individual contents of the database are licensed under the Database Contents
+-- License: http://opendatacommons.org/licenses/dbcl/1.0/
+
+-- Copyright (C) 2020 Equinor
+
+
+-- This model is based on TRAN-modified Base case model 5, with B-1H multisegment
+-- (segments from model5's b-1h_msw.dat) on a THP limit, for test_msw_rates_at_bhp
+
+
+------------------------------------------------------------------------------------------------
+RUNSPEC
+------------------------------------------------------------------------------------------------
+
+
+DIMENS
+ 20 30 10 /
+
+
+OIL
+WATER
+GAS
+DISGAS
+--VAPOIL
+
+METRIC
+
+START
+ 01 'JAN' 2020 /
+
+--
+GRIDOPTS
+ 'YES'        0 /
+
+EQLDIMS
+ 1  100  25 /
+
+
+REGDIMS
+-- max. ntfip  nmfipr  max. nrfreg   max. ntfreg
+   3          2       1*            2    /
+
+--
+TABDIMS
+--ntsfun     ntpvt  max.nssfun  max.nppvt  max.ntfip  max.nrpvt
+  1          1      150          60         3         60 /
+
+--
+WELLDIMS
+--max.well  max.con/well  max.grup  max.w/grup
+ 10         15            9          10   /
+
+--FLOW   THP  WCT  GCT  ALQ  VFP
+VFPPDIMS
+  22     13   10   13    13   50  /
+
+
+
+UNIFIN
+UNIFOUT
+
+------------------------------------------------------------------------------------------------
+GRID
+------------------------------------------------------------------------------------------------
+
+--
+NEWTRAN
+
+--
+GRIDFILE
+ 0  1 /
+
+--
+GRIDUNIT
+METRES  /
+
+--
+INIT
+
+
+INCLUDE
+ 'include/test1_20x30x10.grdecl' /
+
+INCLUDE
+ 'include/permx_model5.grdecl' /
+
+
+PORO
+ 6000*0.28 /
+
+COPY
+  PERMX PERMY /
+  PERMX PERMZ /
+/
+
+MULTIPLY
+  PERMZ 0.1 /
+/
+
+RPTGRID
+ 'ALLNNC' /
+
+EQUALS
+  'MULTY'  0.01 1 20  14 14  1 10 /
+/
+
+
+------------------------------------------------------------------------------------------------
+EDIT
+------------------------------------------------------------------------------------------------
+
+-- actual maximum value is 35719 in this case
+-- a max max value of 32000 should affect 76 cells
+-- there are in other words 108 cells
+
+-- mean value without maxvalue tranz: 13351
+-- mean value with maxvalue tranz: 13326
+
+
+MAXVALUE
+  TRANZ 32000 /
+/
+
+
+------------------------------------------------------------------------------------------------
+PROPS
+------------------------------------------------------------------------------------------------
+
+NOECHO
+
+INCLUDE
+ 'include/pvt_live_oil_dgas.ecl' /
+
+
+INCLUDE
+ 'include/rock.inc' /
+
+INCLUDE
+ 'include/relperm.inc' /
+
+
+------------------------------------------------------------------------------------------------
+REGIONS
+------------------------------------------------------------------------------------------------
+
+EQLNUM
+ 6000*1 /
+
+EQUALS
+  FIPNUM  1  1 20   1 14  1 10 /
+  FIPNUM  2  1 20  15 30  1 10 /
+/
+
+SATNUM
+ 6000*1 /
+
+-- custom region
+FIPABC
+  2000*1 2000*2 2000*3 /
+
+------------------------------------------------------------------------------------------------
+SOLUTION
+------------------------------------------------------------------------------------------------
+
+
+RPTRST
+  'BASIC = 2' 'PBPD' /
+
+EQUIL
+-- Datum    P     woc     Pc   goc    Pc  Rsvd  Rvvd
+ 2000.00  195.0  2070     0.0  500.00  0.0   1   0   0 /
+
+PBVD
+  2000.00    75.00
+  2150.00    75.00  /
+
+
+
+------------------------------------------------------------------------------------------------
+SUMMARY
+------------------------------------------------------------------------------------------------
+
+
+INCLUDE
+ 'include/summary.inc' /
+
+
+------------------------------------------------------------------------------------------------
+SCHEDULE
+
+GRUPTREE
+ 'PLAT-A'    'FIELD' /
+ 'M5S'    'PLAT-A'  /
+ 'B1'     'M5S'  /
+/
+
+INCLUDE
+ 'include/well_vfp.ecl' /
+
+WELSPECS
+ 'B-1H'  'B1'   11    3      1*   OIL     1*   1*   SHUT 1* 1* 1* /
+/
+
+COMPDAT
+ 'B-1H'    11   3    1    5   OPEN    1*      1*    0.216    1*        0    1*    Z       1* /
+/
+
+WELSEGS
+   B-1H     2036.90402     0.00000     1*        INC         'HF-'    /
+   2             2            1              1              2.41026     2.32453          0.15200     0.0000100 /
+   3             3            1              2              4.97665     4.79964          0.15200     0.0000100 /
+   4             4            1              3              5.13281     4.95024          0.15200     0.0000100 /
+   5             5            1              4              5.13275     4.95018          0.15200     0.0000100 /
+   6             6            1              5              5.13278     4.95021          0.15200     0.0000100 /
+   7             7            1              6              5.10326     4.92174          0.15200     0.0000100 /
+/
+
+COMPSEGS
+   B-1H /
+   11     3     1     1             0.00000          4.82052         /
+   11     3     2     1             4.82052          9.95331         /
+   11     3     3     1             9.95331          15.08614        /
+   11     3     4     1             15.08614         20.21880        /
+   11     3     5     1             20.21880         24.43153        /
+/
+
+WCONPROD
+   'B-1H'      OPEN    ORAT  1500.0  1*     1*    3000.0  1*   100.0  30   1   1*  /
+/
+
+TSTEP
+ 1 /
+
+END
