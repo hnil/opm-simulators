@@ -51,6 +51,12 @@ struct RuntimePerforation
     /// Measured-depth [start, end] along the branch for the created
     /// connection, when known.
     std::optional<std::pair<double, double>> perf_range{};
+
+    /// Fracture pressure at the connection depth minus the well's anchor
+    /// pressure (BHP, or the pressure of \c segment for multi-segment wells).
+    /// When set, the fracture contribution is driven by this pressure instead
+    /// of the wellbore hydrostatic column.
+    std::optional<double> fracture_pressure_offset{};
 };
 
 } // namespace Opm

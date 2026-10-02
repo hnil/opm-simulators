@@ -20,6 +20,8 @@
 #ifndef OPM_WELL_INDEX_FRACTURE_HPP_INCLUDED
 #define OPM_WELL_INDEX_FRACTURE_HPP_INCLUDED
 
+#include <optional>
+
 namespace Opm {
 
 /// Additional connection transmissibility contributed by a dynamically
@@ -33,6 +35,14 @@ struct WellIndexFracture
 
     /// Connection pressure at which \c ctf was computed.
     double pressure{0.0};
+
+    /// Fracture pressure at the connection minus the anchor pressure (BHP, or
+    /// the pressure of \c segment for multi-segment wells); unset means the
+    /// fracture contribution sees the wellbore pressure like the matrix part.
+    std::optional<double> pressure_offset{};
+
+    /// Anchor segment number (1-based) for multi-segment wells.
+    int segment{0};
 
     /// Fracture connection factor at the given connection pressure.
     ///

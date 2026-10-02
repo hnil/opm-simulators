@@ -278,6 +278,7 @@ namespace Opm {
                         const std::vector<Value>& b_perfcells,
                         const std::vector<Value>& mob_perfcells,
                         const std::vector<Value>& Tw,
+                        const int seg,
                         const int perf,
                         const Value& segment_pressure,
                         const Value& segment_density,
