@@ -168,7 +168,7 @@ GenericOutputModule(const EclipseState& eclState,
     , enableGeochemistry_(enableGeochemistry)
     , regionVars_ { std::make_unique<ParallelRegionsetVariableDescriptor>(comm),
                     std::make_unique<ParallelRegionVariableValues>(comm) }
-    , flowsC_(schedule, summaryConfig, isInterior)
+    , flowsC_(schedule, summaryConfig, isInterior, eclState.getIOConfig().getDumpFlux())
     , rftC_(eclState_, schedule_,
             [this](const std::string& wname) { return this->isOwnedByCurrentRank(wname); },
             [this](const std::string& wname) { return this->isOnCurrentRank(wname); })

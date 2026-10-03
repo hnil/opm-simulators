@@ -257,6 +257,15 @@ setThermalHalfTrans(unsigned insideElemIdx, unsigned outsideElemIdx, Scalar valu
 
 template<class Grid, class GridView, class ElementMapper, class CartesianIndexMapper, class Scalar>
 Scalar Transmissibility<Grid,GridView,ElementMapper,CartesianIndexMapper,Scalar>::
+transmissibilityOrZero(unsigned elemIdx1, unsigned elemIdx2) const
+{
+    const auto pos = trans_.find(details::isId(elemIdx1, elemIdx2));
+
+    return (pos == trans_.end()) ? Scalar{0} : pos->second;
+}
+
+template<class Grid, class GridView, class ElementMapper, class CartesianIndexMapper, class Scalar>
+Scalar Transmissibility<Grid,GridView,ElementMapper,CartesianIndexMapper,Scalar>::
 transmissibilityBoundary(unsigned elemIdx, unsigned boundaryFaceIdx) const
 {
     return transBoundary_.at(std::make_pair(elemIdx, boundaryFaceIdx));

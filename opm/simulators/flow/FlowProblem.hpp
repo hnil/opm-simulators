@@ -624,6 +624,14 @@ public:
     { return moduleParams_; }
 
     /*!
+     * \copydoc Transmissibility::transmissibilityOrZero
+     */
+    Scalar transmissibilityOrZero(unsigned globalCenterElemIdx, unsigned globalElemIdx) const
+    {
+        return transmissibilities_.transmissibilityOrZero(globalCenterElemIdx, globalElemIdx);
+    }
+
+    /*!
      * \copydoc EclTransmissiblity::diffusivity
      */
     template <class Context>
