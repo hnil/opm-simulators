@@ -880,11 +880,21 @@ public:
     void updateFlowsInfo()
     {
         OPM_TIMEBLOCK(updateFlows);
-        const bool enableFlows = simulator_().problem().eclWriter().outputModule().getFlows().hasFlows();
         const auto& blockFlows = simulator_().problem().eclWriter().outputModule().getFlows().blockFlows();
         // We reuse the fluxes in the TEMP option
         const bool isTemp = simulator_().vanguard().eclState().getSimulationConfig().isTemp();
-        const bool enableFlores = simulator_().problem().eclWriter().outputModule().getFlows().hasFlores() || isTemp;
+        // The output buffers are not allocated until the first restart report is
+        // written, so hasFlows()/hasFlores() is still false while the first report
+        // step is being solved. The sparse tables themselves are sized from the
+        // deck-level request in createFlows_(), so use that same condition here.
+        // Otherwise the collected values - and hence FLOWS and FLORES in the
+        // first restart report - would remain zero.
+        const bool enableFlows =
+            simulator_().problem().eclWriter().outputModule().getFlows().anyFlows()
+            && !flowsInfo_.empty();
+        const bool enableFlores =
+            (simulator_().problem().eclWriter().outputModule().getFlows().anyFlores() || isTemp)
+            && !floresInfo_.empty();
         if (!enableFlows && !enableFlores && blockFlows.empty()) {
             return;
         }

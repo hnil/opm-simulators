@@ -626,15 +626,21 @@ public:
             if (!FluidSystem::phaseIsActive(phaseIdx)) {
                 continue;
             }
-            const auto& pBoundary = bdyInfo.exFluidState.pressure(phaseIdx);
-            const Evaluation& pInside = insideIntQuants.fluidState().pressure(phaseIdx);
             const unsigned pvtRegionIdx = insideIntQuants.pvtRegionIndex();
 
             RateVector tmp(0.0);
             const auto& darcyFlux = volumeFlux[phaseIdx];
+
+            // Which side is upstream was already decided by
+            // calculateBoundaryGradients_, from the gravity-corrected phase
+            // potential. Comparing the raw phase pressures here would disagree
+            // with it whenever the head across the face outweighs the pressure
+            // difference, and the stream's composition would then be taken from
+            // the wrong side while its magnitude came from the other.
+            const bool outflux = (upIdx[phaseIdx] == static_cast<short>(0));
+
             // mass conservation
-            if (pBoundary < pInside) {
-                // outflux
+            if (outflux) {
                 const auto& invB = getInvB_<FluidSystem, FluidState, Evaluation>(
                     insideIntQuants.fluidState(), phaseIdx, pvtRegionIdx);
                 Evaluation surfaceVolumeFlux = invB * darcyFlux;
@@ -647,7 +653,7 @@ public:
                     EnergyModule::template addPhaseEnthalpyFluxes_<Evaluation>(
                         tmp, phaseIdx, darcyFlux, insideIntQuants.fluidState());
                 }
-            } else if (pBoundary > pInside) {
+            } else {
                 // influx
                 using ScalarFluidState = decltype(bdyInfo.exFluidState);
                 const auto& invB = getInvB_<FluidSystem, ScalarFluidState, Scalar>(
