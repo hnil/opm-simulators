@@ -12,12 +12,36 @@ if (BUILD_FLOW)
 
   opm_add_executable(
     TARGET
+      flux_smoke_mutate
+    SOURCES
+      tests/flux/flux_smoke_mutate.cpp
+    LIBRARIES
+      opmcommon
+  )
+
+  opm_add_executable(
+    TARGET
       flux_smoke_compare
     SOURCES
       tests/flux/flux_smoke_compare.cpp
     LIBRARIES
       opmcommon
   )
+
+  # The summary reader is built and shipped by opm-common, not by
+  # opm-simulators.
+  find_program(OPM_SUMMARY_BIN
+    NAMES summary
+    HINTS ${PROJECT_SOURCE_DIR}/../opm-common/build/bin
+          ${CMAKE_INSTALL_PREFIX}/bin
+    PATH_SUFFIXES bin)
+
+  # compareECL is built and shipped by opm-common, not by opm-simulators.
+  find_program(OPM_COMPARE_ECL_BIN
+    NAMES compareECL
+    HINTS ${PROJECT_SOURCE_DIR}/../opm-common/build/bin
+          ${CMAKE_INSTALL_PREFIX}/bin
+    PATH_SUFFIXES bin)
 
   # ------------------------------------------------------------------------
   # DUMPFLUX: a run writing the boundary of its FLUXNUM regions.
@@ -275,4 +299,312 @@ if (BUILD_FLOW)
     TEST_ARGS
       --initial-time-step-in-days=30
   )
+
+  # ------------------------------------------------------------------------
+  # USEFLUX: a sector run driven by the boundary data.
+
+  set(_useflux_pressure_result_path ${PROJECT_BINARY_DIR}/tests/results/flux/flow_blackoil+useflux_pressure_smoke)
+  opm_add_test(useflux_pressure_smoke
+    DEPENDS
+      flux_smoke_shape_check
+    EXE_TARGET
+      flow_blackoil
+    DRIVER_ARGS
+      -i ${PROJECT_SOURCE_DIR}/tests/flux
+      -r ${_useflux_pressure_result_path}
+      -f FLUX_DUMP_PRESSURE_SMOKE
+      -p "bash ${PROJECT_SOURCE_DIR}/tests/check-useflux-pressure-smoke.sh ${PROJECT_BINARY_DIR}/bin/flow_blackoil ${PROJECT_SOURCE_DIR}/tests/flux/FLUX_USE_PRESSURE_SMOKE.DATA"
+  )
+
+  set(_useflux_flux_result_path ${PROJECT_BINARY_DIR}/tests/results/flux/flow_blackoil+useflux_flux_smoke)
+  opm_add_test(useflux_flux_smoke
+    DEPENDS
+      flux_smoke_shape_check
+    EXE_TARGET
+      flow_blackoil
+    DRIVER_ARGS
+      -i ${PROJECT_SOURCE_DIR}/tests/flux
+      -r ${_useflux_flux_result_path}
+      -f FLUX_DUMP_USEFLUX_FLUX_SMOKE
+      -p "bash ${PROJECT_SOURCE_DIR}/tests/check-useflux-flux-smoke.sh ${PROJECT_BINARY_DIR}/bin/flow_blackoil ${PROJECT_SOURCE_DIR}/tests/flux/FLUX_USE_FLUX_SMOKE.DATA"
+  )
+
+  set(_useflux_both_result_path ${PROJECT_BINARY_DIR}/tests/results/flux/flow_blackoil+useflux_both_smoke)
+  opm_add_test(useflux_both_smoke
+    DEPENDS
+      flux_smoke_shape_check
+    EXE_TARGET
+      flow_blackoil
+    DRIVER_ARGS
+      -i ${PROJECT_SOURCE_DIR}/tests/flux
+      -r ${_useflux_both_result_path}
+      -f FLUX_DUMP_USEFLUX_BOTH_SMOKE
+      -p "bash ${PROJECT_SOURCE_DIR}/tests/check-useflux-both-smoke.sh ${PROJECT_BINARY_DIR}/bin/flow_blackoil ${PROJECT_SOURCE_DIR}/tests/flux/FLUX_USE_BOTH_SMOKE.DATA"
+  )
+
+  set(_useflux_suffix_result_path ${PROJECT_BINARY_DIR}/tests/results/flux/flow_blackoil+useflux_suffix_smoke)
+  opm_add_test(useflux_suffix_smoke
+    DEPENDS
+      flux_smoke_shape_check
+    EXE_TARGET
+      flow_blackoil
+    DRIVER_ARGS
+      -i ${PROJECT_SOURCE_DIR}/tests/flux
+      -r ${_useflux_suffix_result_path}
+      -f FLUX_DUMP_USEFLUX_SUFFIX_SMOKE
+      -p "bash ${PROJECT_SOURCE_DIR}/tests/check-useflux-suffix-smoke.sh ${PROJECT_BINARY_DIR}/bin/flow_blackoil ${PROJECT_SOURCE_DIR}/tests/flux/FLUX_USE_SUFFIX_SMOKE.DATA"
+  )
+
+  set(_useflux_suffix2_result_path ${PROJECT_BINARY_DIR}/tests/results/flux/flow_blackoil+useflux_suffix2_smoke)
+  opm_add_test(useflux_suffix2_smoke
+    DEPENDS
+      flux_smoke_shape_check
+    EXE_TARGET
+      flow_blackoil
+    DRIVER_ARGS
+      -i ${PROJECT_SOURCE_DIR}/tests/flux
+      -r ${_useflux_suffix2_result_path}
+      -f FLUX_DUMP_USEFLUX_SUFFIX_SMOKE
+      -p "bash ${PROJECT_SOURCE_DIR}/tests/check-useflux-suffix2-smoke.sh ${PROJECT_BINARY_DIR}/bin/flow_blackoil ${PROJECT_SOURCE_DIR}/tests/flux/FLUX_USE_SUFFIX_SMOKE.DATA"
+  )
+
+  set(_useflux_missing_result_path ${PROJECT_BINARY_DIR}/tests/results/flux/flow_blackoil+useflux_missing_smoke)
+  opm_add_test(useflux_missing_smoke
+    DEPENDS
+      flux_smoke_shape_check
+    EXE_TARGET
+      flow_blackoil
+    DRIVER_ARGS
+      -i ${PROJECT_SOURCE_DIR}/tests/flux
+      -r ${_useflux_missing_result_path}
+      -f FLUX_DUMP_USEFLUX_SUFFIX_SMOKE
+      -p "bash ${PROJECT_SOURCE_DIR}/tests/check-useflux-missing-smoke.sh ${PROJECT_BINARY_DIR}/bin/flow_blackoil ${PROJECT_SOURCE_DIR}/tests/flux/FLUX_USE_MISSING_SMOKE.DATA"
+  )
+
+  set(_useflux_invalid_suffix_result_path ${PROJECT_BINARY_DIR}/tests/results/flux/flow_blackoil+useflux_invalid_suffix_smoke)
+  opm_add_test(useflux_invalid_suffix_smoke
+    DEPENDS
+      flux_smoke_shape_check
+    EXE_TARGET
+      flow_blackoil
+    DRIVER_ARGS
+      -i ${PROJECT_SOURCE_DIR}/tests/flux
+      -r ${_useflux_invalid_suffix_result_path}
+      -f FLUX_DUMP_USEFLUX_SUFFIX_SMOKE
+      -p "bash ${PROJECT_SOURCE_DIR}/tests/check-useflux-invalid-suffix-smoke.sh ${PROJECT_BINARY_DIR}/bin/flow_blackoil ${PROJECT_SOURCE_DIR}/tests/flux/FLUX_USE_INVALID_SUFFIX_SMOKE.DATA"
+  )
+
+  set(_useflux_missing_mpi_result_path ${PROJECT_BINARY_DIR}/tests/results/flux/flow_blackoil+useflux_missing_mpi_smoke)
+  opm_add_test(useflux_missing_mpi_smoke
+    DEPENDS
+      flux_smoke_shape_check
+    EXE_TARGET
+      flow_blackoil
+    DRIVER_ARGS
+      -i ${PROJECT_SOURCE_DIR}/tests/flux
+      -r ${_useflux_missing_mpi_result_path}
+      -f FLUX_DUMP_USEFLUX_SUFFIX_SMOKE
+      -n 2
+      -p "bash ${PROJECT_SOURCE_DIR}/tests/check-useflux-missing-smoke.sh ${PROJECT_BINARY_DIR}/bin/flow_blackoil ${PROJECT_SOURCE_DIR}/tests/flux/FLUX_USE_MISSING_SMOKE.DATA 2"
+  )
+
+  set(_useflux_invalid_suffix_mpi_result_path ${PROJECT_BINARY_DIR}/tests/results/flux/flow_blackoil+useflux_invalid_suffix_mpi_smoke)
+  opm_add_test(useflux_invalid_suffix_mpi_smoke
+    DEPENDS
+      flux_smoke_shape_check
+    EXE_TARGET
+      flow_blackoil
+    DRIVER_ARGS
+      -i ${PROJECT_SOURCE_DIR}/tests/flux
+      -r ${_useflux_invalid_suffix_mpi_result_path}
+      -f FLUX_DUMP_USEFLUX_SUFFIX_SMOKE
+      -n 2
+      -p "bash ${PROJECT_SOURCE_DIR}/tests/check-useflux-invalid-suffix-smoke.sh ${PROJECT_BINARY_DIR}/bin/flow_blackoil ${PROJECT_SOURCE_DIR}/tests/flux/FLUX_USE_INVALID_SUFFIX_SMOKE.DATA 2"
+  )
+
+  set(_useflux_mixed_suffix_result_path ${PROJECT_BINARY_DIR}/tests/results/flux/flow_blackoil+useflux_mixed_suffix_smoke)
+  opm_add_test(useflux_mixed_suffix_smoke
+    DEPENDS
+      flux_smoke_shape_check
+    EXE_TARGET
+      flow_blackoil
+    DRIVER_ARGS
+      -i ${PROJECT_SOURCE_DIR}/tests/flux
+      -r ${_useflux_mixed_suffix_result_path}
+      -f FLUX_DUMP_USEFLUX_SUFFIX_SMOKE
+      -p "bash ${PROJECT_SOURCE_DIR}/tests/check-useflux-mixed-suffix-smoke.sh ${PROJECT_BINARY_DIR}/bin/flow_blackoil ${PROJECT_SOURCE_DIR}/tests/flux/FLUX_USE_MIXED_SUFFIX_SMOKE.DATA"
+  )
+
+  set(_useflux_mixed_suffix_mpi_result_path ${PROJECT_BINARY_DIR}/tests/results/flux/flow_blackoil+useflux_mixed_suffix_mpi_smoke)
+  opm_add_test(useflux_mixed_suffix_mpi_smoke
+    DEPENDS
+      flux_smoke_shape_check
+    EXE_TARGET
+      flow_blackoil
+    DRIVER_ARGS
+      -i ${PROJECT_SOURCE_DIR}/tests/flux
+      -r ${_useflux_mixed_suffix_mpi_result_path}
+      -f FLUX_DUMP_USEFLUX_SUFFIX_SMOKE
+      -n 2
+      -p "bash ${PROJECT_SOURCE_DIR}/tests/check-useflux-mixed-suffix-smoke.sh ${PROJECT_BINARY_DIR}/bin/flow_blackoil ${PROJECT_SOURCE_DIR}/tests/flux/FLUX_USE_MIXED_SUFFIX_SMOKE.DATA 2"
+  )
+
+  set(_useflux_invalid_rate_nan_result_path ${PROJECT_BINARY_DIR}/tests/results/flux/flow_blackoil+useflux_invalid_rate_nan_smoke)
+  opm_add_test(useflux_invalid_rate_nan_smoke
+    DEPENDS
+      flux_smoke_shape_check
+      flux_smoke_mutate
+    EXE_TARGET
+      flow_blackoil
+    DRIVER_ARGS
+      -i ${PROJECT_SOURCE_DIR}/tests/flux
+      -r ${_useflux_invalid_rate_nan_result_path}
+      -f FLUX_DUMP_USEFLUX_FLUX_SMOKE
+      -p "bash ${PROJECT_SOURCE_DIR}/tests/check-useflux-invalid-rate-smoke.sh ${PROJECT_BINARY_DIR}/bin/flow_blackoil ${PROJECT_BINARY_DIR}/bin/flux_smoke_mutate ${PROJECT_SOURCE_DIR}/tests/flux/FLUX_USE_FLUX_SMOKE.DATA nan"
+  )
+
+  set(_useflux_invalid_rate_inf_result_path ${PROJECT_BINARY_DIR}/tests/results/flux/flow_blackoil+useflux_invalid_rate_inf_smoke)
+  opm_add_test(useflux_invalid_rate_inf_smoke
+    DEPENDS
+      flux_smoke_shape_check
+      flux_smoke_mutate
+    EXE_TARGET
+      flow_blackoil
+    DRIVER_ARGS
+      -i ${PROJECT_SOURCE_DIR}/tests/flux
+      -r ${_useflux_invalid_rate_inf_result_path}
+      -f FLUX_DUMP_USEFLUX_FLUX_SMOKE
+      -p "bash ${PROJECT_SOURCE_DIR}/tests/check-useflux-invalid-rate-smoke.sh ${PROJECT_BINARY_DIR}/bin/flow_blackoil ${PROJECT_BINARY_DIR}/bin/flux_smoke_mutate ${PROJECT_SOURCE_DIR}/tests/flux/FLUX_USE_FLUX_SMOKE.DATA inf"
+  )
+
+  set(_useflux_invalid_rate_nan_mpi_result_path ${PROJECT_BINARY_DIR}/tests/results/flux/flow_blackoil+useflux_invalid_rate_nan_mpi_smoke)
+  opm_add_test(useflux_invalid_rate_nan_mpi_smoke
+    DEPENDS
+      flux_smoke_shape_check
+      flux_smoke_mutate
+    EXE_TARGET
+      flow_blackoil
+    DRIVER_ARGS
+      -i ${PROJECT_SOURCE_DIR}/tests/flux
+      -r ${_useflux_invalid_rate_nan_mpi_result_path}
+      -f FLUX_DUMP_USEFLUX_FLUX_SMOKE
+      -n 2
+      -p "bash ${PROJECT_SOURCE_DIR}/tests/check-useflux-invalid-rate-smoke.sh ${PROJECT_BINARY_DIR}/bin/flow_blackoil ${PROJECT_BINARY_DIR}/bin/flux_smoke_mutate ${PROJECT_SOURCE_DIR}/tests/flux/FLUX_USE_FLUX_SMOKE.DATA nan 2"
+  )
+
+  set(_useflux_invalid_rate_inf_mpi_result_path ${PROJECT_BINARY_DIR}/tests/results/flux/flow_blackoil+useflux_invalid_rate_inf_mpi_smoke)
+  opm_add_test(useflux_invalid_rate_inf_mpi_smoke
+    DEPENDS
+      flux_smoke_shape_check
+      flux_smoke_mutate
+    EXE_TARGET
+      flow_blackoil
+    DRIVER_ARGS
+      -i ${PROJECT_SOURCE_DIR}/tests/flux
+      -r ${_useflux_invalid_rate_inf_mpi_result_path}
+      -f FLUX_DUMP_USEFLUX_FLUX_SMOKE
+      -n 2
+      -p "bash ${PROJECT_SOURCE_DIR}/tests/check-useflux-invalid-rate-smoke.sh ${PROJECT_BINARY_DIR}/bin/flow_blackoil ${PROJECT_BINARY_DIR}/bin/flux_smoke_mutate ${PROJECT_SOURCE_DIR}/tests/flux/FLUX_USE_FLUX_SMOKE.DATA inf 2"
+  )
+
+  if(OPM_SUMMARY_BIN)
+    set(_flux_threshold_pressure_result_path ${PROJECT_BINARY_DIR}/tests/results/flux/flow_blackoil+flux_threshold_pressure_smoke)
+    opm_add_test(flux_threshold_pressure_smoke
+        EXE_TARGET flow_blackoil
+      DRIVER_ARGS
+        -i ${PROJECT_SOURCE_DIR}/tests/flux
+        -r ${_flux_threshold_pressure_result_path}
+        -f FLUX_DUMP_THPRES_SMOKE
+        -p "bash ${PROJECT_SOURCE_DIR}/tests/check-flux-threshold-pressure.sh ${PROJECT_BINARY_DIR}/bin/flow_blackoil ${PROJECT_SOURCE_DIR}/tests/flux/FLUX_DUMP_THPRES_SMOKE.DATA ${PROJECT_SOURCE_DIR}/tests/flux/FLUX_USE_THPRES_SMOKE.DATA ${PROJECT_BINARY_DIR}/bin/make_flux ${OPM_SUMMARY_BIN} ${PROJECT_SOURCE_DIR}/tests/flux/FLUX_USE_THPRES_CUTOUT_SMOKE.DATA"
+    )
+
+    set(_flux_fault_boundary_result_path ${PROJECT_BINARY_DIR}/tests/results/flux/flow_blackoil+flux_fault_boundary_smoke)
+    opm_add_test(flux_fault_boundary_smoke
+      EXE_TARGET
+        flow_blackoil
+      DRIVER_ARGS
+        -i ${PROJECT_SOURCE_DIR}/tests/flux
+        -r ${_flux_fault_boundary_result_path}
+        -f FLUX_DUMP_FAULT_SMOKE
+        -p "bash ${PROJECT_SOURCE_DIR}/tests/check-flux-fault-boundary-smoke.sh ${PROJECT_BINARY_DIR}/bin/flow_blackoil ${OPM_SUMMARY_BIN} ${PROJECT_BINARY_DIR}/bin/inspect_flux ${PROJECT_SOURCE_DIR}/tests/flux/FLUX_DUMP_FAULT_SMOKE.DATA ${PROJECT_SOURCE_DIR}/tests/flux/FLUX_USE_FAULT_SMOKE.DATA 1,1,5 2,1,5 I+"
+    )
+
+    set(_flux_fault_throw_result_path ${PROJECT_BINARY_DIR}/tests/results/flux/flow_blackoil+flux_fault_throw_smoke)
+    opm_add_test(flux_fault_throw_smoke
+      EXE_TARGET
+        flow_blackoil
+      DRIVER_ARGS
+        -i ${PROJECT_SOURCE_DIR}/tests/flux
+        -r ${_flux_fault_throw_result_path}
+        -f FLUX_DUMP_THROW_SMOKE
+        -p "bash ${PROJECT_SOURCE_DIR}/tests/check-flux-fault-throw.sh ${PROJECT_BINARY_DIR}/bin/flow_blackoil ${OPM_SUMMARY_BIN} ${PROJECT_BINARY_DIR}/bin/inspect_flux ${PROJECT_SOURCE_DIR}/tests/flux/FLUX_DUMP_THROW_SMOKE.DATA ${PROJECT_SOURCE_DIR}/tests/flux/FLUX_USE_THROW_SMOKE.DATA ${PROJECT_BINARY_DIR}/bin/make_flux"
+    )
+
+    set(_flux_boundary_interpolation_result_path ${PROJECT_BINARY_DIR}/tests/results/flux/flow_blackoil+flux_boundary_interpolation_smoke)
+    opm_add_test(flux_boundary_interpolation_smoke
+      EXE_TARGET
+        flow_blackoil
+      DRIVER_ARGS
+        -i ${PROJECT_SOURCE_DIR}/tests/data/sector
+        -r ${_flux_boundary_interpolation_result_path}
+        -f TWOWELL_PARENT_SPARSE_1D
+        -p "bash ${PROJECT_SOURCE_DIR}/tests/check-flux-boundary-interpolation.sh ${PROJECT_BINARY_DIR}/bin/flow_blackoil ${PROJECT_BINARY_DIR}/bin/make_flux ${OPM_SUMMARY_BIN} ${PROJECT_SOURCE_DIR}/tests/data/sector/TWOWELL_PARENT_SPARSE_1D.DATA ${PROJECT_SOURCE_DIR}/tests/data/sector/TWOWELL_USEFLUX_SPARSE_1D.DATA"
+    )
+
+    # A consumer must give the same answer however many ranks it runs on.
+    # The NNC sector is used because it exercises both kinds of boundary
+    # face, the axis-aligned ones and the one that arrives as a source term.
+    set(_flux_parallel_consumer_result_path ${PROJECT_BINARY_DIR}/tests/results/flux/flow_blackoil+flux_parallel_consumer_smoke)
+    opm_add_test(flux_parallel_consumer_smoke
+      EXE_TARGET
+        flow_blackoil
+      DRIVER_ARGS
+        -i ${PROJECT_SOURCE_DIR}/tests/data/sector
+        -r ${_flux_parallel_consumer_result_path}
+        -f TWOWELL_DUMPFLUX_NNC_1D
+        -p "bash ${PROJECT_SOURCE_DIR}/tests/check-flux-parallel-consumer.sh ${PROJECT_BINARY_DIR}/bin/flow_blackoil ${OPM_SUMMARY_BIN} ${PROJECT_SOURCE_DIR}/tests/data/sector/TWOWELL_DUMPFLUX_NNC_1D.DATA ${PROJECT_SOURCE_DIR}/tests/data/sector/TWOWELL_USEFLUX_NNC_1D.DATA 2 WBHP:P1 FPR FOPT FGPT"
+    )
+
+    # Same seal, but on a K face, which a cell reaches through a different
+    # slot in its boundary-face list because its I neighbours are inside the
+    # sector. That is the arrangement the column case above cannot produce.
+    set(_flux_kfault_boundary_result_path ${PROJECT_BINARY_DIR}/tests/results/flux/flow_blackoil+flux_kfault_boundary_smoke)
+    opm_add_test(flux_kfault_boundary_smoke
+      EXE_TARGET
+        flow_blackoil
+      DRIVER_ARGS
+        -i ${PROJECT_SOURCE_DIR}/tests/flux
+        -r ${_flux_kfault_boundary_result_path}
+        -f FLUX_DUMP_KFAULT_SMOKE
+        -p "bash ${PROJECT_SOURCE_DIR}/tests/check-flux-fault-boundary-smoke.sh ${PROJECT_BINARY_DIR}/bin/flow_blackoil ${OPM_SUMMARY_BIN} ${PROJECT_BINARY_DIR}/bin/inspect_flux ${PROJECT_SOURCE_DIR}/tests/flux/FLUX_DUMP_KFAULT_SMOKE.DATA ${PROJECT_SOURCE_DIR}/tests/flux/FLUX_USE_KFAULT_SMOKE.DATA 5,1,1 5,1,2 K+"
+    )
+  endif()
+
+  if(OPM_COMPARE_ECL_BIN)
+    set(_onewell_useflux_pressure_result_path ${PROJECT_BINARY_DIR}/tests/results/flux/flow_blackoil+onewell_useflux_pressure_smoke)
+    opm_add_test(onewell_useflux_pressure_smoke
+      DEPENDS
+        flux_smoke_shape_check
+      EXE_TARGET
+        flow_blackoil
+      DRIVER_ARGS
+        -i ${PROJECT_SOURCE_DIR}/tests/data/sector
+        -r ${_onewell_useflux_pressure_result_path}
+        -f ONEWELL_DUMPFLUX_PRESSURE_1D
+        -p "bash ${PROJECT_SOURCE_DIR}/tests/check-onewell-useflux-pressure-smoke.sh ${PROJECT_BINARY_DIR}/bin/flow_blackoil ${OPM_COMPARE_ECL_BIN} ${PROJECT_SOURCE_DIR}/tests/data/sector/ONEWELL_DUMPFLUX_PRESSURE_1D.DATA ${PROJECT_SOURCE_DIR}/tests/data/sector/ONEWELL_USEFLUX_PRESSURE_1D.DATA"
+    )
+
+    set(_onewell_useflux_flux_result_path ${PROJECT_BINARY_DIR}/tests/results/flux/flow_blackoil+onewell_useflux_flux_smoke)
+    opm_add_test(onewell_useflux_flux_smoke
+      DEPENDS
+        flux_smoke_shape_check
+      EXE_TARGET
+        flow_blackoil
+      DRIVER_ARGS
+        -i ${PROJECT_SOURCE_DIR}/tests/data/sector
+        -r ${_onewell_useflux_flux_result_path}
+        -f ONEWELL_DUMPFLUX_FLUX_1D
+        -p "bash ${PROJECT_SOURCE_DIR}/tests/check-onewell-useflux-flux-smoke.sh ${PROJECT_BINARY_DIR}/bin/flow_blackoil ${OPM_COMPARE_ECL_BIN} ${PROJECT_SOURCE_DIR}/tests/data/sector/ONEWELL_DUMPFLUX_FLUX_1D.DATA ${PROJECT_SOURCE_DIR}/tests/data/sector/ONEWELL_USEFLUX_FLUX_1D.DATA"
+    )
+  endif()
 endif()

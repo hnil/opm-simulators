@@ -1,0 +1,175 @@
+RUNSPEC
+
+TITLE
+  1D live-oil sector whose boundary runs along an NNC, USEFLUX side /
+
+DIMENS
+  11 1 1 /
+
+OIL
+WATER
+GAS
+DISGAS
+VAPOIL
+
+METRIC
+
+START
+  1 JAN 2020 /
+
+TABDIMS
+  1 1 20 20 1 20 20 1 1 1 1 1 1 1 1 /
+
+WELLDIMS
+  2 2 2 2 /
+
+UNIFOUT
+
+GRID
+
+DXV
+  11*100 /
+
+DYV
+  1*100 /
+
+DZV
+  1*10 /
+
+TOPS
+  11*2000 /
+
+PORO
+  11*0.25 /
+
+PERMX
+  11*1500 /
+
+PERMY
+  11*1500 /
+
+PERMZ
+  11*150 /
+
+-- Carried over from the producer deck, as a sector deck normally is. Cell 1
+-- is not in this run's grid, so the connection cannot be made and the run
+-- says so. What used to cross it arrives through the FLUX file instead.
+NNC
+  1 1 1  4 1 1  500.0 /
+/
+
+FLUXNUM
+  2*0 3*1 6*0 /
+
+FLUXREG
+  1 /
+
+FLUXTYPE
+  FLUX /
+
+USEFLUX
+ 1* /
+
+
+PROPS
+
+DENSITY
+  800 1000 1.2 /
+
+PVTW
+  250.0 1.03 3.0E-5 0.30 /
+
+PVTO
+   20.0    50.0   1.100   1.20
+          300.0   1.080   1.30
+          400.0   1.070   1.35 /
+   50.0   100.0   1.150   1.05
+          300.0   1.130   1.12
+          400.0   1.120   1.16 /
+  100.0   200.0   1.250   0.90
+          300.0   1.235   0.95
+          400.0   1.225   0.99 /
+  150.0   300.0   1.350   0.80
+          400.0   1.335   0.84 /
+  200.0   400.0   1.450   0.70
+          500.0   1.435   0.74 /
+/
+
+PVTG
+   50.0   0.00010  0.02500  0.01400
+          0.00005  0.02500  0.01390
+          0.00000  0.02500  0.01380 /
+  100.0   0.00020  0.01200  0.01500
+          0.00010  0.01200  0.01490
+          0.00000  0.01200  0.01480 /
+  200.0   0.00050  0.00580  0.01700
+          0.00025  0.00580  0.01680
+          0.00000  0.00580  0.01660 /
+  300.0   0.00100  0.00380  0.02000
+          0.00050  0.00380  0.01970
+          0.00000  0.00380  0.01940 /
+  400.0   0.00180  0.00290  0.02400
+          0.00090  0.00290  0.02360
+          0.00000  0.00290  0.02320 /
+/
+
+SWOF
+  0.10 0.00 1.00 0.00
+  0.20 0.05 0.70 0.00
+  0.40 0.30 0.30 0.00
+  0.60 0.70 0.05 0.00
+  0.80 1.00 0.00 0.00 /
+
+SGOF
+  0.00 0.00 1.00 0.00
+  0.05 0.02 0.80 0.00
+  0.20 0.20 0.30 0.00
+  0.40 0.70 0.05 0.00
+  0.70 1.00 0.00 0.00 /
+
+SOLUTION
+
+PRESSURE
+  11*300 /
+
+SWAT
+  11*0.20 /
+
+SGAS
+  11*0.05 /
+
+RS
+  11*150 /
+
+RV
+  11*0.0010 /
+
+SUMMARY
+
+ALL
+PERFORMA
+
+SCHEDULE
+
+RPTRST
+  'BASIC=2' /
+
+WELSPECS
+  'P1' 'G1' 4 1 1* 'OIL' 2* 'SHUT' /
+  'P2' 'G1' 8 1 1* 'OIL' 2* 'SHUT' /
+ /
+
+COMPDAT
+  'P1' 4 1 1 1 'OPEN' 2* 0.216 1* 0 1* 'Z' /
+  'P2' 8 1 1 1 'OPEN' 2* 0.216 1* 0 1* 'Z' /
+ /
+
+WCONPROD
+  'P1' 'OPEN' 'ORAT' 100 4* 50 1* /
+  'P2' 'OPEN' 'ORAT' 100 4* 50 1* /
+ /
+
+TSTEP
+  6*5 /
+
+END

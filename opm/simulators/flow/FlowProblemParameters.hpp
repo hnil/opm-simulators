@@ -95,6 +95,11 @@ struct FluxBoundaryMinIntervalBetweenSamples { static constexpr Scalar value = 1
 // models whose boundary flow varies within a report step.
 struct FluxBoundaryReportStepsOnly { static constexpr bool value = false; };
 
+// Interpolate a USEFLUX run's pressure-mode boundary state linearly in time
+// between consecutive records, rather than holding each record's state over
+// the whole interval it covers.
+struct FluxBoundaryInterpolate { static constexpr bool value = true; };
+
 } // namespace Opm::Parameters
 
 namespace Opm {

@@ -109,6 +109,8 @@ public:
      */
     Scalar transmissibilityBoundary(unsigned elemIdx, unsigned boundaryFaceIdx) const;
 
+    void setTransmissibilityBoundary(unsigned elemIdx, unsigned boundaryFaceIdx, Scalar value);
+
     /*!
      * \brief Return the thermal "half transmissibility" for the intersection between two
      *        elements.

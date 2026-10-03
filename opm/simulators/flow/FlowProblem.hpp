@@ -64,6 +64,7 @@
 #include <opm/simulators/flow/FlowBaseProblemProperties.hpp>
 #include <opm/simulators/flow/FlowProblemParameters.hpp>
 #include <opm/simulators/flow/FlowThresholdPressure.hpp>
+#include <opm/simulators/flow/flux/FluxBoundary.hpp>
 #include <opm/simulators/flow/FlowUtils.hpp>
 #include <opm/simulators/flow/LgrOutputTransGather.hpp>
 #include <opm/simulators/flow/TracerModel.hpp>
@@ -80,7 +81,10 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cmath>
+#include <filesystem>
 #include <functional>
+#include <sstream>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -356,6 +360,7 @@ public:
             this->rockFraction_[1] = this->rockFraction_[0];
             updateRockFraction_();
             updatePffDofData_();
+            this->applyFluxBoundaryTransmissibilityOverrides_();
             this->model().linearizer().updateDiscretizationParameters();
         }
 
@@ -687,6 +692,80 @@ public:
                                     const unsigned boundaryFaceIdx) const
     {
         return transmissibilities_.transmissibilityBoundary(globalSpaceIdx, boundaryFaceIdx);
+    }
+
+    /*!
+     * \brief Threshold pressure across a boundary face.
+     *
+     * \details Zero unless the run is reading a sector boundary out of a .FLUX
+     *   file and the producing run had threshold pressures across it. The
+     *   ordering matters when THPRES is irreversible, hence the direction flag:
+     *   \p interiorToExterior selects the threshold resisting flow out of this
+     *   cell.
+     */
+    Scalar thresholdPressureBoundary(unsigned /*globalSpaceIdx*/,
+                                     unsigned /*boundaryFaceIdx*/,
+                                     bool /*interiorToExterior*/) const
+    { return 0.0; }
+
+    /*!
+     * \brief Relative permeabilities of the fluid entering through a boundary
+     *        face.
+     *
+     * \details A USEFLUX run takes them from the .FLUX file, where the
+     *   producing run recorded the exterior cell's values, so that the
+     *   saturation-function region, the scaled end points and the hysteresis
+     *   state of the cell the flow comes from are all honoured. Everything else
+     *   falls back to evaluating this cell's saturation functions at the
+     *   exterior saturations, which is what the code did unconditionally
+     *   before.
+     */
+    template <class FluidState, class Container>
+    void boundaryRelativePermeabilities(Container& kr,
+                                        const unsigned globalSpaceIdx,
+                                        const unsigned boundaryFaceIdx,
+                                        const FluidState& exFluidState) const
+    {
+        // boundaryFaceIdx is the face's POSITION in this cell's boundary-face
+        // list, which is how the discretisation addresses it, not a direction.
+        // The two only agree while a cell's boundary faces occupy the leading
+        // direction slots, and a cell can have more than six of them: a
+        // corner-point face split by a fault contributes several, and in
+        // parallel every intersection that reaches off this rank counts too.
+        // Reading it as a direction then asks for a seventh one.
+        const auto dir = this->fluxBoundaryDirAt_(globalSpaceIdx, boundaryFaceIdx);
+        const auto* fluxData = this->fluxBoundaryData_();
+        const auto* fluxStep = this->fluxBoundaryReportStep_();
+        const auto fluxSlot = (dir == FaceDir::Unknown)
+            ? 0
+            : this->fluxBoundaryFaceSlot_(globalSpaceIdx, dir);
+
+        if (fluxData != nullptr && fluxStep != nullptr && fluxSlot > 0) {
+            const auto numPhaseSlots = static_cast<std::size_t>(fluxData->header.numPhases);
+            const auto base = static_cast<std::size_t>(fluxSlot - 1) * numPhaseSlots;
+
+            if (fluxStep->relPerm.size() >= base + numPhaseSlots) {
+                for (unsigned phaseIdx = 0; phaseIdx < FluidSystem::numPhases; ++phaseIdx) {
+                    kr[phaseIdx] = 0.0;
+                }
+
+                std::size_t slot = 0;
+                const auto load = [&](const unsigned phaseIdx)
+                {
+                    if (FluidSystem::phaseIsActive(phaseIdx)) {
+                        kr[phaseIdx] = fluxStep->relPerm[base + slot];
+                        ++slot;
+                    }
+                };
+
+                load(oilPhaseIdx);
+                load(waterPhaseIdx);
+                load(gasPhaseIdx);
+                return;
+            }
+        }
+
+        MaterialLaw::relativePermeabilities(kr, this->materialLawParams(globalSpaceIdx), exFluidState);
     }
 
 
@@ -1362,15 +1441,81 @@ public:
         if (!nonTrivialBoundaryConditions_) {
             return { BCType::NONE, RateVector(0.0) };
         }
-        FaceDir::DirEnum dir = FaceDir::FromIntersectionIndex(directionId);
-        const auto& schedule = this->simulator().vanguard().schedule();
-        if (bcindex_(dir)[globalSpaceIdx] == 0) {
+        const FaceDir::DirEnum dir = FaceDir::FromIntersectionIndex(directionId);
+
+        const auto& bcDirIndex = bcindex_(dir);
+        const bool hasDeckBc = globalSpaceIdx < bcDirIndex.size() && bcDirIndex[globalSpaceIdx] != 0;
+        if (!hasDeckBc) {
+            RateVector phaseVolRate = 0.0;
+            bool isMassRate = false;
+            if (this->fluxBoundaryRate_(globalSpaceIdx, dir, phaseVolRate, isMassRate)) {
+                if (isMassRate) {
+                    // The producing run already formed the mass rate, using the
+                    // density of the cell the flow comes from. Nothing to do.
+                    return { BCType::RATE, phaseVolRate };
+                }
+
+                // The FLUX payload holds reservoir-condition volumetric rates, so
+                // the conversion to a mass rate has to use the in-situ density.
+                // Using the surface reference density would overstate the
+                // exchanged mass by the formation volume factor.
+                const auto pvtRegionIdx = this->pvtRegionIndex(globalSpaceIdx);
+                const auto* intQuants =
+                    this->simulator().model().cachedIntensiveQuantities(globalSpaceIdx, /*timeIdx=*/0);
+
+                auto phaseDensity = [&intQuants, pvtRegionIdx](const unsigned phaseIdx)
+                {
+                    if (intQuants != nullptr) {
+                        const auto rho = getValue(intQuants->fluidState().density(phaseIdx));
+                        if (std::isfinite(rho) && rho > 0.0) {
+                            return static_cast<Scalar>(rho);
+                        }
+                    }
+
+                    return FluidSystem::referenceDensity(phaseIdx, pvtRegionIdx);
+                };
+
+                RateVector rate = 0.0;
+                if (FluidSystem::phaseIsActive(oilPhaseIdx)) {
+                    rate[FluidSystem::canonicalToActiveCompIdx(oilCompIdx)] =
+                        phaseVolRate[FluidSystem::canonicalToActiveCompIdx(oilCompIdx)]
+                        * phaseDensity(oilPhaseIdx);
+                }
+                if (FluidSystem::phaseIsActive(waterPhaseIdx)) {
+                    rate[FluidSystem::canonicalToActiveCompIdx(waterCompIdx)] =
+                        phaseVolRate[FluidSystem::canonicalToActiveCompIdx(waterCompIdx)]
+                        * phaseDensity(waterPhaseIdx);
+                }
+                if (FluidSystem::phaseIsActive(gasPhaseIdx)) {
+                    rate[FluidSystem::canonicalToActiveCompIdx(gasCompIdx)] =
+                        phaseVolRate[FluidSystem::canonicalToActiveCompIdx(gasCompIdx)]
+                        * phaseDensity(gasPhaseIdx);
+                }
+
+                return { BCType::RATE, rate };
+            }
+
+            const auto* fluxData = this->fluxBoundaryData_();
+            const auto mode = fluxData ? fluxData->header.mode : EclIO::FluxFile::Mode::Flux;
+            const auto pressureEnabled = (static_cast<int>(mode) & static_cast<int>(EclIO::FluxFile::Mode::Pressure)) != 0;
+
+            // Only the faces that the FLUX file actually describes may act as a
+            // pressure boundary. The remaining outer faces of the sector are
+            // ordinary no-flow boundaries; treating them as Dirichlet would
+            // surround the region with a constant-pressure source taken from the
+            // initial state.
+            if (pressureEnabled && this->fluxBoundaryFaceSlot_(globalSpaceIdx, dir) > 0) {
+                return { BCType::FREE, RateVector(0.0) };
+            }
+
             return { BCType::NONE, RateVector(0.0) };
         }
+
+        const auto& schedule = this->simulator().vanguard().schedule();
         if (schedule[this->episodeIndex()].bcstate.size() == 0) {
             return { BCType::NONE, RateVector(0.0) };
         }
-        const auto& bc = schedule[this->episodeIndex()].bcstate[bcindex_(dir)[globalSpaceIdx]];
+        const auto& bc = schedule[this->episodeIndex()].bcstate[bcDirIndex[globalSpaceIdx]];
         if (bc.bctype!=BCType::RATE) {
             return { bc.bctype, RateVector(0.0) };
         }
@@ -1409,6 +1554,241 @@ public:
         return {bc.bctype, rate};
     }
 
+protected:
+    //! \brief Boundary rate for a face, as stored by the producing run.
+    //!
+    //! \param[out] isMassRate Set when the returned vector holds component mass
+    //!   rates, which can be imposed directly. Otherwise it holds reservoir
+    //!   volumetric rates, which still have to be converted through a density.
+    bool fluxBoundaryRate_(const unsigned int globalSpaceIdx,
+                           const FaceDir::DirEnum dir,
+                           RateVector& phaseVolRate,
+                           bool& isMassRate) const
+    {
+        const auto& bcDirIndex = bcindex_(dir);
+        const bool hasDeckBc = globalSpaceIdx < bcDirIndex.size() && bcDirIndex[globalSpaceIdx] != 0;
+        if (hasDeckBc) {
+            return false;
+        }
+
+        const auto* fluxData = this->fluxBoundaryData_();
+        const auto* fluxStep = this->fluxBoundaryReportStep_();
+        const auto fluxSlot = this->fluxBoundaryFaceSlot_(globalSpaceIdx, dir);
+        if (!fluxData || !fluxStep || fluxSlot <= 0) {
+            return false;
+        }
+
+        const auto mode = fluxData->header.mode;
+        const auto fluxEnabled = (static_cast<int>(mode) & static_cast<int>(EclIO::FluxFile::Mode::Flux)) != 0;
+        if (!fluxEnabled) {
+            return false;
+        }
+
+        const auto faceIndex = static_cast<std::size_t>(fluxSlot - 1);
+        const auto faceCount = static_cast<std::size_t>(fluxData->header.numBoundaryFaces);
+        const auto phaseCount = static_cast<std::size_t>(fluxData->header.numPhases);
+        const auto expectedSize = faceCount * phaseCount;
+        if (phaseCount == 0 || faceIndex >= faceCount
+            || fluxStep->massRates.size() != expectedSize)
+        {
+            return false;
+        }
+
+        phaseVolRate = 0.0;
+        const auto base = faceIndex * phaseCount;
+        std::size_t phaseSlot = 0;
+
+        // The file stores component masses, which is the only thing a reduced
+        // run can impose: for flow entering the sector the upstream cell lies
+        // outside its grid, so it has no state with which to turn a phase
+        // volumetric flux into components.
+        isMassRate = true;
+        const auto& storedRates = fluxStep->massRates;
+
+        // The stored rates are totals across the face, positive into the
+        // sector. The linearizer multiplies the boundary rate vector by the
+        // face area, and opm-models orients boundary rates along the outer
+        // normal, i.e. a flux into the domain is negative. Convert accordingly.
+        const auto faceArea = this->fluxBoundaryFaceAreaAt_(globalSpaceIdx, dir);
+        if (!(faceArea > 0.0)) {
+            return false;
+        }
+
+        const auto areaScale = Scalar{-1} / faceArea;
+
+        if (fluxData->header.hasPhase(EclIO::FluxFile::Phase::Oil)) {
+            if (FluidSystem::phaseIsActive(oilPhaseIdx)) {
+                phaseVolRate[FluidSystem::canonicalToActiveCompIdx(oilCompIdx)] =
+                    storedRates[base + phaseSlot] * areaScale;
+            }
+            ++phaseSlot;
+        }
+        if (fluxData->header.hasPhase(EclIO::FluxFile::Phase::Water)) {
+            if (FluidSystem::phaseIsActive(waterPhaseIdx)) {
+                phaseVolRate[FluidSystem::canonicalToActiveCompIdx(waterCompIdx)] =
+                    storedRates[base + phaseSlot] * areaScale;
+            }
+            ++phaseSlot;
+        }
+        if (fluxData->header.hasPhase(EclIO::FluxFile::Phase::Gas)) {
+            if (FluidSystem::phaseIsActive(gasPhaseIdx)) {
+                phaseVolRate[FluidSystem::canonicalToActiveCompIdx(gasCompIdx)] =
+                    storedRates[base + phaseSlot] * areaScale;
+            }
+        }
+
+
+        return true;
+    }
+
+    int fluxBoundaryFaceSlot_(const unsigned int globalSpaceIdx, const FaceDir::DirEnum dir) const
+    {
+        const auto& dirData = fluxBoundaryFaceIndex_(dir);
+        if (globalSpaceIdx >= dirData.size()) {
+            return 0;
+        }
+
+        return dirData[globalSpaceIdx];
+    }
+
+    //! \brief Sector-boundary faces reaching this cell through a non-neighbour
+    //!   connection.
+    //!
+    //! \details Empty for all but a handful of cells, and empty everywhere when
+    //!   the sector boundary follows the grid axes. What crosses one of these
+    //!   has to enter as a source, because the reduced run has no such
+    //!   connection of its own to carry it.
+    const std::vector<int>& fluxNncFacesAt_(const unsigned int globalSpaceIdx) const
+    {
+        static const std::vector<int> none{};
+
+        if (globalSpaceIdx >= this->fluxNncFaceIndex_.size()) {
+            return none;
+        }
+
+        return this->fluxNncFaceIndex_[globalSpaceIdx];
+    }
+
+    const FluxBoundary::Face* fluxBoundaryFace_(const unsigned int globalSpaceIdx,
+                                                const FaceDir::DirEnum dir) const
+    {
+        if (!this->fluxBoundary_) {
+            return nullptr;
+        }
+
+        return this->fluxBoundary_->faceFromSlot(this->fluxBoundaryFaceSlot_(globalSpaceIdx, dir));
+    }
+
+    //! \brief The sector-boundary face a cell's \p bfIdx'th boundary face is,
+    //!        or nullptr if it is not one.
+    //!
+    //! \details The discretisation numbers a cell's boundary faces by position
+    //!   and knows nothing of their direction, while everything read out of the
+    //!   .FLUX file is keyed by direction.
+    const FluxBoundary::Face* fluxBoundaryFaceAtOrdinal_(const unsigned int globalSpaceIdx,
+                                                         const unsigned int bfIdx) const
+    {
+        const auto dir = this->fluxBoundaryDirAt_(globalSpaceIdx, bfIdx);
+
+        return (dir == FaceDir::Unknown)
+            ? nullptr
+            : this->fluxBoundaryFace_(globalSpaceIdx, dir);
+    }
+
+    const EclIO::FluxFile::Data* fluxBoundaryData_() const
+    {
+        if (!this->fluxBoundary_) {
+            return nullptr;
+        }
+
+        return &this->fluxBoundary_->data();
+    }
+
+    //! \brief The boundary record that applies to the current time step.
+    //!
+    //! \details Resolved once per time step by refreshFluxBoundaryRecord_().
+    //!          This is read per boundary face per Newton iteration during
+    //!          assembly, so it must not search the record list.
+    const EclIO::FluxFile::ReportStep* fluxBoundaryReportStep_() const
+    {
+        return this->fluxBoundaryActiveRecord_;
+    }
+
+    //! \brief Point the cached boundary record at the record covering the step
+    //!        (\p time, \p stepEnd].
+    //!
+    //! \details A record holds the parent's state at the END of the interval
+    //!   it covers. Held over the whole interval, that state reaches the
+    //!   sector early: a front that crosses the boundary late in a long
+    //!   interval is imposed from its start, and when the parent wrote records
+    //!   only every year or two, as a restart-based file often has, that is a
+    //!   year or two early. Interpolating between the previous record's state
+    //!   and this one's, at the end of the step as an implicit step wants it,
+    //!   keeps the boundary on the parent's trajectory, and gives back the
+    //!   recorded state exactly whenever a step ends on a record's time.
+    //!
+    //!   Only the state is interpolated. Flux-mode mass rates are averages
+    //!   over the record's interval and stay as recorded.
+    void refreshFluxBoundaryRecord_(const double time, const double stepEnd)
+    {
+        const auto* data = this->fluxBoundaryData_();
+
+        this->fluxBoundaryActiveRecord_ = (data == nullptr)
+            ? nullptr
+            : FluxBoundary::selectRecordAt(*data, time);
+
+        if (!this->fluxBoundaryInterpolate_
+            || (this->fluxBoundaryActiveRecord_ == nullptr)
+            || (this->fluxBoundaryActiveRecord_ == &data->reportSteps.front())
+            || !(this->fluxBoundaryActiveRecord_->stepLength > 0.0))
+        {
+            return;
+        }
+
+        const auto& record = *this->fluxBoundaryActiveRecord_;
+        const auto& previous = *(this->fluxBoundaryActiveRecord_ - 1);
+        const auto weight = std::clamp((stepEnd - record.startTime) / record.stepLength, 0.0, 1.0);
+        if (!(weight < 1.0)) {
+            return;
+        }
+
+        auto& blended = this->fluxBoundaryBlendedRecord_;
+        blended = record;
+
+        const auto blend = [weight](std::vector<double>& values, const std::vector<double>& before)
+        {
+            if (before.size() != values.size()) {
+                return;
+            }
+            for (std::size_t i = 0; i < values.size(); ++i) {
+                if (std::isfinite(values[i]) && std::isfinite(before[i])) {
+                    values[i] = before[i] + weight * (values[i] - before[i]);
+                }
+            }
+        };
+
+        blend(blended.pressures, previous.pressures);
+        blend(blended.swat, previous.swat);
+        blend(blended.sgas, previous.sgas);
+        blend(blended.rs, previous.rs);
+        blend(blended.rv, previous.rv);
+        blend(blended.temperature, previous.temperature);
+        blend(blended.relPerm, previous.relPerm);
+        blend(blended.capPressure, previous.capPressure);
+        blend(blended.externalRegionSums, previous.externalRegionSums);
+
+        this->fluxBoundaryActiveRecord_ = &blended;
+    }
+
+    //! \brief Simulation time, in seconds, at the end of the step that is
+    //!        about to be taken, where the boundary state is sampled for it.
+    double fluxStepEndTime_() const
+    {
+        return static_cast<double>(this->simulator().time())
+            + static_cast<double>(this->simulator().timeStepSize());
+    }
+
+public:
 
     template<class Serializer>
     void serializeOp(Serializer& serializer)
@@ -2247,6 +2627,7 @@ protected:
     {
         const auto& simulator = this->simulator();
         const auto& vanguard = simulator.vanguard();
+        this->readFluxBoundary_();
         const auto& bcconfig = vanguard.eclState().getSimulationConfig().bcconfig();
         if (bcconfig.size() > 0) {
             nonTrivialBoundaryConditions_ = true;
@@ -2282,6 +2663,326 @@ protected:
                                  { data[elemIdx] = index; });
             }
         }
+    }
+
+    void readFluxBoundary_()
+    {
+        const auto& ioConfig = this->simulator().vanguard().eclState().getIOConfig();
+        if (!ioConfig.getUseFlux()) {
+            this->fluxBoundary_.reset();
+            this->fluxBoundaryFaceIndex_.data = {};
+            this->fluxBoundaryFaceArea_.data = {};
+            this->fluxBoundaryFaceOrdinal_.data = {};
+            this->fluxBoundaryFaceDepth_.data = {};
+            return;
+        }
+
+        const auto inputDir = std::filesystem::path{ioConfig.getInputDir()};
+        const auto baseName = ioConfig.getUseFluxInputBaseName();
+        const auto selectedFluxPath = FluxBoundary::selectInputPath(inputDir, baseName);
+        if (!std::filesystem::exists(selectedFluxPath)) {
+            std::ostringstream msg;
+            msg << "USEFLUX requested but no FLUX file found: expected '" << baseName
+                << ".FLUX' or '" << baseName << ".FLUXdddd' in '" << inputDir.string() << "'";
+            throw std::runtime_error(msg.str());
+        }
+
+        const auto fluxData = EclIO::FluxFile::read(selectedFluxPath.string());
+        const auto fluxModeEnabled = (static_cast<int>(fluxData.header.mode)
+                                      & static_cast<int>(EclIO::FluxFile::Mode::Flux)) != 0;
+        if (fluxModeEnabled) {
+            for (std::size_t stepIdx = 0; stepIdx < fluxData.reportSteps.size(); ++stepIdx) {
+                const auto& masses = fluxData.reportSteps[stepIdx].massRates;
+                for (std::size_t rateIdx = 0; rateIdx < masses.size(); ++rateIdx) {
+                    const auto value = masses[rateIdx];
+                    if (!std::isfinite(value)) {
+                        std::ostringstream msg;
+                        msg << "Invalid USEFLUX FLUX-mode component mass rate in '"
+                            << selectedFluxPath.string() << "' at report-step index "
+                            << stepIdx << ", rate index " << rateIdx
+                            << ": " << value;
+                        throw std::runtime_error(msg.str());
+                    }
+                }
+            }
+        }
+
+        const auto& vanguard = this->simulator().vanguard();
+
+        // The file names the region's cells by their Cartesian index in the
+        // PARENT grid. A reduced run on the parent deck shares that grid, but
+        // one on a model cut out to the region's box has a grid of its own,
+        // numbered from the box corner, and a parent index read as one of its
+        // own lands on some unrelated cell or none at all -- which on one field
+        // left 553 of 583 boundary faces without a grid face and the sector
+        // all but sealed.
+        const auto& header = fluxData.header;
+        const auto& dims = vanguard.cartesianDimensions();
+        const bool sameGrid = (dims[0] == header.parentNx)
+            && (dims[1] == header.parentNy)
+            && (dims[2] == header.parentNz);
+        const bool boxGrid = (dims[0] == header.boxNx)
+            && (dims[1] == header.boxNy)
+            && (dims[2] == header.boxNz);
+
+        if (!sameGrid && !boxGrid) {
+            throw std::runtime_error(fmt::format(
+                "USEFLUX: '{}' describes a region of a {}x{}x{} grid, boxed in {}x{}x{} "
+                "cells from ({},{},{}), and this run's grid is {}x{}x{}, which is "
+                "neither",
+                selectedFluxPath.string(),
+                header.parentNx, header.parentNy, header.parentNz,
+                header.boxNx, header.boxNy, header.boxNz,
+                header.boxI1, header.boxJ1, header.boxK1,
+                dims[0], dims[1], dims[2]));
+        }
+
+        const auto toThisGrid = [&header, sameGrid](const int parentCell)
+        {
+            if (sameGrid) {
+                return parentCell;
+            }
+
+            const int i = parentCell % header.parentNx - (header.boxI1 - 1);
+            const int j = (parentCell / header.parentNx) % header.parentNy - (header.boxJ1 - 1);
+            const int k = parentCell / (header.parentNx * header.parentNy) - (header.boxK1 - 1);
+
+            if ((i < 0) || (i >= header.boxNx)
+                || (j < 0) || (j >= header.boxNy)
+                || (k < 0) || (k >= header.boxNz))
+            {
+                return -1;
+            }
+
+            return i + header.boxNx * (j + header.boxNy * k);
+        };
+
+        // Where each of the region's cells sits in THIS rank's grid. The file
+        // numbers them in region order, which a serial run happens to activate
+        // them in, but a parallel rank holds an arbitrary subset under its own
+        // numbering and has to look each one up. Cells that belong to another
+        // rank come back as -1 and their faces are left to whoever holds them.
+        std::vector<int> localToActive(fluxData.localToGlobal.size(), -1);
+        for (std::size_t local = 0; local < fluxData.localToGlobal.size(); ++local) {
+            const auto globalCell = fluxData.localToGlobal[local];
+            if (globalCell >= 0) {
+                const auto cell = toThisGrid(globalCell);
+                if (cell >= 0) {
+                    localToActive[local] = vanguard.compressedIndex(cell);
+                }
+            }
+        }
+
+        auto fluxBoundary = FluxBoundary::fromData(fluxData, localToActive);
+
+        const auto numElems = this->simulator().vanguard().gridView().size(/*codim=*/0);
+        this->fluxBoundaryFaceIndex_.resize(numElems, 0);
+        this->fluxBoundaryFaceIndex_.data = fluxBoundary.buildDirectionalFaceIndices(numElems);
+        this->fluxNncFaceIndex_ = fluxBoundary.buildNncFaceIndices(numElems);
+        this->fluxBoundary_ = std::make_shared<FluxBoundary>(std::move(fluxBoundary));
+        this->collectFluxBoundaryFaceAreas_(numElems);
+        this->applyFluxBoundaryTransmissibilityOverrides_();
+        this->reportUnmappedFluxBoundaryFaces_();
+
+        this->fluxBoundaryInterpolate_ = Parameters::Get<Parameters::FluxBoundaryInterpolate>();
+
+        OpmLog::info(fmt::format("USEFLUX: {} boundary record(s) read from '{}' ({}), {}",
+                                 fluxData.reportSteps.size(),
+                                 selectedFluxPath.string(),
+                                 fluxData.header.boundaryPerTimestep
+                                 ? "per time step"
+                                 : "per report step",
+                                 this->fluxBoundaryInterpolate_
+                                 ? "interpolated in time between records"
+                                 : "each held over the interval it covers"));
+
+        // Start out on the record covering the initial time, so that the very
+        // first assembly does not run without one.
+        this->refreshFluxBoundaryRecord_(0.0, 0.0);
+
+        if (!this->fluxBoundary_->faces().empty()) {
+            this->nonTrivialBoundaryConditions_ = true;
+        }
+    }
+
+    // The FLUX file stores total volumetric rates across each boundary face,
+    // while the linearizer multiplies the boundary rate vector by the face
+    // area. Record the areas so the prescribed rates can be normalised.
+    //! \brief Face areas and stencil ordinals of the sector boundary, per
+    //!        (cell, direction).
+    //!
+    //! \details The ordinal is where the face sits in the cell's list of
+    //!   boundary faces, which is the index the discretisation addresses it by.
+    //!   It is NOT the direction index: the stencil appends a boundary face for
+    //!   every intersection that has no neighbour, in iteration order, so a cell
+    //!   whose I- neighbour lies inside the sector has its I+ face at ordinal
+    //!   zero. Anything handing the discretisation a per-face quantity has to
+    //!   go through here or it lands on the wrong face.
+    void collectFluxBoundaryFaceAreas_(const std::size_t numElems)
+    {
+        this->fluxBoundaryFaceArea_.resize(numElems, 0.0);
+        this->fluxBoundaryFaceOrdinal_.resize(numElems, -1);
+        this->fluxBoundaryFaceDepth_.resize(numElems, 0.0);
+
+        if (!this->fluxBoundary_) {
+            return;
+        }
+
+        const auto& gridView = this->simulator().vanguard().gridView();
+        const auto& elementMapper = this->model().elementMapper();
+
+        for (const auto& elem : elements(gridView)) {
+            const auto elemIdx = elementMapper.index(elem);
+
+            int ordinal = 0;
+            for (const auto& is : intersections(gridView, elem)) {
+                // Counted exactly as EcfvStencil::updateTopology() does, which
+                // means counting intersections without a neighbour rather than
+                // boundary intersections: on a process boundary the two differ,
+                // and it is the stencil's numbering the solver will use.
+                if (is.neighbor()) {
+                    continue;
+                }
+
+                const auto thisOrdinal = ordinal++;
+
+                if (!is.boundary()) {
+                    continue;
+                }
+
+                const auto dir = FaceDir::FromIntersectionIndex(is.indexInInside());
+                auto& areas = this->fluxBoundaryFaceArea_(dir);
+                if (static_cast<std::size_t>(elemIdx) < areas.size()) {
+                    areas[elemIdx] = is.geometry().volume();
+                    this->fluxBoundaryFaceOrdinal_(dir)[elemIdx] = thisOrdinal;
+
+                    // Where the boundary condition is imposed. The pressures in
+                    // the file belong to the cell on the far side, taken at its
+                    // centre, and have to be carried here before they are used.
+                    this->fluxBoundaryFaceDepth_(dir)[elemIdx] =
+                        is.geometry().center()[dimWorld - 1];
+                }
+            }
+        }
+    }
+
+    //! \brief Warn about boundary faces the .FLUX file describes but this grid
+    //!        cannot carry.
+    //!
+    //! \details A face is applied by dividing the stored total rate by the area
+    //!   of the matching grid intersection, so a face with no such intersection
+    //!   silently drops whatever flux the producing run recorded for it. That
+    //!   is a mass leak rather than a small inaccuracy, so it is worth saying
+    //!   out loud.
+    void reportUnmappedFluxBoundaryFaces_()
+    {
+        if (!this->fluxBoundary_) {
+            return;
+        }
+
+        std::size_t unmapped = 0;
+        std::size_t total = 0;
+        for (const auto& face : this->fluxBoundary_->faces()) {
+            if (face.isNnc || face.direction == FaceDir::Unknown) {
+                continue;
+            }
+
+            // Faces belonging to another rank are not this one's to account
+            // for. Counting them here would report most of the region as
+            // unmapped on every rank of a parallel run.
+            if (face.interiorActiveCell < 0) {
+                continue;
+            }
+
+            ++total;
+            const auto area =
+                this->fluxBoundaryFaceAreaAt_(static_cast<unsigned>(face.interiorActiveCell),
+                                              face.direction);
+            if (!(area > 0.0)) {
+                ++unmapped;
+            }
+        }
+
+        if (unmapped > 0) {
+            OpmLog::warning(fmt::format("USEFLUX: {} of {} boundary faces have no matching grid "
+                                        "face in this run, so any flow the producing run recorded "
+                                        "across them is lost. The sector grid and the region the "
+                                        "FLUX file describes do not agree.",
+                                        unmapped, total));
+        }
+    }
+
+    Scalar fluxBoundaryFaceAreaAt_(const unsigned int globalSpaceIdx, const FaceDir::DirEnum dir) const
+    {
+        const auto& areas = this->fluxBoundaryFaceArea_(dir);
+        if (globalSpaceIdx >= areas.size()) {
+            return 0.0;
+        }
+
+        return areas[globalSpaceIdx];
+    }
+
+    //! \brief Which direction the discretisation's \p boundaryFaceIdx refers to
+    //!        on this cell, or Unknown when it is not a sector boundary face.
+    //!
+    //! \details The inverse of the ordinal collected alongside the face areas.
+    //!   Six comparisons rather than a table, because a cell may hold more
+    //!   boundary faces than there are directions and only those the sector
+    //!   boundary uses can be answered for.
+    FaceDir::DirEnum fluxBoundaryDirAt_(const unsigned globalSpaceIdx,
+                                        const unsigned boundaryFaceIdx) const
+    {
+        static constexpr auto directions = std::array {
+            FaceDir::XMinus, FaceDir::XPlus,
+            FaceDir::YMinus, FaceDir::YPlus,
+            FaceDir::ZMinus, FaceDir::ZPlus,
+        };
+
+        for (const auto dir : directions) {
+            const auto& ordinals = this->fluxBoundaryFaceOrdinal_(dir);
+            if ((globalSpaceIdx < ordinals.size())
+                && (ordinals[globalSpaceIdx] >= 0)
+                && (static_cast<unsigned>(ordinals[globalSpaceIdx]) == boundaryFaceIdx))
+            {
+                return dir;
+            }
+        }
+
+        return FaceDir::Unknown;
+    }
+
+    //! \brief Depth at which a sector boundary condition is imposed.
+    //!
+    //! \details The face the discretisation uses, which is not where the file's
+    //!   pressures were measured: those belong to the cell on the far side,
+    //!   taken at its centre.
+    Scalar fluxBoundaryFaceDepthAt_(unsigned globalDofIdx, const FaceDir::DirEnum dir) const
+    {
+        const auto& depths = this->fluxBoundaryFaceDepth_(dir);
+
+        return (globalDofIdx < depths.size())
+            ? depths[globalDofIdx]
+            : Scalar{0};
+    }
+
+    void applyFluxBoundaryTransmissibilityOverrides_()
+    {
+        if (!this->fluxBoundary_) {
+            return;
+        }
+
+        // The discretisation addresses a boundary face by its position in the
+        // cell's boundary-face list, not by its direction, so the override has
+        // to be told where each face sits or it writes onto a different face.
+        const auto ordinal = [this](const int activeCell, const FaceDir::DirEnum dir)
+        {
+            const auto& ordinals = this->fluxBoundaryFaceOrdinal_(dir);
+            const auto cell = static_cast<std::size_t>(activeCell);
+
+            return (activeCell >= 0) && (cell < ordinals.size()) ? ordinals[cell] : -1;
+        };
+
+        this->fluxBoundary_->applyTransmissibilityOverrides(transmissibilities_, ordinal);
     }
 
     // this method applies the runtime constraints specified via the deck and/or command
@@ -2500,6 +3201,19 @@ protected:
     virtual void handleUreaBC(const BCState::BCFace&, RateVector&) const = 0;
 
     BCData<int> bcindex_;
+    BCData<int> fluxBoundaryFaceIndex_;
+
+    //! \brief Sector-boundary NNC faces per interior cell, indexed by active cell.
+    std::vector<std::vector<int>> fluxNncFaceIndex_;
+    BCData<Scalar> fluxBoundaryFaceArea_;
+    BCData<int> fluxBoundaryFaceOrdinal_;
+
+    //! \brief Depth of each sector boundary face, per (cell, direction).
+    BCData<Scalar> fluxBoundaryFaceDepth_;
+    std::shared_ptr<FluxBoundary> fluxBoundary_;
+    const EclIO::FluxFile::ReportStep* fluxBoundaryActiveRecord_ = nullptr;
+    EclIO::FluxFile::ReportStep fluxBoundaryBlendedRecord_;
+    bool fluxBoundaryInterpolate_ = true;
     bool nonTrivialBoundaryConditions_ = false;
     bool first_step_ = true;
     bool enable_state_rollback_ = false;

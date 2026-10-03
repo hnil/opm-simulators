@@ -54,10 +54,12 @@
 #endif
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <functional>
 #include <limits>
 #include <memory>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -302,6 +304,14 @@ public:
      */
     void beginTimeStep() override
     {
+        // The boundary record for this step is the one covering it, which is
+        // found from the step's start: a record ending exactly there describes
+        // the step before. And it is chosen ahead of the base class, which
+        // caches the boundary state and mass rates from whatever record is
+        // current.
+        this->refreshFluxBoundaryRecord_(static_cast<double>(this->simulator().time()),
+                                         this->fluxStepEndTime_());
+
         FlowProblemType::beginTimeStep();
         hybridNewton_.tryApplyHybridNewton();
     }
@@ -593,6 +603,7 @@ public:
         // this point, because determining the threshold pressures may require to access
         // the initial solution.
         this->thresholdPressures_.finishInit();
+        this->adoptFluxThresholdPressures_();
 
         // Compute the initial FIP report (also for CpGrid with LGRs) so the
         // in-place reference values are available for the summary balance.
@@ -606,6 +617,8 @@ public:
                           unsigned timeIdx) const override
     {
         this->aquiferModel_.addToSource(rate, globalDofIdx, timeIdx);
+
+        this->addFluxNncSource_(rate, globalDofIdx, timeIdx);
 
         // Add source term from deck
         const auto& source = this->simulator().vanguard().schedule()[this->episodeIndex()].source();
@@ -746,13 +759,213 @@ public:
     void setSimulationReport(const SimulatorReport& report)
     { return eclWriter_->setSimulationReport(report); }
 
+    //! \brief The state of the parent's cell on the far side of a sector
+    //!        boundary face, as recorded in the .FLUX file.
+    //!
+    //! \details Pressures come carried from that cell's centre to \p targetDepth,
+    //!   using its own densities; pass NaN to leave them at the centre.
+    InitialFluidState fluxExteriorFluidState_(const EclIO::FluxFile::Data& fluxData,
+                                              const EclIO::FluxFile::ReportStep& fluxStep,
+                                              const FluxBoundary::Face& fluxFace,
+                                              const std::size_t fluxFaceIndex,
+                                              const unsigned globalDofIdx,
+                                              const Scalar targetDepth) const
+    {
+        InitialFluidState fluidState;
+
+        // The stream on the far side belongs to the parent's cell, not
+        // to this one, so its PVT region is the one the producing run
+        // recorded. Falling back to the interior region would evaluate
+        // the density, formation volume factor and viscosity of the
+        // inflow against the wrong tables.
+        const int pvtRegionIdx = (fluxFace.exteriorPvtRegion >= 0)
+            ? fluxFace.exteriorPvtRegion
+            : this->pvtRegionIndex(globalDofIdx);
+        fluidState.setPvtRegionIndex(pvtRegionIdx);
+
+        const auto& initialState = initialFluidStates_[globalDofIdx];
+        double sw = FluidSystem::phaseIsActive(waterPhaseIdx)
+                  ? initialState.saturation(waterPhaseIdx)
+                  : 0.0;
+        double sg = FluidSystem::phaseIsActive(gasPhaseIdx)
+                  ? initialState.saturation(gasPhaseIdx)
+                  : 0.0;
+
+        if (fluxFaceIndex < fluxStep.swat.size()) {
+            sw = fluxStep.swat[fluxFaceIndex];
+        }
+        if (fluxFaceIndex < fluxStep.sgas.size()) {
+            sg = fluxStep.sgas[fluxFaceIndex];
+        }
+
+        sw = std::clamp(sw, 0.0, 1.0);
+        sg = std::clamp(sg, 0.0, 1.0);
+        const double so = std::clamp(1.0 - sw - sg, 0.0, 1.0);
+
+        if (FluidSystem::phaseIsActive(FluidSystem::waterPhaseIdx)) {
+            fluidState.setSaturation(FluidSystem::waterPhaseIdx, sw);
+        }
+        if (FluidSystem::phaseIsActive(FluidSystem::gasPhaseIdx)) {
+            fluidState.setSaturation(FluidSystem::gasPhaseIdx, sg);
+        }
+        if (FluidSystem::phaseIsActive(FluidSystem::oilPhaseIdx)) {
+            fluidState.setSaturation(FluidSystem::oilPhaseIdx, so);
+        }
+        fluidState.setTotalSaturation(1.0);
+
+        const double pressure = fluxStep.pressures[fluxFaceIndex];
+
+        // Capillary pressure of the exterior cell, relative to the
+        // reference phase. The producing run recorded it because
+        // recomputing it here would use this cell's saturation-function
+        // region, scaled end points and hysteresis state, none of which
+        // describe the cell the pressure came from.
+        std::array<Scalar, numPhases> pc = {0};
+        const auto numPhaseSlots =
+            static_cast<std::size_t>(fluxData.header.numPhases);
+        const auto pcBase = fluxFaceIndex * numPhaseSlots;
+        if (fluxStep.capPressure.size() >= pcBase + numPhaseSlots) {
+            std::size_t slot = 0;
+            const auto load = [&](const unsigned phaseIdx)
+            {
+                if (FluidSystem::phaseIsActive(phaseIdx)) {
+                    pc[phaseIdx] = fluxStep.capPressure[pcBase + slot];
+                    ++slot;
+                }
+            };
+            load(oilPhaseIdx);
+            load(waterPhaseIdx);
+            load(gasPhaseIdx);
+        }
+        else {
+            const auto& matParams = this->materialLawParams(globalDofIdx);
+            MaterialLaw::capillaryPressures(pc, matParams, fluidState);
+        }
+
+        Valgrind::CheckDefined(pressure);
+        Valgrind::CheckDefined(pc);
+        for (unsigned activePhaseIdx = 0; activePhaseIdx < FluidSystem::numActivePhases(); ++activePhaseIdx) {
+            const auto phaseIdx = FluidSystem::activeToCanonicalPhaseIdx(activePhaseIdx);
+            if (Indices::oilEnabled)
+                fluidState.setPressure(phaseIdx, pressure + (pc[phaseIdx] - pc[oilPhaseIdx]));
+            else if (Indices::gasEnabled)
+                fluidState.setPressure(phaseIdx, pressure + (pc[phaseIdx] - pc[gasPhaseIdx]));
+            else if (Indices::waterEnabled)
+                fluidState.setPressure(phaseIdx, pressure);
+        }
+
+        if constexpr (energyModuleType != EnergyModules::NoTemperature) {
+            double temperature = initialState.temperature(0);
+            if (fluxFaceIndex < fluxStep.temperature.size()) {
+                temperature = fluxStep.temperature[fluxFaceIndex];
+            }
+            fluidState.setTemperature(temperature);
+        }
+
+        if constexpr (enableDissolvedGas) {
+            if (FluidSystem::enableDissolvedGas()) {
+                if (fluxFaceIndex < fluxStep.rs.size()) {
+                    fluidState.setRs(fluxStep.rs[fluxFaceIndex]);
+                }
+                else {
+                    fluidState.setRs(0.0);
+                }
+                if (fluxFaceIndex < fluxStep.rv.size()) {
+                    fluidState.setRv(fluxStep.rv[fluxFaceIndex]);
+                }
+                else {
+                    fluidState.setRv(0.0);
+                }
+            }
+        }
+        if constexpr (enableDisgasInWater) {
+            if (FluidSystem::enableDissolvedGasInWater()) {
+                fluidState.setRsw(0.0);
+            }
+        }
+        if constexpr (enableVapwat) {
+            if (FluidSystem::enableVaporizedWater()) {
+                fluidState.setRvw(0.0);
+            }
+        }
+
+        // The pressures above are the exterior cell's, taken at its
+        // centre, but a boundary condition is imposed at the face and
+        // the discretisation carries it from there to this cell's
+        // centre. The leg from the exterior cell up to the face is
+        // nobody else's to walk, and skipping it imposes the exterior
+        // cell's pressure at a depth where the exterior cell does not
+        // have it. In a dipping layer that is metres of head: on one
+        // field it left an equilibrated sector with no wells open
+        // gaining a quarter of a bar everywhere in five days, and more
+        // than a bar against the steeper parts of the boundary.
+        //
+        // The correction wants densities, which are not known until the
+        // pressure is settled, so take them at the uncorrected pressure
+        // and let the loop below recompute them once it has moved. Over
+        // a few metres of head the second pass changes nothing that
+        // matters.
+        if (std::isfinite(fluxFace.exteriorDepth) && std::isfinite(targetDepth)) {
+            const auto dz = targetDepth - fluxFace.exteriorDepth;
+
+            if (dz != 0.0) {
+                const auto g = this->gravity()[dimWorld - 1];
+
+                for (unsigned activePhaseIdx = 0;
+                     activePhaseIdx < FluidSystem::numActivePhases(); ++activePhaseIdx)
+                {
+                    const auto phaseIdx =
+                        FluidSystem::activeToCanonicalPhaseIdx(activePhaseIdx);
+
+                    const auto rho =
+                        FluidSystem::density(fluidState, phaseIdx, pvtRegionIdx);
+
+                    fluidState.setPressure(phaseIdx,
+                                           fluidState.pressure(phaseIdx) + rho * g * dz);
+                }
+            }
+        }
+
+        for (unsigned activePhaseIdx = 0; activePhaseIdx < FluidSystem::numActivePhases(); ++activePhaseIdx) {
+            const auto phaseIdx = FluidSystem::activeToCanonicalPhaseIdx(activePhaseIdx);
+
+            const auto& b = FluidSystem::inverseFormationVolumeFactor(fluidState, phaseIdx, pvtRegionIdx);
+            fluidState.setInvB(phaseIdx, b);
+
+            const auto& rho = FluidSystem::density(fluidState, phaseIdx, pvtRegionIdx);
+            fluidState.setDensity(phaseIdx, rho);
+            if constexpr (energyModuleType == EnergyModules::FullyImplicitThermal) {
+                const auto& h = FluidSystem::enthalpy(fluidState, phaseIdx, pvtRegionIdx);
+                fluidState.setEnthalpy(phaseIdx, h);
+            }
+        }
+
+        fluidState.checkDefined();
+        return fluidState;
+    }
+
     InitialFluidState boundaryFluidState(unsigned globalDofIdx, const int directionId) const
     {
         OPM_TIMEBLOCK_LOCAL(boundaryFluidState, Subsystem::Assembly);
+        const FaceDir::DirEnum dir = FaceDir::FromIntersectionIndex(directionId);
+
+        const auto* fluxData = this->fluxBoundaryData_();
+        const auto* fluxFace = this->fluxBoundaryFace_(globalDofIdx, dir);
+        const auto* fluxStep = this->fluxBoundaryReportStep_();
+        if (fluxData && fluxFace && fluxStep
+            && (fluxData->header.mode == EclIO::FluxFile::Mode::Pressure
+                || fluxData->header.mode == EclIO::FluxFile::Mode::Both)) {
+            const auto fluxSlot = this->fluxBoundaryFaceSlot_(globalDofIdx, dir);
+            const auto fluxFaceIndex = static_cast<std::size_t>(fluxSlot - 1);
+            if (fluxSlot > 0 && fluxFaceIndex < fluxStep->pressures.size()) {
+                return this->fluxExteriorFluidState_(*fluxData, *fluxStep, *fluxFace,
+                                                     fluxFaceIndex, globalDofIdx,
+                                                     this->fluxBoundaryFaceDepthAt_(globalDofIdx, dir));
+            }
+        }
+
         const auto& bcstate = this->simulator().vanguard().schedule()[this->episodeIndex()].bcstate;
         if (bcstate.size() > 0) {
-            FaceDir::DirEnum dir = FaceDir::FromIntersectionIndex(directionId);
-
             // index == 0: no boundary conditions for this
             // global cell and direction
             if (this->bcindex_(dir)[globalDofIdx] == 0)
@@ -1009,6 +1222,28 @@ public:
             unsigned interiorDofIdx = context.interiorScvIndex(spaceIdx, timeIdx);
             unsigned globalDofIdx = context.globalSpaceIndex(interiorDofIdx, timeIdx);
             unsigned pvtRegionIdx = pvtRegionIndex(context, spaceIdx, timeIdx);
+
+            RateVector phaseVolRate = 0.0;
+            const auto dir = FaceDir::FromIntersectionIndex(indexInInside);
+            bool isMassRate = false;
+            if (this->fluxBoundaryRate_(globalDofIdx, dir, phaseVolRate, isMassRate)) {
+                if (isMassRate) {
+                    // Already a mass rate, formed by the producing run with the
+                    // density of the cell the flow comes from.
+                    values.setMassRate(phaseVolRate, pvtRegionIdx);
+                }
+                else {
+                    const auto& insideFs =
+                        context.intensiveQuantities(interiorDofIdx, timeIdx).fluidState();
+                    values.setMassRate(this->fluxPhaseVolToMassRate_(phaseVolRate,
+                                                                     insideFs,
+                                                                     globalDofIdx,
+                                                                     indexInInside),
+                                       pvtRegionIdx);
+                }
+                return;
+            }
+
             const auto [type, massrate] = this->boundaryCondition(globalDofIdx, indexInInside);
             if (type == BCType::THERMAL)
                 values.setThermalFlow(context, spaceIdx, timeIdx, this->boundaryFluidState(globalDofIdx, indexInInside));
@@ -1018,6 +1253,320 @@ public:
                 values.setMassRate(massrate, pvtRegionIdx);
         }
     }
+
+private:
+    //! \brief Add what crosses the sector boundary through a non-neighbour
+    //!   connection as a source in the interior cell.
+    //!
+    //! \details The ordinary boundary faces are applied through the grid face
+    //!   they sit on. An NNC has no such face here: the cell on the far side is
+    //!   outside the sector and so absent from this grid, and the connection
+    //!   went with it. Left alone, everything the parent run recorded across
+    //!   one of these would simply vanish.
+    //!
+    //!   The file stores a total component mass rate, positive into the sector.
+    //!   A source is expressed per unit volume and, when the model conserves
+    //!   surface volume, in surface volume rather than mass, so both
+    //!   conversions happen here. The reference density is the interior cell's,
+    //!   which is the one the producing run used to form the mass, so the round
+    //!   trip is exact.
+    void addFluxNncSource_(RateVector& rate,
+                           const unsigned globalDofIdx,
+                           const unsigned timeIdx) const
+    {
+        const auto& faces = this->fluxNncFacesAt_(globalDofIdx);
+        if (faces.empty()) {
+            return;
+        }
+
+        const auto* fluxData = this->fluxBoundaryData_();
+        const auto* fluxStep = this->fluxBoundaryReportStep_();
+        if ((fluxData == nullptr) || (fluxStep == nullptr)) {
+            return;
+        }
+
+        const auto fluxEnabled = (static_cast<int>(fluxData->header.mode)
+                                  & static_cast<int>(EclIO::FluxFile::Mode::Flux)) != 0;
+        if (!fluxEnabled) {
+            this->addFluxNncPressureSource_(rate, globalDofIdx, timeIdx,
+                                            faces, *fluxData, *fluxStep);
+            return;
+        }
+
+        const auto faceCount = static_cast<std::size_t>(fluxData->header.numBoundaryFaces);
+        const auto phaseCount = static_cast<std::size_t>(fluxData->header.numPhases);
+        if ((phaseCount == 0)
+            || (fluxStep->massRates.size() != faceCount * phaseCount))
+        {
+            return;
+        }
+
+        const auto volume = this->model().dofTotalVolume(globalDofIdx);
+        if (!(volume > 0.0)) {
+            return;
+        }
+
+        const auto pvtRegionIdx = this->pvtRegionIndex(globalDofIdx);
+
+        const auto add = [&](const std::size_t slot,
+                             const unsigned phaseIdx,
+                             const unsigned compIdx)
+        {
+            if (!FluidSystem::phaseIsActive(phaseIdx)) {
+                return;
+            }
+
+            auto massRate = fluxStep->massRates[slot] / volume;
+            if constexpr (getPropValue<TypeTag, Properties::BlackoilConserveSurfaceVolume>()) {
+                massRate /= FluidSystem::referenceDensity(phaseIdx, pvtRegionIdx);
+            }
+
+            rate[FluidSystem::canonicalToActiveCompIdx(compIdx)] += massRate;
+        };
+
+        for (const auto faceIndex : faces) {
+            if ((faceIndex < 0) || (static_cast<std::size_t>(faceIndex) >= faceCount)) {
+                continue;
+            }
+
+            const auto base = static_cast<std::size_t>(faceIndex) * phaseCount;
+            std::size_t phaseSlot = 0;
+
+            if (fluxData->header.hasPhase(EclIO::FluxFile::Phase::Oil)) {
+                add(base + phaseSlot, oilPhaseIdx, oilCompIdx);
+                ++phaseSlot;
+            }
+            if (fluxData->header.hasPhase(EclIO::FluxFile::Phase::Water)) {
+                add(base + phaseSlot, waterPhaseIdx, waterCompIdx);
+                ++phaseSlot;
+            }
+            if (fluxData->header.hasPhase(EclIO::FluxFile::Phase::Gas)) {
+                add(base + phaseSlot, gasPhaseIdx, gasCompIdx);
+            }
+        }
+    }
+
+    //! \brief Flow through the NNC boundary faces of a pressure-mode sector.
+    //!
+    //! \details A directional boundary face is imposed through the grid face
+    //!   it sits on, and the discretisation works out the flux across it. An
+    //!   NNC has no such face here, the cell on the far side having gone with
+    //!   the rest of the outside, so the flux is worked out here instead and
+    //!   enters as a source. It is the two-point flux the parent would have
+    //!   computed across the same connection: its transmissibility, the
+    //!   exterior cell's recorded state as the far end, the average density
+    //!   for the gravity head between the two cell centres, the threshold
+    //!   pressure if there is one, and the upstream cell's mobility and
+    //!   formation volume factors. The interior end is this cell's current
+    //!   state, derivatives and all, so the connection is as implicit as the
+    //!   rest of the boundary.
+    //!
+    //!   Black-oil components only; water-borne gas, solvent, polymer and
+    //!   energy are not carried across.
+    void addFluxNncPressureSource_(RateVector& rate,
+                                   const unsigned globalDofIdx,
+                                   const unsigned timeIdx,
+                                   const std::vector<int>& faces,
+                                   const EclIO::FluxFile::Data& fluxData,
+                                   const EclIO::FluxFile::ReportStep& fluxStep) const
+    {
+        using Evaluation = typename FlowProblemType::Evaluation;
+
+        const auto pressureEnabled = (static_cast<int>(fluxData.header.mode)
+                                      & static_cast<int>(EclIO::FluxFile::Mode::Pressure)) != 0;
+        if (!pressureEnabled || !this->fluxBoundary_) {
+            return;
+        }
+
+        const auto& allFaces = this->fluxBoundary_->faces();
+        const auto volume = this->model().dofTotalVolume(globalDofIdx);
+        if (!(volume > 0.0)) {
+            return;
+        }
+
+        const auto& intQuants = this->model().intensiveQuantities(globalDofIdx, timeIdx);
+        const auto& fsIn = intQuants.fluidState();
+        const auto pvtRegionIn = this->pvtRegionIndex(globalDofIdx);
+        const auto zIn = this->dofCenterDepth(globalDofIdx);
+        const auto g = this->gravity()[dimWorld - 1];
+        const auto numPhaseSlots = static_cast<std::size_t>(fluxData.header.numPhases);
+
+        for (const auto faceIndexInt : faces) {
+            const auto faceIndex = static_cast<std::size_t>(faceIndexInt);
+            if ((faceIndexInt < 0) || (faceIndex >= allFaces.size())
+                || (faceIndex >= fluxStep.pressures.size()))
+            {
+                continue;
+            }
+
+            const auto& face = allFaces[faceIndex];
+            if (!std::isfinite(face.transmissibility) || !(face.transmissibility > 0.0)) {
+                continue;
+            }
+
+            const auto exFs = this->fluxExteriorFluidState_(fluxData, fluxStep, face, faceIndex,
+                                                            globalDofIdx,
+                                                            std::numeric_limits<Scalar>::quiet_NaN());
+            const auto zEx = std::isfinite(face.exteriorDepth) ? face.exteriorDepth : zIn;
+
+            // The exterior cell's relative permeabilities, as recorded, or this
+            // cell's curves at the exterior saturations when they were not.
+            std::array<Scalar, numPhases> krEx{};
+            const auto krBase = faceIndex * numPhaseSlots;
+            if (fluxStep.relPerm.size() >= krBase + numPhaseSlots) {
+                std::size_t slot = 0;
+                for (const unsigned phaseIdx : {unsigned{oilPhaseIdx},
+                                                unsigned{waterPhaseIdx},
+                                                unsigned{gasPhaseIdx}}) {
+                    if (FluidSystem::phaseIsActive(phaseIdx)) {
+                        krEx[phaseIdx] = fluxStep.relPerm[krBase + slot];
+                        ++slot;
+                    }
+                }
+            }
+            else {
+                MaterialLaw::relativePermeabilities(krEx, this->materialLawParams(globalDofIdx), exFs);
+            }
+
+            std::array<Evaluation, numPhases> surfaceRate{};
+            const auto upstreamRates = [&](const unsigned phaseIdx,
+                                           const Evaluation& reservoirRate,
+                                           const auto& fs)
+            {
+                const auto b = fs.invB(phaseIdx);
+                surfaceRate[phaseIdx] += reservoirRate * b;
+
+                if (!FluidSystem::phaseIsActive(oilPhaseIdx)
+                    || !FluidSystem::phaseIsActive(gasPhaseIdx))
+                {
+                    return;
+                }
+                if (phaseIdx == oilPhaseIdx && FluidSystem::enableDissolvedGas()) {
+                    surfaceRate[gasPhaseIdx] += reservoirRate * b * fs.Rs();
+                }
+                if (phaseIdx == gasPhaseIdx && FluidSystem::enableVaporizedOil()) {
+                    surfaceRate[oilPhaseIdx] += reservoirRate * b * fs.Rv();
+                }
+            };
+
+            for (unsigned activePhaseIdx = 0;
+                 activePhaseIdx < FluidSystem::numActivePhases(); ++activePhaseIdx)
+            {
+                const auto phaseIdx = FluidSystem::activeToCanonicalPhaseIdx(activePhaseIdx);
+
+                const Evaluation rhoAvg = (fsIn.density(phaseIdx) + exFs.density(phaseIdx)) / 2;
+                Evaluation dp = exFs.pressure(phaseIdx) + rhoAvg * (g * (zIn - zEx))
+                    - fsIn.pressure(phaseIdx);
+
+                const bool inflow = dp > 0.0;
+                const Scalar thpres =
+                    this->fluxFaceThresholdPressure_(globalDofIdx, face, /*interiorToExterior=*/!inflow);
+                if (thpres > 0.0) {
+                    if (std::abs(getValue(dp)) > thpres) {
+                        dp += inflow ? -thpres : thpres;
+                    }
+                    else {
+                        dp = 0.0;
+                    }
+                }
+
+                if (inflow) {
+                    const Scalar mobility = krEx[phaseIdx] / exFs.viscosity(phaseIdx);
+                    upstreamRates(phaseIdx, face.transmissibility * mobility * dp, exFs);
+                }
+                else {
+                    const auto trans = face.transmissibility
+                        * getValue(intQuants.rockCompTransMultiplier());
+                    upstreamRates(phaseIdx, trans * intQuants.mobility(phaseIdx) * dp, fsIn);
+                }
+            }
+
+            const auto add = [&](const unsigned phaseIdx, const unsigned compIdx)
+            {
+                if (!FluidSystem::phaseIsActive(phaseIdx)) {
+                    return;
+                }
+
+                auto componentRate = surfaceRate[phaseIdx] / volume;
+                if constexpr (!getPropValue<TypeTag, Properties::BlackoilConserveSurfaceVolume>()) {
+                    componentRate *= FluidSystem::referenceDensity(phaseIdx, pvtRegionIn);
+                }
+
+                rate[FluidSystem::canonicalToActiveCompIdx(compIdx)] += componentRate;
+            };
+
+            add(oilPhaseIdx, oilCompIdx);
+            add(waterPhaseIdx, waterCompIdx);
+            add(gasPhaseIdx, gasCompIdx);
+        }
+    }
+
+    template <class ScalarFluidState>
+    RateVector fluxPhaseVolToMassRate_(const RateVector& phaseVolRate,
+                                       const ScalarFluidState& insideFs,
+                                       const unsigned globalDofIdx,
+                                       const unsigned boundaryFaceIdx) const
+    {
+        auto checkedDensity = [&](const unsigned phaseIdx,
+                                  const char* phaseName)
+        {
+            const Scalar rho = getValue(insideFs.density(phaseIdx));
+            if (std::isfinite(rho) && rho > 0.0) {
+                return rho;
+            }
+
+            std::ostringstream os;
+            os << "Invalid live phase density for USEFLUX FLUX-mode conversion at dof "
+               << globalDofIdx << ", boundary face " << boundaryFaceIdx
+               << ", phase '" << phaseName << "': " << rho;
+            throw std::runtime_error(os.str());
+        };
+
+        RateVector massRate = 0.0;
+        if (FluidSystem::phaseIsActive(oilPhaseIdx)) {
+            const auto comp = FluidSystem::canonicalToActiveCompIdx(oilCompIdx);
+            const auto volRate = phaseVolRate[comp];
+            const Scalar volRateValue = getValue(volRate);
+            if (!std::isfinite(volRateValue)) {
+                std::ostringstream os;
+                os << "Invalid USEFLUX FLUX-mode volumetric rate at dof "
+                   << globalDofIdx << ", boundary face " << boundaryFaceIdx
+                   << ", phase 'OIL': " << volRateValue;
+                throw std::runtime_error(os.str());
+            }
+            massRate[comp] = volRate * checkedDensity(oilPhaseIdx, "OIL");
+        }
+        if (FluidSystem::phaseIsActive(waterPhaseIdx)) {
+            const auto comp = FluidSystem::canonicalToActiveCompIdx(waterCompIdx);
+            const auto volRate = phaseVolRate[comp];
+            const Scalar volRateValue = getValue(volRate);
+            if (!std::isfinite(volRateValue)) {
+                std::ostringstream os;
+                os << "Invalid USEFLUX FLUX-mode volumetric rate at dof "
+                   << globalDofIdx << ", boundary face " << boundaryFaceIdx
+                   << ", phase 'WATER': " << volRateValue;
+                throw std::runtime_error(os.str());
+            }
+            massRate[comp] = volRate * checkedDensity(waterPhaseIdx, "WATER");
+        }
+        if (FluidSystem::phaseIsActive(gasPhaseIdx)) {
+            const auto comp = FluidSystem::canonicalToActiveCompIdx(gasCompIdx);
+            const auto volRate = phaseVolRate[comp];
+            const Scalar volRateValue = getValue(volRate);
+            if (!std::isfinite(volRateValue)) {
+                std::ostringstream os;
+                os << "Invalid USEFLUX FLUX-mode volumetric rate at dof "
+                   << globalDofIdx << ", boundary face " << boundaryFaceIdx
+                   << ", phase 'GAS': " << volRateValue;
+                throw std::runtime_error(os.str());
+            }
+            massRate[comp] = volRate * checkedDensity(gasPhaseIdx, "GAS");
+        }
+
+        return massRate;
+    }
+
+public:
 
     //!\brief Read simulator solution state from the outputmodule (used with restart)
     //! \param restart_step Step to read at
@@ -1144,6 +1693,49 @@ public:
         }
     }
 
+    /*!
+     * \copydoc FlowProblem::thresholdPressureBoundary
+     */
+    Scalar thresholdPressureBoundary(unsigned globalSpaceIdx,
+                                     unsigned boundaryFaceIdx,
+                                     bool interiorToExterior) const
+    {
+        const auto* face = this->fluxBoundaryFaceAtOrdinal_(globalSpaceIdx, boundaryFaceIdx);
+        return (face == nullptr)
+            ? Scalar{0}
+            : this->fluxFaceThresholdPressure_(globalSpaceIdx, *face, interiorToExterior);
+    }
+
+    //! \brief Threshold pressure across a sector boundary face, directional or
+    //!        NNC alike.
+    Scalar fluxFaceThresholdPressure_(const unsigned globalSpaceIdx,
+                                      const FluxBoundary::Face& face,
+                                      const bool interiorToExterior) const
+    {
+        if (!this->thresholdPressures_.enableThresholdPressure()) {
+            return 0.0;
+        }
+
+        if (face.exteriorEquilRegion < 0) {
+            return 0.0;
+        }
+
+        const auto interiorRegion = this->thresholdPressures_.equilRegionIndex(globalSpaceIdx);
+        const auto exteriorRegion = static_cast<unsigned>(face.exteriorEquilRegion);
+        const auto numRegions = this->thresholdPressures_.numEquilRegions();
+
+        if ((interiorRegion >= numRegions) || (exteriorRegion >= numRegions)) {
+            return 0.0;
+        }
+
+        const auto& table = this->thresholdPressures_.data();
+        const auto offset = interiorToExterior
+            ? interiorRegion * numRegions + exteriorRegion
+            : exteriorRegion * numRegions + interiorRegion;
+
+        return (offset < table.size()) ? table[offset] : Scalar{0};
+    }
+
     template<class Serializer>
     void serializeOp(Serializer& serializer)
     {
@@ -1165,6 +1757,63 @@ protected:
     {
         FlowProblemType::restoreBeginTimeStepState_();
         mixControls_ = prev_timestep_state_.mixControls;
+    }
+
+    //! \brief Take the producing run's threshold pressures in place of the ones
+    //!        this run worked out for itself.
+    //!
+    //! \details A THPRES entry given as defaulted is not a number in the deck.
+    //!   It is the largest initial potential difference found anywhere along
+    //!   that region boundary, so arriving at it means equilibrating the whole
+    //!   field. A sector holds only part of each region boundary and so arrives
+    //!   at a smaller number -- on one field, 0.01 bar where the parent had
+    //!   0.81 -- which lets flow through faces the parent held shut. The
+    //!   producing run recorded its table for exactly this reason, and it
+    //!   covers the sector's interior region boundaries as well as the ones at
+    //!   its edge.
+    //!
+    //!   Deliberately silent about a table of the wrong size: that means the
+    //!   two runs disagree about how many equilibration regions there are, and
+    //!   entries picked out of it would be meaningless rather than merely
+    //!   imprecise, so the locally computed table is kept and the mismatch
+    //!   reported.
+    void adoptFluxThresholdPressures_()
+    {
+        const auto* fluxData = this->fluxBoundaryData_();
+        if (fluxData == nullptr) {
+            return;
+        }
+
+        const auto& table = fluxData->thresholdPressure;
+        if (table.empty()) {
+            return;
+        }
+
+        const auto numRegions = this->thresholdPressures_.numEquilRegions();
+        const auto expected = static_cast<std::size_t>(numRegions) * numRegions;
+
+        if (!this->thresholdPressures_.enableThresholdPressure()) {
+            OpmLog::warning("USEFLUX: the producing run had threshold pressures but this "
+                            "one does not; add EQLOPTS/THPRES to honour them");
+            return;
+        }
+
+        if (table.size() != expected) {
+            OpmLog::warning(fmt::format("USEFLUX: ignoring the producing run's threshold "
+                                        "pressures: {} entries for {} equilibration "
+                                        "regions, expected {}",
+                                        table.size(), numRegions, expected));
+            return;
+        }
+
+        this->thresholdPressures_.setFromRestart(table);
+
+        OpmLog::info(fmt::format("USEFLUX: adopted the producing run's threshold pressures "
+                                 "over {} equilibration region(s)", numRegions));
+
+        // The table printed during finishInit() was the one this run worked out
+        // for itself, which is no longer the one it will use.
+        this->thresholdPressures_.logPressures();
     }
 
     void updateExplicitQuantities_(int episodeIdx, int timeStepSize, const bool first_step_after_restart) override

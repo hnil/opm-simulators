@@ -272,6 +272,13 @@ transmissibilityBoundary(unsigned elemIdx, unsigned boundaryFaceIdx) const
 }
 
 template<class Grid, class GridView, class ElementMapper, class CartesianIndexMapper, class Scalar>
+void Transmissibility<Grid,GridView,ElementMapper,CartesianIndexMapper,Scalar>::
+setTransmissibilityBoundary(unsigned elemIdx, unsigned boundaryFaceIdx, Scalar value)
+{
+    transBoundary_[std::make_pair(elemIdx, boundaryFaceIdx)] = value;
+}
+
+template<class Grid, class GridView, class ElementMapper, class CartesianIndexMapper, class Scalar>
 Scalar Transmissibility<Grid,GridView,ElementMapper,CartesianIndexMapper,Scalar>::
 thermalHalfTrans(unsigned insideElemIdx, unsigned outsideElemIdx) const
 {

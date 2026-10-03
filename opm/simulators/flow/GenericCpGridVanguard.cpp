@@ -687,8 +687,22 @@ doCreateGrids_(const bool edge_conformal, const bool conformingLgr, EclipseState
         }
 #endif
 
-        eclState.reset_actnum(UgGridHelpers::createACTNUM(*this->grid_));
-        eclState.set_active_indices(this->grid_->globalCell());
+        auto actnum = UgGridHelpers::createACTNUM(*this->grid_);
+        const auto& currentActnum = eclState.globalFieldProps().actnumRaw();
+        for (std::size_t index = 0; index < actnum.size(); ++index) {
+            actnum[index] = actnum[index] && currentActnum[index];
+        }
+
+        std::vector<int> activeIndices;
+        activeIndices.reserve(this->grid_->globalCell().size());
+        for (const auto globalIndex : this->grid_->globalCell()) {
+            if (actnum[globalIndex] != 0) {
+                activeIndices.push_back(globalIndex);
+            }
+        }
+
+        eclState.reset_actnum(actnum);
+        eclState.set_active_indices(activeIndices);
     }
 
 #if HAVE_MPI
