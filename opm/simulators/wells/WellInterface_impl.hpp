@@ -1470,6 +1470,13 @@ namespace Opm
         auto& deferred_logger = groupStateHelper.deferredLogger();
         const bool old_well_operable = this->operability_status_.isOperableAndSolvable();
 
+        // --group-controller-hold-stopped: a network route holds it stopped for this step; reopening it here
+        // only to have the operability check stop it again flips it every Newton iteration (MODEL5 MSW's C-2H).
+        if (this->holdStopped() && this->wellIsStopped()) {
+            this->solveWellWithZeroRate(simulator, dt, groupStateHelper, well_state);
+            return;
+        }
+
         if (this->param_.check_well_operability_iter_)
             checkWellOperability(simulator, well_state, groupStateHelper);
 

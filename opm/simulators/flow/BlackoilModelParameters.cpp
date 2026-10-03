@@ -150,6 +150,8 @@ BlackoilModelParameters<Scalar>::BlackoilModelParameters()
         Parameters::Get<Parameters::GroupControllerInjectionDamping<Scalar>>();
     group_controller_injection_feedback_ = Parameters::Get<Parameters::GroupControllerInjectionFeedback>();
     group_controller_shut_persistence_ = Parameters::Get<Parameters::GroupControllerShutPersistence>();
+    group_controller_keep_flowing_ = Parameters::Get<Parameters::GroupControllerKeepFlowing>();
+    group_controller_hold_stopped_ = Parameters::Get<Parameters::GroupControllerHoldStopped>();
     group_controller_closing_ = Parameters::Get<Parameters::GroupControllerClosing>();
     if (enable_group_controller_) {
         enable_group_tree_balancer_ = true;
@@ -398,6 +400,16 @@ void BlackoilModelParameters<Scalar>::registerParameters()
         ("Group controller: after a solve on continued tubing curves, which of the wells left on a "
          "continuation are closed: all of them at once (all), the one furthest onto it and then solve "
          "again (worst), or those past their own residual else the worst (tiered)");
+    Parameters::Register<Parameters::GroupControllerHoldStopped>
+        ("Group controller: a stopped well a network route holds dead or stopped for the step is not "
+         "reopened by the well model's own solve before assembly; without it the well model reopens it "
+         "and its operability check stops it again every Newton iteration. Wells on the no-network thp "
+         "route are not held");
+    Parameters::Register<Parameters::GroupControllerKeepFlowing>
+        ("Group controller: where the network route shuts a well that flowed at the start of the time "
+         "step, solve again with it revived from the previous hand-over's node pressures, and take that "
+         "answer if it converges with the well flowing and passes the judge (a network with two "
+         "consistent states: the well flowing, or shut with its flowline at its zero-flow pressure)");
     Parameters::Register<Parameters::GroupControllerShutPersistence>
         ("Group controller: how many decisions in a row must want a flowing well shut before the network "
          "route's shut is handed to it; 1 shuts it at once, more gives the decision hysteresis at the "

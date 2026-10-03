@@ -413,6 +413,10 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
         this->controller_revival_step_ = step_key;
         this->controller_revivals_.clear();
         this->controller_shut_streak_.clear();
+        this->controller_step_start_oil_.clear();
+        for (const auto& [name, d] : route_data) {
+            this->controller_step_start_oil_[name] = d.open ? std::max(-static_cast<double>(d.q[pos[1]]), 0.0) : 0.0;
+        }
     }
     auto held_dead = [&](const std::string& name, const Scalar rate_now) {
         const auto r = this->controller_revivals_.find(name);
@@ -1178,6 +1182,53 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                                               "{}:{}; solved again", root.name(), reportStepIdx, revived));
             rr = solveRoute(rr.node_pressure, true);
         }
+        // --group-controller-keep-flowing: a well this answer shuts that flowed at the step's start may
+        // also have a consistent flowing answer (its flowline has two states); try that one first.
+        if (param_.group_controller_keep_flowing_ && rr.converged && !no_network) {
+            std::vector<int> kept;
+            for (int w = 0; w < system.numWells(); ++w) {
+                const auto& well = system.wells()[w];
+                const auto it = this->controller_step_start_oil_.find(well.name);
+                if (system.controlLetter(w) == 'S' && !well.shut && !well.pinned && well.vfp_table > 0
+                    && it != this->controller_step_start_oil_.end() && it->second > 0.0) {
+                    kept.push_back(w);
+                }
+            }
+            if (!kept.empty()) {
+                const auto dead = system.committedDead();
+                std::vector<Scalar> q_start;
+                for (const int w : kept) {
+                    q_start.push_back(system.wells()[w].q_start);
+                    system.reviveWell(w, static_cast<Scalar>(this->controller_step_start_oil_.at(system.wells()[w].name)));
+                }
+                auto flowing = solveRoute(guess, true);
+                bool all_flow = flowing.converged;
+                for (const int w : kept) {
+                    all_flow = all_flow && system.controlLetter(w) != 'S' && flowing.well_rate[w] > Scalar{0};
+                }
+                std::string kept_letters;
+                for (int w = 0; w < system.numWells(); ++w) { kept_letters += system.controlLetter(w); }
+                const bool passes = all_flow
+                    && NetworkSolve::verifyAnswer(system, flowing.node_pressure, flowing.well_rate, kept_letters,
+                                                  param_.group_controller_network_tolerance_,
+                                                  param_.group_controller_rate_tolerance_).ok;
+                std::string names;
+                for (const int w : kept) { names += " " + system.wells()[w].name; }
+                if (passes) {
+                    rr = std::move(flowing);
+                } else {
+                    for (std::size_t k = 0; k < kept.size(); ++k) { system.reviveWell(kept[k], q_start[k]); }
+                    system.restoreDead(dead);
+                    rr = solveRoute(rr.node_pressure, true);
+                }
+                ++(passes ? this->controller_stats_.kept_flowing : this->controller_stats_.kept_flowing_failed);
+                deferred_logger.debug(fmt::format("Controller: keep flowing under {} at report step {}:{}: {}", root.name(),
+                                                  reportStepIdx, names,
+                                                  passes ? "a consistent answer with them flowing, taken"
+                                                  : !all_flow ? "no converged answer with them flowing, shut stands"
+                                                              : "the flowing answer fails the judge, shut stands"));
+            }
+        }
         // A group with several limits holds the one its own answer violates most: solve,
         // look at every limit, switch and solve again. Bounded; a repeat ends it.
         // OPM_CONTROLLER_STEIN_LIMITS: the balancer's tree on the route's answer picks the
@@ -1713,6 +1764,10 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
         const auto it = dead_now.find(wp->name());
         wp->setNetworkDead(it != dead_now.end() && it->second);
         wp->setNetworkHeld(kept_dead.count(wp->name()) > 0);
+        // Only on a network: on the no-network thp route a well's own limit fixes its pressure, and the well
+        // model's retries can bring it back (GRPFLD-02/04/05 cost 6-11 % more Newton held).
+        wp->setHoldStopped(param_.group_controller_hold_stopped_ && !no_network
+                           && (wp->networkDead() || wp->networkHeld()));
     }
     // The group state's controls say what was decided: the holding groups their mode,
     // the groups under one FLD, the rest NONE. Output and legacy's bookkeeping read them.

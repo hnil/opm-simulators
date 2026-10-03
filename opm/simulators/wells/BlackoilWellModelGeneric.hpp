@@ -594,6 +594,7 @@ protected:
     bool controller_injection_moved_{false};
     std::map<std::string, Scalar> controller_injection_limit_{};   //!< group|phase -> the last target set
     std::map<std::string, int> controller_shut_streak_{};          //!< well -> decisions in a row wanting it shut
+    std::map<std::string, double> controller_step_start_oil_{};    //!< well -> oil rate at the time step's start
     std::set<std::string> controller_off_thp_{};                   //!< wells WVFPEXP item 4 keeps off their thp
     bool controller_injection_owned_{false};
     /// Every well in the network route's systems, decided or pinned: solved in the pass loop.
@@ -622,6 +623,7 @@ protected:
         long decisions = 0, route_iterations = 0, route_evaluations = 0, set_changes = 0, lookups = 0;
         long calls = 0, passes = 0, well_solves = 0, cap_hits = 0, judge_rejections = 0;
         long converged = 0, stalled = 0;
+        long kept_flowing = 0, kept_flowing_failed = 0;
         long stein_decisions = 0, stein_inconsistent = 0;
         double worst_deviation = 0;
     } controller_stats_;

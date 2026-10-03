@@ -124,6 +124,9 @@ public:
     /// Kept shut for the rest of the time step by the controller's revival budget, but operable.
     void setNetworkHeld(const bool held) { network_held_ = held; }
     bool networkHeld() const { return network_held_; }
+    /// Dead or held by a network route under --group-controller-hold-stopped: not reopened this step.
+    void setHoldStopped(const bool hold) { hold_stopped_ = hold; }
+    bool holdStopped() const { return hold_stopped_; }
     void setDynamicThpLimit(const std::optional<Scalar> thp_limit);
     void updatePerforatedCell(std::vector<bool>& is_cell_perforated);
 
@@ -481,6 +484,7 @@ protected:
     std::optional<Scalar> dynamic_thp_limit_;
     bool network_dead_ = false;
     bool network_held_ = false;
+    bool hold_stopped_ = false;
 
     // recording the multiplier calculate from the keyword WINJMULT during the time step
     mutable std::vector<Scalar> inj_multiplier_;
