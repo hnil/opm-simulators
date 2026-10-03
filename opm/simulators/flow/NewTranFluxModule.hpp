@@ -555,6 +555,34 @@ public:
                 dnIdx[phaseIdx] = -1;
             }
 
+            // A threshold pressure across the face holds it shut until the
+            // potential difference exceeds it, and otherwise subtracts it from
+            // the driving force. The producing run did this for every face of
+            // its own, including the ones that ended up on this sector's edge,
+            // and a sector that skips it flows where the parent did not.
+            //
+            // Applied after the upstream decision because it never flips the
+            // sign: it can only shrink the difference to zero. THPRES may be
+            // irreversible, so which of the two directions applies depends on
+            // which way the flow is going.
+            const Scalar thpres = (pressureDifference[phaseIdx] < 0.0)
+                ? problem.thresholdPressureBoundary(globalSpaceIdx, bfIdx, true)
+                : problem.thresholdPressureBoundary(globalSpaceIdx, bfIdx, false);
+
+            if (thpres > 0.0) {
+                if (std::abs(Toolbox::value(pressureDifference[phaseIdx])) > thpres) {
+                    if (pressureDifference[phaseIdx] < 0.0) {
+                        pressureDifference[phaseIdx] += thpres;
+                    }
+                    else {
+                        pressureDifference[phaseIdx] -= thpres;
+                    }
+                }
+                else {
+                    pressureDifference[phaseIdx] = 0.0;
+                }
+            }
+
             Evaluation transModified = trans;
 
             if (upIdx[phaseIdx] == interiorDofIdx) {
@@ -571,11 +599,14 @@ public:
                     pressureDifference[phaseIdx]*up.mobility(phaseIdx)*(-transModified/faceArea);
             }
             else {
-                // compute the phase mobility using the material law parameters of the
-                // interior element. TODO: this could probably be done more efficiently
-                const auto& matParams = problem.materialLawParams(globalSpaceIdx);
-                std::array<typename FluidState::ValueType,numPhases> kr;
-                MaterialLaw::relativePermeabilities(kr, matParams, exFluidState);
+                // The stream comes from outside the grid, so its relative
+                // permeability belongs to a cell this run does not have. The
+                // problem supplies it when it knows better -- a sector run
+                // reads it from the .FLUX file -- and otherwise falls back to
+                // evaluating this cell's saturation functions at the exterior
+                // saturations.
+                std::array<typename FluidState::ValueType, numPhases> kr;
+                problem.boundaryRelativePermeabilities(kr, globalSpaceIdx, bfIdx, exFluidState);
 
                 const auto& mob = kr[phaseIdx]/exFluidState.viscosity(phaseIdx);
                 volumeFlux[phaseIdx] =

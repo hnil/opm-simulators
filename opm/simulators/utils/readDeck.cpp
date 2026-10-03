@@ -76,6 +76,7 @@
 #include <opm/simulators/utils/ParallelSerialization.hpp>
 #include <opm/simulators/utils/PartiallySupportedFlowKeywords.hpp>
 #include <opm/simulators/utils/UnsupportedFlowKeywords.hpp>
+#include <opm/simulators/flow/flux/FluxActivation.hpp>
 
 #include <fmt/format.h>
 
@@ -391,6 +392,12 @@ namespace {
                                  "Flow uses and only supports the fully implicit method. Add FULLIMP "
                                  "to make the intended method explicit.");
         }
+
+        // Reduce the active set to the selected USEFLUX region before the
+        // Schedule is created. The Schedule resolves well connections against
+        // the grid, so doing this afterwards would leave connections pointing
+        // at cells that no longer exist.
+        applyUseFluxActnum(*eclipseState);
 
         // A fracture model reads its seeds out of the deck during the run, not
         // only at setup, so a FRAC run has to retain the Schedule keywords

@@ -200,6 +200,13 @@ public:
              "time step. This restores the behaviour of earlier versions and is "
              "generally less accurate for models whose boundary flow varies "
              "within a report step.");
+        Parameters::Register<Parameters::FluxBoundaryInterpolate>
+            ("In a USEFLUX run, interpolate the pressure-mode boundary state "
+             "(pressure, saturations, Rs, Rv, relative permeability, capillary "
+             "pressure) linearly in time between consecutive .FLUX records, "
+             "evaluated at the end of each time step. When false, each record's "
+             "state is held over the whole interval it covers. The two agree "
+             "wherever this run's steps end on the records' times.");
     }
 
     // The Simulator object should preferably have been const - the
