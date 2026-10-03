@@ -1,0 +1,221 @@
+-- Saturation-function smoke test: DUMPFLUX producer, and the parent make_flux
+-- rebuilds the same file from.
+--
+-- The rock changes at the sector boundary. The sector (i = 4..7, k = 3..8) is
+-- SATNUM 1 and everything around it SATNUM 2, with other end points, other
+-- relative permeabilities and a stronger capillary pressure, and the oil-water
+-- capillary pressure is scaled by SWATINIT cell by cell. A boundary face's
+-- exterior relative permeability and capillary pressure are therefore the
+-- exterior cell's alone: a boundary cell's own curves at the exterior
+-- saturations give other numbers, and so does an evaluation that leaves out
+-- the SWATINIT scaling.
+--
+-- A producer inside the sector and an injector outside it move water across
+-- the boundary, so the saturations there, and with them the relative
+-- permeabilities and capillary pressures, change from one step to the next.
+
+RUNSPEC
+
+WATER
+GAS
+OIL
+
+METRIC
+
+UNIFOUT
+
+DIMENS
+  10 1 10 /
+
+TABDIMS
+  2 1 40 20 1 20 /
+
+ENDSCALE
+/
+
+WELLDIMS
+  2 10 1 2 /
+
+GRID
+
+DX
+  100*100 /
+DY
+  100*100 /
+DZ
+  100*2 /
+
+TOPS
+  10*2000. /
+
+PORO
+  100*0.3 /
+
+PERMX
+  100*200 /
+PERMY
+  100*200 /
+PERMZ
+  100*50 /
+
+FLUXNUM
+  20*0
+  3*0 4*1 3*0
+  3*0 4*1 3*0
+  3*0 4*1 3*0
+  3*0 4*1 3*0
+  3*0 4*1 3*0
+  3*0 4*1 3*0
+  20*0 /
+
+FLUXTYPE
+  PRESSURE /
+
+DUMPFLUX /
+
+INIT
+
+PROPS
+
+PVTW
+  250 1.03 4.5E-5 0.5 0.0 /
+
+ROCK
+  250 5E-5 /
+
+DENSITY
+  800 1000 1.0 /
+
+PVDO
+  100 1.20 1.00
+  300 1.15 1.05
+  500 1.10 1.10 /
+
+PVDG
+  100 0.0120 0.015
+  300 0.0045 0.020
+  500 0.0030 0.025 /
+
+SWOF
+-- Sector
+  0.15 0.00 1.00 2.0
+  0.30 0.05 0.60 1.0
+  0.50 0.20 0.25 0.4
+  0.70 0.50 0.05 0.1
+  0.85 0.80 0.00 0.0
+  1.00 1.00 0.00 0.0 /
+-- Surroundings
+  0.20 0.00 1.00 4.0
+  0.35 0.02 0.70 2.5
+  0.55 0.10 0.30 1.0
+  0.75 0.35 0.08 0.3
+  0.90 0.60 0.00 0.0
+  1.00 1.00 0.00 0.0 /
+
+SGOF
+  0.00 0.00 1.00 0.0
+  0.10 0.02 0.70 0.0
+  0.30 0.20 0.30 0.0
+  0.50 0.50 0.05 0.0
+  0.75 0.80 0.00 0.0
+  0.85 0.90 0.00 0.0 /
+  0.00 0.00 1.00 0.0
+  0.10 0.01 0.80 0.0
+  0.30 0.15 0.35 0.0
+  0.50 0.40 0.08 0.0
+  0.70 0.70 0.00 0.0
+  0.80 0.80 0.00 0.0 /
+
+SWATINIT
+  100*0.35 /
+
+REGIONS
+
+SATNUM
+  20*2
+  3*2 4*1 3*2
+  3*2 4*1 3*2
+  3*2 4*1 3*2
+  3*2 4*1 3*2
+  3*2 4*1 3*2
+  3*2 4*1 3*2
+  20*2 /
+
+SOLUTION
+
+EQUIL
+  2000 250 2014 0 1990 0 /
+
+SUMMARY
+
+-- The well vectors DUMPFLUX embeds for a reduced run, so that make_flux finds
+-- them in the parent's summary and embeds the same.
+WGIR
+/
+WGIT
+/
+WGPR
+/
+WGPT
+/
+WOIR
+/
+WOIT
+/
+WOPR
+/
+WOPT
+/
+WVIR
+/
+WVIT
+/
+WVPR
+/
+WVPT
+/
+WWIR
+/
+WWIT
+/
+WWPR
+/
+WWPT
+/
+
+SCHEDULE
+
+-- Restarts at every report step, so make_flux can build the same file.
+RPTRST
+  'BASIC=2' /
+
+-- One time step per report step, so that DUMPFLUX writes a record where
+-- make_flux finds a restart and the two files can be compared record by record.
+-- The test also starts the run with a 30-day step, which TUNING cannot set.
+TUNING
+  30 30 /
+/
+/
+
+WELSPECS
+  P1 G 5 1 1* OIL /
+  I1 G 1 1 1* WATER /
+/
+
+COMPDAT
+  P1 5 1 4 5 OPEN 2* 0.2 /
+  I1 1 1 7 10 OPEN 2* 0.2 /
+/
+
+WCONPROD
+  P1 OPEN ORAT 400 4* 100 /
+/
+
+WCONINJE
+  I1 WATER OPEN RATE 600 1* 400 /
+/
+
+TSTEP
+  8*30 /
+
+END

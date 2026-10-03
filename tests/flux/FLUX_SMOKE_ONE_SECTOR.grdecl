@@ -1,0 +1,5 @@
+-- Single sector matching the FLUXNUM in FLUX_DUMP_PRESSURE_SMOKE.DATA, so that
+-- a file built from the restart alone can be compared against the one the
+-- parent run wrote for itself.
+FLUXNUM
+  10*0 1 89*0 /
