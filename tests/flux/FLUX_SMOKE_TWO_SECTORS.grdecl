@@ -1,0 +1,5 @@
+-- Two sectors on the 10x1x10 smoke grid. Region 1 is a 2x1x2 block at
+-- i 3-4, k 4-5; region 2 is the single cell i 7, k 7. Asking for both in one
+-- run has to produce one file per region.
+FLUXNUM
+  32*0 2*1 8*0 2*1 22*0 2 33*0 /
