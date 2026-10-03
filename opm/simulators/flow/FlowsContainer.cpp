@@ -87,7 +87,8 @@ template<class FluidSystem>
 FlowsContainer<FluidSystem>::
 FlowsContainer(const Schedule& schedule,
                const SummaryConfig& summaryConfig,
-               std::function<bool(const int)> isInterior)
+               std::function<bool(const int)> isInterior,
+               const bool forceFlowsAndFlores)
 {
     using namespace std::string_literals;
     using Dir = FaceDir::DirEnum;
@@ -108,13 +109,15 @@ FlowsContainer(const Schedule& schedule,
     enableFlows_ = false;
     enableFlowsn_ = false;
 
-    anyFlores_ = std::ranges::any_of(schedule,
+    anyFlores_ = forceFlowsAndFlores ||
+                 std::ranges::any_of(schedule,
                                      [](const auto& block)
                                      {
                                          const auto& rstkw = block.rst_config().keywords;
                                          return rstkw.find("FLORES") != rstkw.end();
                                      });
-    anyFlows_ = std::ranges::any_of(schedule,
+    anyFlows_ = forceFlowsAndFlores ||
+                std::ranges::any_of(schedule,
                                     [](const auto& block)
                                     {
                                         const auto& rstkw = block.rst_config().keywords;
@@ -294,6 +297,24 @@ allocate(const std::size_t bufferSize,
         }
         if (rstKeywords["FLORES-"] > 0) {
             rstKeywords["FLORES-"] = 0;
+        }
+    }
+    else if (anyFlores_ && (numOutputNnc > 0)) {
+        // A sector boundary can run along an NNC, and a DUMPFLUX run then needs
+        // the flux across it even though no restart output of FLORES was asked
+        // for. The Cartesian directions are served from the linearizer's own
+        // per-cell buffers, but the NNC values exist only here, so without this
+        // everything crossing such a face would be silently lost.
+        const auto rstName = std::array{ "FLRGASN+", "FLROILN+", "FLRWATN+" };
+
+        for (unsigned ii = 0; ii < phaseIdxs.size(); ++ii) {
+            if (FluidSystem::phaseIsActive(phaseIdxs[ii])) {
+                enableFloresn_ = true;
+
+                floresn_[compIdxs[ii]].name = rstName[ii];
+                floresn_[compIdxs[ii]].indices.resize(numOutputNnc, -1);
+                floresn_[compIdxs[ii]].values.resize(numOutputNnc, 0.0);
+            }
         }
     }
 }

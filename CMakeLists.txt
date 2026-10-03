@@ -456,6 +456,7 @@ endmacro()
 
 macro(opm-simulators_tests_hook)
   include(${CMAKE_CURRENT_SOURCE_DIR}/modelTests.cmake)
+  include(${CMAKE_CURRENT_SOURCE_DIR}/fluxTests.cmake)
 
   # Look for the opm-tests repository; if found the variable
   # HAVE_OPM_TESTS will be set to true.

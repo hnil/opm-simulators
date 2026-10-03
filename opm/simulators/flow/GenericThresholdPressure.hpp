@@ -85,6 +85,23 @@ public:
     //! \details Returns the union of explicitly configured entries and defaulted values.
     std::vector<Scalar> getRestartVector() const;
 
+    /*!
+     * \brief The equilibration region an element belongs to, zero-based.
+     *
+     * This is EQLNUM minus one, and is the index that pairs with another to
+     * select an entry of data().  Zero when threshold pressures are switched
+     * off, in which case no entry is selected by anything.
+     */
+    unsigned equilRegionIndex(unsigned elemIdx) const
+    { return elemEquilRegion_.empty() ? 0u : elemEquilRegion_[elemIdx]; }
+
+    //! \brief Number of equilibration regions, the order of the data() matrix.
+    unsigned numEquilRegions() const
+    { return numEquilRegions_; }
+
+    //! \brief Write the non-zero threshold pressures to the print file.
+    void logPressures();
+
     bool enableThresholdPressure() const;
 
 protected:
@@ -98,8 +115,6 @@ protected:
     void applyExplicitThresholdPressures_();
 
     void configureThpresft_();
-
-    void logPressures();
 
     const CartesianIndexMapper& cartMapper_;
     const GridView& gridView_;

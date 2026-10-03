@@ -55,9 +55,13 @@ class FlowsContainer
     static constexpr auto waterCompIdx = FluidSystem::waterCompIdx;
 
 public:
+    //! \param forceFlowsAndFlores Compute the inter-cell flows even when no
+    //!   RPTRST requests them. A DUMPFLUX run needs FLORES for its boundary
+    //!   rates and FLOWS to express them as component masses.
     FlowsContainer(const Schedule& schedule,
                    const SummaryConfig& summaryConfig,
-                   std::function<bool(const int)> );
+                   std::function<bool(const int)> ,
+                   bool forceFlowsAndFlores = false);
 
     void allocate(const std::size_t bufferSize,
                   const SummaryConfig& summaryConfig,
@@ -136,6 +140,20 @@ public:
     bool hasFlores() const
     { return enableFlores_; }
 
+    //! \brief Whether the FLORES buffers currently hold data.
+    //! \details outputRestart() moves the buffers into the restart solution,
+    //!          so being enabled does not imply that values are available.
+    bool hasFloresValues() const
+    {
+        return std::any_of(flores_.begin(), flores_.end(),
+                           [](const auto& dirBuffers)
+                           {
+                               return std::any_of(dirBuffers.begin(), dirBuffers.end(),
+                                                  [](const auto& buffer)
+                                                  { return !buffer.empty(); });
+                           });
+    }
+
     bool anyFlores() const
     { return anyFlores_; }
 
@@ -164,6 +182,24 @@ public:
                    const FaceDir::DirEnum dir,
                    const int comp_idx) const
     { return flows_[comp_idx][FaceDir::ToIntersectionIndex(dir)][globalDofIdx]; }
+
+    Scalar getFlores(const unsigned globalDofIdx,
+                     const FaceDir::DirEnum dir,
+                     const int comp_idx) const
+    { return flores_[comp_idx][FaceDir::ToIntersectionIndex(dir)][globalDofIdx]; }
+
+    Scalar getFloresIfAvailable(const unsigned globalDofIdx,
+                                const FaceDir::DirEnum dir,
+                                const int comp_idx) const
+    {
+        const auto dirIdx = FaceDir::ToIntersectionIndex(dir);
+        const auto& data = flores_[comp_idx][dirIdx];
+        if (data.empty() || globalDofIdx >= data.size()) {
+            return 0.0;
+        }
+
+        return data[globalDofIdx];
+    }
 
 private:
     bool anyFlows_{false};

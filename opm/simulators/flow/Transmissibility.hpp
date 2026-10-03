@@ -81,6 +81,19 @@ public:
     Scalar transmissibility(unsigned elemIdx1, unsigned elemIdx2) const;
 
     /*!
+     * \brief Transmissibility between two elements, or zero when the pair is
+     *        not connected in the grid.
+     *
+     * Two cells that are neighbours in the Cartesian index space do not
+     * necessarily share a face: faults with throw, pinched-out cells and
+     * similar geometry leave no connection between them, and hence no entry
+     * here. Callers that enumerate candidate pairs geometrically rather than
+     * from the grid's own connectivity should use this instead of
+     * transmissibility(), which throws for an absent pair.
+     */
+    Scalar transmissibilityOrZero(unsigned elemIdx1, unsigned elemIdx2) const;
+
+    /*!
      * \brief Return the transmissibility for a given boundary segment.
      */
     Scalar transmissibilityBoundary(unsigned elemIdx, unsigned boundaryFaceIdx) const;

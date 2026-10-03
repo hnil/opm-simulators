@@ -440,6 +440,10 @@ public:
 
     void endStepApplyAction()
     {
+        // Sample the DUMPFLUX boundary rates while the linearizer still holds
+        // the converged fluxes of the time step that just finished.
+        this->eclWriter_->sampleFluxDumperRates(this->simulator().timeStepSize());
+
         // After the solution is updated, the values in output module needs
         // also updated.
         this->eclWriter().mutableOutputModule().invalidateLocalData();
