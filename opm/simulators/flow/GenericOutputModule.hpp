@@ -164,6 +164,14 @@ public:
 
     void outputErrorLog(const Parallel::Communication& comm) const;
 
+    //! \brief Supply pore-volume weighted sums for cells this run does not
+    //!        have, so that FPRFLUX can average over the whole original model.
+    //!
+    //! \param[in] sums Sixteen values in the layout of
+    //!   FluxFile::ReportStep::externalRegionSums.
+    void setExternalRegionSums(const std::array<Scalar, 16>& sums)
+    { this->externalRegionSums_ = sums; }
+
     void addRftDataToWells(data::Wells& wellDatas,
                            std::size_t reportStepNum,
                            const Parallel::Communication& comm)
@@ -646,6 +654,14 @@ protected:
     std::array<ScalarBuffer, numPhases> residual_;
 
     FlowsContainer<FluidSystem> flowsC_;
+
+    //! \brief Pore-volume weighted sums for cells this run does not have.
+    //!
+    //! \details Sixteen values in the layout of
+    //!   FluxFile::ReportStep::externalRegionSums. Zero unless a USEFLUX run
+    //!   supplies them, in which case FPRFLUX averages over the whole of the
+    //!   model the sector came from rather than over the sector alone.
+    std::array<Scalar, 16> externalRegionSums_{};
 
     RFTContainer<FluidSystem> rftC_;
     RSTConv rst_conv_; //!< Helper class for RPTRST CONV

@@ -35,6 +35,12 @@
 
 #include <opm/output/eclipse/EclipseIO.hpp>
 
+#include <opm/input/eclipse/EclipseState/SummaryConfig/SummaryConfig.hpp>
+#include <opm/input/eclipse/Schedule/UDQ/UDQSet.hpp>
+#include <opm/input/eclipse/Schedule/UDQ/UDQState.hpp>
+#include <opm/input/eclipse/Units/Units.hpp>
+#include <opm/io/eclipse/SummaryNode.hpp>
+
 #include <opm/simulators/flow/ActionHandler.hpp>
 #include <opm/grid/LookUpData.hh>
 
@@ -63,6 +69,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace Opm {
@@ -271,17 +278,48 @@ public:
      */
     void beginEpisode() override
     {
+        // Before the well model sets up the report step's group controls, which
+        // need the wells outside the region to be counted already. Until the
+        // first time step is chosen this is the latest interval the parent has
+        // an average for, which is the best there is.
+        {
+            const auto episodeStart = static_cast<double>(this->simulator().episodeStartTime())
+                - static_cast<double>(this->simulator().startTime());
+            this->updateFluxFixedWellRates_(this->simulator().episodeIndex(),
+                                            episodeStart, episodeStart);
+        }
+
         FlowProblemType::beginEpisode();
 
         auto& simulator = this->simulator();
 
         const int episodeIdx = simulator.episodeIndex();
-        const auto& schedule = simulator.vanguard().schedule();
+        auto& vanguard = simulator.vanguard();
+        const auto& schedule = vanguard.schedule();
+
+        // Time here is the start of the episode. simulator.time() has not been
+        // advanced yet at this point and timeStepSize() still holds the WHOLE
+        // episode length, so the usual time + timeStepSize would land at the
+        // end of the episode and pick up the parent's state from days later.
+        // That is what produced a one-step excursion at every report step: the
+        // boundary was briefly driven by a far more depleted exterior state.
+        //
+        // The boundary record itself is deliberately not refreshed here.
+        // beginTimeStep runs immediately afterwards for the first step of the
+        // episode and selects it with the proper step size.
+        const auto episodeStart = static_cast<double>(simulator.episodeStartTime())
+                                - static_cast<double>(simulator.startTime());
+
+        if (episodeIdx >= 0) {
+            this->seedParentSummaryState_(episodeStart, episodeStart);
+        }
 
         // Evaluate UDQ assign statements to make sure the settings are
         // available as UDA controls for the current report step.
         this->actionHandler_
-            .evalUDQAssignments(episodeIdx, simulator.vanguard().udqState());
+            .evalUDQAssignments(episodeIdx, vanguard.udqState());
+
+        this->restoreFluxGroupTargetUDQs_(episodeIdx);
 
         if (episodeIdx >= 0) {
             const auto& oilVap = schedule[episodeIdx].oilvap();
@@ -299,6 +337,302 @@ public:
         }
     }
 
+    //! \brief Seed the SummaryState from the parent run's summary vectors.
+    //!
+    //! \details Called at the start of every time step, before UDQ assignments
+    //!          are evaluated, so that quantities the reduced run cannot
+    //!          compute for itself are nevertheless available to UDQ, UDA and
+    //!          group control through the standard code paths.
+    //!
+    //!          Values are assigned verbatim -- no delta arithmetic -- so the
+    //!          state starts out as a clean snapshot of the parent at this
+    //!          point in time. Everything the reduced run does compute is
+    //!          subsequently overwritten by Summary::eval().
+    //!
+    //!          Cumulative (Total) quantities are deliberately NOT seeded.
+    //!          SummaryState::update() accumulates into those keys rather than
+    //!          assigning, so seeding a cumulative and then letting
+    //!          Summary::eval() add this step's contribution on top would count
+    //!          the same production twice. Cumulatives are instead built up by
+    //!          the normal accumulation path from the rates, including the
+    //!          rates injected for wells outside the region.
+    void seedParentSummaryState_(const double start, const double time)
+    {
+        const auto* parent = this->fluxParentSummary_();
+        if (parent == nullptr) {
+            return;
+        }
+
+        auto& summaryState = this->simulator().vanguard().summaryState();
+
+        for (const auto& key : parent->keys()) {
+            if (ParentSummary::keyType(key) == SummaryConfigNode::Type::Total) {
+                continue;
+            }
+
+            const auto value = parent->valueOver(key, start, time);
+            if (!std::isfinite(value)) {
+                continue;
+            }
+
+            ParentSummary::assign(summaryState, key, value);
+        }
+    }
+
+    //! \brief Names of the wells that have at least one connection inside the
+    //!        USEFLUX region.
+    //! \details The consumer deck is the parent deck, so the schedule still
+    //!          describes every well. Wells completed outside the region have
+    //!          no active connection and take no part in the sector run.
+    //!
+    //!          A well belongs to the sector if ANY rank holds one of its
+    //!          connections, which is why this is a collective and has to be
+    //!          reached on every rank. Answering it rank by rank gives each a
+    //!          different set of absent wells, and the group target correction
+    //!          then subtracts a different amount on each; the ranks proceed to
+    //!          disagree about how the group is controlled, and the first
+    //!          collective that decision reaches no longer matches across them.
+    std::vector<std::string> fluxLocalWellNames_(const std::size_t stepIdx) const
+    {
+        const auto& vanguard = this->simulator().vanguard();
+        const auto& schedule = vanguard.schedule();
+
+        const auto& wellNames = schedule.wellNames(stepIdx);
+
+        auto connected = std::vector<int>(wellNames.size(), 0);
+        std::transform(wellNames.begin(), wellNames.end(), connected.begin(),
+                       [&vanguard, &schedule, stepIdx](const std::string& wellName)
+                       {
+                           const auto& well = schedule.getWell(wellName, stepIdx);
+
+                           return std::any_of(well.getConnections().begin(),
+                                              well.getConnections().end(),
+                                              [&vanguard](const auto& conn)
+                                              {
+                                                  return vanguard.compressedIndex(conn.global_index()) >= 0;
+                                              })
+                               ? 1 : 0;
+                       });
+
+        // Logical OR across the ranks. The well name order comes from the
+        // schedule, so every rank indexes the same wells.
+        if (!connected.empty()) {
+            vanguard.grid().comm().max(connected.data(), connected.size());
+        }
+
+        std::vector<std::string> localWells;
+        for (std::size_t i = 0; i < wellNames.size(); ++i) {
+            if (connected[i] != 0) {
+                localWells.push_back(wellNames[i]);
+            }
+        }
+
+        return localWells;
+    }
+
+    //! \brief Names of the wells that take no part in the sector run.
+    std::vector<std::string> fluxAbsentWellNames_(const std::size_t stepIdx) const
+    {
+        const auto localWells = this->fluxLocalWellNames_(stepIdx);
+        const auto& schedule = this->simulator().vanguard().schedule();
+
+        std::vector<std::string> absentWells;
+        for (const auto& wellName : schedule.wellNames(stepIdx)) {
+            const auto isLocal = std::find(localWells.begin(), localWells.end(), wellName)
+                != localWells.end();
+
+            if (!isLocal) {
+                absentWells.push_back(wellName);
+            }
+        }
+
+        return absentWells;
+    }
+
+    //! \brief Hand the well model the rates of the wells outside the region.
+    //!
+    //! \details A group in the parent deck shares its target among all of its
+    //!          members, but only the members inside the region are simulated
+    //!          here. The others are still in the schedule, and what they
+    //!          produced in the parent run is known, so they take part in group
+    //!          control as wells on individual control at those rates: they
+    //!          count towards every group sum and come off every group target,
+    //!          and are never handed a share of one. Leaving them out entirely
+    //!          lets the sector's own wells take over the whole target, and any
+    //!          group limit, voidage replacement or sales target then sees a
+    //!          fraction of what the parent's did.
+    //!
+    //!          The parent reports only a total reservoir volume per well. Every
+    //!          reader of a producer's reservoir rates sums them over phases, so
+    //!          it is booked against oil, or the first active phase without oil;
+    //!          an injector's goes to the phase it injects.
+    //!
+    //!          Collective, because deciding which wells are absent is.
+    void updateFluxFixedWellRates_(const int episodeIdx, const double start, const double time)
+    {
+        const auto* parent = this->fluxParentSummary_();
+        if ((parent == nullptr) || (episodeIdx < 0)) {
+            return;
+        }
+
+        using Helper = std::remove_reference_t<decltype(this->wellModel_.groupStateHelper())>;
+        using FixedRates = typename Helper::FixedWellRates;
+
+        const auto& schedule = this->simulator().vanguard().schedule();
+        const auto& units = this->simulator().vanguard().eclState().getUnits();
+        const auto stepIdx = static_cast<std::size_t>(episodeIdx);
+
+        // The parent's summary is in the deck's output units; the well model
+        // works in SI.
+        const auto rate = [parent, start, time, &units](const std::string& key,
+                                                        const UnitSystem::measure measure)
+        {
+            const auto value = parent->valueOver(key, start, time);
+            return std::isfinite(value) ? units.to_si(measure, value) : 0.0;
+        };
+
+        const auto firstActive = [](std::initializer_list<unsigned> phases)
+        {
+            for (const auto phaseIdx : phases) {
+                if (FluidSystem::phaseIsActive(phaseIdx)) {
+                    return phaseIdx;
+                }
+            }
+            return *phases.begin();
+        };
+
+        std::unordered_map<std::string, FixedRates> fixed;
+        for (const auto& wellName : this->fluxAbsentWellNames_(stepIdx)) {
+            const auto& well = schedule.getWell(wellName, stepIdx);
+            const auto suffix = std::string{well.isInjector() ? "IR:" : "PR:"} + wellName;
+
+            using M = UnitSystem::measure;
+
+            FixedRates rates{};
+            if (FluidSystem::phaseIsActive(FluidSystem::oilPhaseIdx)) {
+                rates.surface[FluidSystem::oilPhaseIdx] = rate("WO" + suffix, M::liquid_surface_rate);
+            }
+            if (FluidSystem::phaseIsActive(FluidSystem::waterPhaseIdx)) {
+                rates.surface[FluidSystem::waterPhaseIdx] = rate("WW" + suffix, M::liquid_surface_rate);
+            }
+            if (FluidSystem::phaseIsActive(FluidSystem::gasPhaseIdx)) {
+                rates.surface[FluidSystem::gasPhaseIdx] = rate("WG" + suffix, M::gas_surface_rate);
+            }
+
+            const auto bookedTo = [&well, &firstActive]()
+            {
+                if (!well.isInjector()) {
+                    return firstActive({FluidSystem::oilPhaseIdx,
+                                        FluidSystem::waterPhaseIdx,
+                                        FluidSystem::gasPhaseIdx});
+                }
+
+                switch (well.injectorType()) {
+                case InjectorType::GAS:
+                    return static_cast<unsigned>(FluidSystem::gasPhaseIdx);
+                case InjectorType::OIL:
+                    return static_cast<unsigned>(FluidSystem::oilPhaseIdx);
+                default:
+                    return static_cast<unsigned>(FluidSystem::waterPhaseIdx);
+                }
+            }();
+
+            rates.reservoir[bookedTo] = rate("WV" + suffix, M::rate);
+
+            fixed.emplace(wellName, rates);
+        }
+
+        this->wellModel_.groupStateHelper().setFixedWellRates(std::move(fixed));
+    }
+
+    //! \brief Put back this run's own value of every UDQ that sets a group
+    //!        target, over the one the parent summary seeded.
+    //!
+    //! \details The seed is taken at the end of the time step, which is right
+    //!          for a rate -- the parent's rate over the step -- but not for a
+    //!          UDQ read as a target: the parent's group control ran on the
+    //!          value from the start of the step, and a DEFINE evaluated once
+    //!          per step has moved on by the end of it. The UDQ state holds the
+    //!          start-of-step value, as evaluated here.
+    //!
+    //!          Only the I/O rank has it, though. evalSummary() evaluates the
+    //!          UDQs there and shares only the summary state afterwards, which
+    //!          leaves every other rank with whatever it was handed when the
+    //!          deck was distributed, and the group would then be driven to a
+    //!          different target on each. Hence the broadcast, which is why this
+    //!          has to be reached on every rank.
+    void restoreFluxGroupTargetUDQs_(const int episodeIdx)
+    {
+        if ((this->fluxParentSummary_() == nullptr) || (episodeIdx < 0)) {
+            return;
+        }
+
+        auto& vanguard = this->simulator().vanguard();
+        const auto& schedule = vanguard.schedule();
+        const auto stepIdx = static_cast<std::size_t>(episodeIdx);
+
+        // In the order the groups come out of the schedule, so that every rank
+        // builds the same list.
+        std::vector<std::string> udqNames;
+        std::unordered_set<std::string> seen;
+        const auto note = [&udqNames, &seen](const UDAValue& target)
+        {
+            if (target.is<std::string>() && seen.insert(target.get<std::string>()).second) {
+                udqNames.push_back(target.get<std::string>());
+            }
+        };
+
+        for (const auto& groupName : schedule.groupNames(stepIdx)) {
+            const auto& group = schedule.getGroup(groupName, stepIdx);
+
+            if (group.isProductionGroup()) {
+                const auto& production = group.productionProperties();
+                note(production.oil_target);
+                note(production.water_target);
+                note(production.gas_target);
+                note(production.liquid_target);
+                note(production.resv_target);
+            }
+
+            if (group.isInjectionGroup()) {
+                for (const auto& [phase, injection] : group.injectionProperties()) {
+                    note(injection.surface_max_rate);
+                    note(injection.resv_max_rate);
+                    note(injection.target_reinj_fraction);
+                    note(injection.target_void_fraction);
+                }
+            }
+        }
+
+        if (udqNames.empty()) {
+            return;
+        }
+
+        const auto& comm = vanguard.grid().comm();
+        auto values = std::vector<double>(udqNames.size(),
+                                          std::numeric_limits<double>::quiet_NaN());
+
+        if (comm.rank() == 0) {
+            const auto& udqState = vanguard.udqState();
+            std::transform(udqNames.begin(), udqNames.end(), values.begin(),
+                           [&udqState](const std::string& name)
+                           {
+                               return udqState.has(name)
+                                   ? udqState.get(name)
+                                   : std::numeric_limits<double>::quiet_NaN();
+                           });
+        }
+
+        comm.broadcast(values.data(), static_cast<int>(values.size()), 0);
+
+        auto& summaryState = vanguard.summaryState();
+        for (std::size_t i = 0; i < udqNames.size(); ++i) {
+            if (std::isfinite(values[i])) {
+                summaryState.set(udqNames[i], values[i]);
+            }
+        }
+    }
+
     /*!
      * \brief Called by the simulator before each time integration.
      */
@@ -308,11 +642,32 @@ public:
         // found from the step's start: a record ending exactly there describes
         // the step before. And it is chosen ahead of the base class, which
         // caches the boundary state and mass rates from whatever record is
-        // current.
+        // current and starts the well model's step, whose rate converter reads
+        // the record's sums for the cells outside the sector.
         this->refreshFluxBoundaryRecord_(static_cast<double>(this->simulator().time()),
                                          this->fluxStepEndTime_());
 
+        // The parent's rates are averages over its own steps, which need not
+        // be this run's, so everything taken from its summary for this step is
+        // taken over the step: a rate as its average across (start, end], all
+        // else at the end.
+        const auto stepStart = static_cast<double>(this->simulator().time());
+        const auto time = this->fluxStepEndTime_();
+
+        // Ahead of the base class, which starts the well model's time step and
+        // with it the group controls. Refreshed per time step, not per report
+        // step.
+        this->updateFluxFixedWellRates_(this->simulator().episodeIndex(), stepStart, time);
+
         FlowProblemType::beginTimeStep();
+
+        // Seed the summary state from the parent run before anything reads it.
+        // UDA group targets may be driven by UDQs that evolve on every time
+        // step, so this has to follow the time step cadence rather than being
+        // applied once per report step.
+        this->seedParentSummaryState_(stepStart, time);
+        this->restoreFluxGroupTargetUDQs_(this->simulator().episodeIndex());
+
         hybridNewton_.tryApplyHybridNewton();
     }
 

@@ -65,6 +65,7 @@
 #include <opm/simulators/flow/FlowProblemParameters.hpp>
 #include <opm/simulators/flow/FlowThresholdPressure.hpp>
 #include <opm/simulators/flow/flux/FluxBoundary.hpp>
+#include <opm/simulators/flow/flux/ParentSummary.hpp>
 #include <opm/simulators/flow/FlowUtils.hpp>
 #include <opm/simulators/flow/LgrOutputTransGather.hpp>
 #include <opm/simulators/flow/TracerModel.hpp>
@@ -692,6 +693,30 @@ public:
                                     const unsigned boundaryFaceIdx) const
     {
         return transmissibilities_.transmissibilityBoundary(globalSpaceIdx, boundaryFaceIdx);
+    }
+
+    /*!
+     * \brief Pore-volume weighted sums for the cells a USEFLUX run does not
+     *        have, as recorded by the run that produced its boundary data.
+     *
+     * \details Returns false when there are none, which is every run that is
+     *   not reading a .FLUX file. See FluxFile::ReportStep::externalRegionSums
+     *   for the layout.
+     */
+    bool fluxConverterExternalSums(std::array<Scalar, 8>& hydrocarbonPvWeighted,
+                                   std::array<Scalar, 8>& poreVolumeWeighted) const
+    {
+        const auto* fluxStep = this->fluxBoundaryReportStep_();
+        if (fluxStep == nullptr || fluxStep->externalRegionSums.size() != 16) {
+            return false;
+        }
+
+        for (std::size_t i = 0; i < 8; ++i) {
+            hydrocarbonPvWeighted[i] = static_cast<Scalar>(fluxStep->externalRegionSums[i]);
+            poreVolumeWeighted[i] = static_cast<Scalar>(fluxStep->externalRegionSums[i + 8]);
+        }
+
+        return true;
     }
 
     /*!
@@ -1780,8 +1805,15 @@ protected:
         this->fluxBoundaryActiveRecord_ = &blended;
     }
 
+    //! \brief The parent run's summary vectors, or nullptr when unavailable.
+    const ParentSummary* fluxParentSummary_() const
+    {
+        return this->fluxParentSummaryData_.get();
+    }
+
     //! \brief Simulation time, in seconds, at the end of the step that is
-    //!        about to be taken, where the boundary state is sampled for it.
+    //!        about to be taken, where the boundary state and the parent's
+    //!        summary vectors are sampled for it.
     double fluxStepEndTime_() const
     {
         return static_cast<double>(this->simulator().time())
@@ -1832,6 +1864,15 @@ public:
         for (const auto& module : auxCellModules_) {
             module->linearize(matrix, residual);
         }
+    }
+
+    //! \brief The parent run's summary vectors, or nullptr when unavailable.
+    //!
+    //! \details Only populated in a USEFLUX run for which a parent summary
+    //!          source could be located.
+    const ParentSummary* fluxParentSummary() const
+    {
+        return this->fluxParentSummaryData_.get();
     }
 
 private:
@@ -2803,6 +2844,61 @@ protected:
         if (!this->fluxBoundary_->faces().empty()) {
             this->nonTrivialBoundaryConditions_ = true;
         }
+
+        this->loadFluxParentSummary_(fluxData, selectedFluxPath, inputDir, baseName);
+    }
+
+    //! \brief Establish where the reduced run reads the parent run's summary
+    //!        vectors from.
+    //! \details The vectors embedded in the .FLUX file are preferred because
+    //!          they are sampled at sub-report-step resolution and their rate
+    //!          entries are interval averages. Otherwise fall back to the
+    //!          parent run's own summary output. Either way, say so in the log:
+    //!          the two sources have different time resolution and the choice
+    //!          affects the accuracy of the reduced run.
+    void loadFluxParentSummary_(const EclIO::FluxFile::Data&  fluxData,
+                                const std::filesystem::path&  fluxPath,
+                                const std::filesystem::path&  inputDir,
+                                const std::string&            baseName)
+    {
+        this->fluxParentSummaryData_.reset();
+
+        if (auto embedded = ParentSummary::fromFluxFile(fluxData, fluxPath.string());
+            embedded.has_value())
+        {
+            OpmLog::info(fmt::format("USEFLUX: summary vectors loaded from flux file '{}' "
+                                     "({} keys, {} samples)",
+                                     fluxPath.string(),
+                                     embedded->keys().size(),
+                                     embedded->times().size()));
+
+            this->fluxParentSummaryData_ =
+                std::make_shared<ParentSummary>(std::move(*embedded));
+            return;
+        }
+
+        for (const auto* extension : {".ESMRY", ".SMSPEC", ".FSMSPEC"}) {
+            const auto candidate = inputDir / (baseName + extension);
+
+            if (auto external = ParentSummary::fromSummaryFile(candidate);
+                external.has_value())
+            {
+                OpmLog::info(fmt::format("USEFLUX: summary vectors loaded from parent "
+                                         "summary file '{}' ({} keys, {} samples)",
+                                         candidate.string(),
+                                         external->keys().size(),
+                                         external->times().size()));
+
+                this->fluxParentSummaryData_ =
+                    std::make_shared<ParentSummary>(std::move(*external));
+                return;
+            }
+        }
+
+        OpmLog::warning("USEFLUX: no parent summary vectors available, neither embedded "
+                        "in the flux file nor as a parent summary file next to it. "
+                        "Field and group aggregates will only reflect the wells inside "
+                        "the sector.");
     }
 
     // The FLUX file stores total volumetric rates across each boundary face,
@@ -3211,6 +3307,7 @@ protected:
     //! \brief Depth of each sector boundary face, per (cell, direction).
     BCData<Scalar> fluxBoundaryFaceDepth_;
     std::shared_ptr<FluxBoundary> fluxBoundary_;
+    std::shared_ptr<ParentSummary> fluxParentSummaryData_;
     const EclIO::FluxFile::ReportStep* fluxBoundaryActiveRecord_ = nullptr;
     EclIO::FluxFile::ReportStep fluxBoundaryBlendedRecord_;
     bool fluxBoundaryInterpolate_ = true;

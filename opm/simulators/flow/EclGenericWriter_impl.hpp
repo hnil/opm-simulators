@@ -1299,7 +1299,8 @@ evalSummary(const int                                            reportStepNum,
             const InterRegFlowMap&                               interRegFlows,
             SummaryState&                                        summaryState,
             UDQState&                                            udqState,
-            const data::ReservoirCouplingGroupRates*             rcGroupRates)
+            const data::ReservoirCouplingGroupRates*             rcGroupRates,
+            const std::function<void(SummaryState&)>&            beforeUdqEval)
 {
     if (collectOnIORank_.isIORank()) {
         const auto& wellData = this->collectOnIORank_.isParallel()
@@ -1342,6 +1343,10 @@ evalSummary(const int                                            reportStepNum,
         this->eclIO_->summary()
             .eval(reportStepNum, curTime, values, summaryState);
 
+        if (beforeUdqEval) {
+            beforeUdqEval(summaryState);
+        }
+
         // Off-by-one-fun: The reportStepNum argument corresponds to the
         // report step these results will be written to, whereas the
         // argument to UDQ function evaluation corresponds to the report
@@ -1353,9 +1358,11 @@ evalSummary(const int                                            reportStepNum,
                   this->schedule_.wellMatcher(udq_step),
                   this->schedule_[udq_step].group_order(),
                   this->schedule_.segmentMatcherFactory(udq_step),
-                  [es = std::cref(this->eclState_)]() {
+                  [this]() {
                       return std::make_unique<RegionSetMatcher>
-                          (es.get().fipRegionStatistics());
+                          (this->udqRegionStatistics_.has_value()
+                           ? *this->udqRegionStatistics_
+                           : this->eclState_.fipRegionStatistics());
                   },
                   summaryState, udqState);
     }

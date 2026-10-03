@@ -1,0 +1,187 @@
+-- The parent of a sector cut out as a grid of its own (cells 3 to 5).
+--
+-- P1 is in the sector. P2, in the same group, and the injector I1, the only
+-- well of its group, are outside it, and a sector deck cut from this one lists
+-- only P1. G1's target is shared between P1 and P2, P2's rates are weighted
+-- by an efficiency factor, and two UDQs are defined over wells the sector
+-- deck does not have. FLUXALL has the parent report whatever a reduced run
+-- needs of those wells.
+
+RUNSPEC
+
+TITLE
+  Wells outside a cut-out sector: parent /
+
+DIMENS
+  11 1 1 /
+
+OIL
+WATER
+GAS
+
+METRIC
+
+START
+  1 JAN 2020 /
+
+TABDIMS
+  1 1 20 20 1 20 20 1 1 1 1 1 1 1 1 /
+
+WELLDIMS
+  3 2 3 3 /
+
+UDQDIMS
+  10*10 /
+
+UNIFOUT
+
+GRID
+
+DXV
+  11*100 /
+
+DYV
+  1*100 /
+
+DZV
+  1*10 /
+
+TOPS
+  11*2000 /
+
+PORO
+  11*0.25 /
+
+PERMX
+  11*1500 /
+
+PERMY
+  11*1500 /
+
+PERMZ
+  11*150 /
+
+FLUXNUM
+  2*0 3*1 6*0 /
+
+FLUXTYPE
+  PRESSURE /
+
+-- make_flux needs the transmissibilities.
+INIT
+
+
+PROPS
+
+DENSITY
+  800 1000 1.2 /
+
+PVTW
+  250.0 1.03 3.0E-5 0.30 /
+
+PVDO
+  200.0 1.20 0.90
+  300.0 1.10 1.00
+  400.0 1.03 1.10 /
+
+PVDG
+  20.0 0.012 0.020
+  50.0 0.006 0.030
+  100.0 0.003 0.050
+  200.0 0.0015 0.080 /
+
+SWOF
+  0.10 0.00 1.00 0.00
+  0.20 0.05 0.70 0.00
+  0.40 0.30 0.30 0.00
+  0.60 0.70 0.05 0.00
+  0.80 1.00 0.00 0.00 /
+
+SGOF
+  0.00 0.00 1.00 0.00
+  0.05 0.02 0.80 0.00
+  0.20 0.20 0.30 0.00
+  0.40 0.70 0.05 0.00
+  0.70 1.00 0.00 0.00 /
+
+REGIONS
+
+-- Region 1 straddles the sector's edge, region 2 lies wholly outside it.
+FIPNUM
+  5*1 6*2 /
+
+SOLUTION
+
+PRESSURE
+  11*300 /
+
+SWAT
+  11*0.20 /
+
+SGAS
+  11*0.00 /
+
+SUMMARY
+
+FLUXALL
+ALL
+FU_P2
+FU_WSUM
+FU_BHP2
+FU_BP4P2
+FU_RPR1
+FU_ROPR2
+FU_FPR
+
+SCHEDULE
+RPTRST
+  'BASIC=2' /
+
+GRUPTREE
+  'G1' 'FIELD' /
+  'WI' 'FIELD' /
+ /
+
+WELSPECS
+  'P1' 'G1' 4 1 1* 'OIL' /
+  'P2' 'G1' 8 1 1* 'OIL' /
+  'I1' 'WI' 10 1 1* 'WATER' /
+ /
+
+COMPDAT
+  'P1' 4 1 1 1 'OPEN' 2* 0.216 1* 0 1* 'Z' /
+  'P2' 8 1 1 1 'OPEN' 2* 0.216 1* 0 1* 'Z' /
+  'I1' 10 1 1 1 'OPEN' 2* 0.216 1* 0 1* 'Z' /
+ /
+
+WCONPROD
+  'P1' 'OPEN' 'ORAT' 100 4* 50 1* /
+  'P2' 'OPEN' 'ORAT' 100 4* 50 1* /
+ /
+
+WCONINJE
+  'I1' 'WATER' 'OPEN' 'RATE' 60 1* 400 /
+ /
+
+WEFAC
+  'P2' 0.9 /
+ /
+
+UDQ
+  DEFINE FU_P2 WOPR 'P2' * 2 /
+  DEFINE FU_WSUM SUM(WOPR '*') /
+  DEFINE FU_BHP2 WBHP 'P2' /
+  DEFINE FU_BP4P2 WBP4 'P2' /
+  DEFINE FU_RPR1 RPR 1 /
+  DEFINE FU_ROPR2 ROPR 2 /
+  DEFINE FU_FPR FPR /
+/
+
+GCONPROD
+  'G1' 'ORAT' 150 /
+ /
+
+TSTEP
+  6*5 /
+
+END

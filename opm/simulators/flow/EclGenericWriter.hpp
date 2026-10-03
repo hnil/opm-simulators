@@ -30,6 +30,8 @@
 
 #include <opm/models/parallel/tasklets.hpp>
 
+#include <opm/input/eclipse/EclipseState/Grid/FIPRegionStatistics.hpp>
+
 #include <opm/output/data/Groups.hpp>
 
 #include <opm/simulators/flow/CollectDataOnIORank.hpp>
@@ -38,6 +40,7 @@
 #include <opm/simulators/timestepping/SimulatorReport.hpp>
 
 #include <array>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -197,7 +200,8 @@ protected:
                      const InterRegFlowMap&                               interRegFlows,
                      SummaryState&                                        summaryState,
                      UDQState&                                            udqState,
-                     const data::ReservoirCouplingGroupRates*             rcGroupRates = nullptr);
+                     const data::ReservoirCouplingGroupRates*             rcGroupRates = nullptr,
+                     const std::function<void(SummaryState&)>&            beforeUdqEval = {});
 
     CollectDataOnIORankType collectOnIORank_;
     const Grid& grid_;
@@ -209,6 +213,11 @@ protected:
     Scalar restartTimeStepSize_;
     const TransmissibilityType* globalTrans_ = nullptr;
     std::optional<GatheredLgrOutputTrans> gatheredLgrTrans_;
+
+    //! \brief Region sets and IDs the UDQs may refer to, when they are more
+    //!        than the model's own: a sector's UDQs refer to the regions of
+    //!        the model it was cut out of.
+    std::optional<FIPRegionStatistics> udqRegionStatistics_;
     const Dune::CartesianIndexMapper<Grid>& cartMapper_;
     const Dune::CartesianIndexMapper<EquilGrid>* equilCartMapper_;
     // Mapper of collectGrid_; equals equilCartMapper_ outside a parallel LGR run.

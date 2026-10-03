@@ -607,4 +607,167 @@ if (BUILD_FLOW)
         -p "bash ${PROJECT_SOURCE_DIR}/tests/check-onewell-useflux-flux-smoke.sh ${PROJECT_BINARY_DIR}/bin/flow_blackoil ${OPM_COMPARE_ECL_BIN} ${PROJECT_SOURCE_DIR}/tests/data/sector/ONEWELL_DUMPFLUX_FLUX_1D.DATA ${PROJECT_SOURCE_DIR}/tests/data/sector/ONEWELL_USEFLUX_FLUX_1D.DATA"
     )
   endif()
+
+  # ------------------------------------------------------------------------
+  # USEFLUX: the parent's wells, summary vectors and UDQs in a sector run.
+
+  set(_flux_partial_regions_result_path ${PROJECT_BINARY_DIR}/tests/results/flux/flow_blackoil+flux_partial_regions_smoke)
+  opm_add_test(flux_partial_regions_smoke
+      EXE_TARGET flow_blackoil
+    DRIVER_ARGS
+      -i ${PROJECT_SOURCE_DIR}/tests/flux
+      -r ${_flux_partial_regions_result_path}
+      -f FLUX_DUMP_PARTIAL_REGIONS_SMOKE
+      -p "bash ${PROJECT_SOURCE_DIR}/tests/check-flux-partial-regions.sh ${PROJECT_BINARY_DIR}/bin/flow_blackoil ${PROJECT_SOURCE_DIR}/tests/flux/FLUX_DUMP_PARTIAL_REGIONS_SMOKE.DATA ${PROJECT_SOURCE_DIR}/tests/flux/FLUX_USE_PARTIAL_REGIONS_SMOKE.DATA 2"
+  )
+
+  if(OPM_SUMMARY_BIN)
+    set(_make_flux_summary_cadence_result_path ${PROJECT_BINARY_DIR}/tests/results/flux/flow_blackoil+make_flux_summary_cadence_smoke)
+    opm_add_test(make_flux_summary_cadence_smoke
+      EXE_TARGET
+        flow_blackoil
+      DRIVER_ARGS
+        -i ${PROJECT_SOURCE_DIR}/tests/data/sector
+        -r ${_make_flux_summary_cadence_result_path}
+        -f TWOWELL_PARENT_SPARSE_1D
+        -p "bash ${PROJECT_SOURCE_DIR}/tests/check-make-flux-summary-cadence.sh ${PROJECT_BINARY_DIR}/bin/flow_blackoil ${PROJECT_BINARY_DIR}/bin/make_flux ${PROJECT_BINARY_DIR}/bin/inspect_flux ${OPM_SUMMARY_BIN} ${PROJECT_SOURCE_DIR}/tests/data/sector/TWOWELL_PARENT_SPARSE_1D.DATA ${PROJECT_SOURCE_DIR}/tests/data/sector/TWOWELL_USEFLUX_SPARSE_1D.DATA"
+    )
+
+    set(_flux_cutout_wells_result_path ${PROJECT_BINARY_DIR}/tests/results/flux/flow_blackoil+flux_cutout_wells_smoke)
+    opm_add_test(flux_cutout_wells_smoke
+      EXE_TARGET
+        flow_blackoil
+      DRIVER_ARGS
+        -i ${PROJECT_SOURCE_DIR}/tests/data/sector
+        -r ${_flux_cutout_wells_result_path}
+        -f TWOWELL_CUTOUT_PARENT_1D
+        -p "bash ${PROJECT_SOURCE_DIR}/tests/check-flux-cutout-wells.sh ${PROJECT_BINARY_DIR}/bin/flow_blackoil ${PROJECT_BINARY_DIR}/bin/make_flux ${OPM_SUMMARY_BIN} ${PROJECT_SOURCE_DIR}/tests/data/sector/TWOWELL_CUTOUT_PARENT_1D.DATA ${PROJECT_SOURCE_DIR}/tests/data/sector/TWOWELL_CUTOUT_SECTOR_1D.DATA"
+    )
+
+    # Same again, for a sector whose group target is a UDA. The correction
+    # that removes the absent wells' share of that target reads two things
+    # that used to be answered rank by rank: which wells the sector holds,
+    # and the uncorrected value, which only the I/O rank has. Both are now
+    # settled across the ranks, which also means this path carries
+    # collectives and has to be reached on every rank -- if it were not,
+    # this test would hang rather than fail.
+    set(_flux_uda_group_result_path ${PROJECT_BINARY_DIR}/tests/results/flux/flow_blackoil+flux_uda_group_smoke)
+    opm_add_test(flux_uda_group_smoke
+      EXE_TARGET
+        flow_blackoil
+      DRIVER_ARGS
+        -i ${PROJECT_SOURCE_DIR}/tests/flux
+        -r ${_flux_uda_group_result_path}
+        -f FLUX_DUMP_UDA_GROUP_SMOKE
+        -p "bash ${PROJECT_SOURCE_DIR}/tests/check-flux-parallel-consumer.sh ${PROJECT_BINARY_DIR}/bin/flow_blackoil ${OPM_SUMMARY_BIN} ${PROJECT_SOURCE_DIR}/tests/flux/FLUX_DUMP_UDA_GROUP_SMOKE.DATA ${PROJECT_SOURCE_DIR}/tests/flux/FLUX_USE_UDA_GROUP_SMOKE.DATA 2 GOPT:G1 WOPT:P3 FOPT"
+    )
+  endif()
+
+  if(OPM_COMPARE_ECL_BIN)
+    set(_twowell_useflux_flux_result_path ${PROJECT_BINARY_DIR}/tests/results/flux/flow_blackoil+twowell_useflux_flux_smoke)
+    opm_add_test(twowell_useflux_flux_smoke
+      DEPENDS
+        flux_smoke_shape_check
+      EXE_TARGET
+        flow_blackoil
+      DRIVER_ARGS
+        -i ${PROJECT_SOURCE_DIR}/tests/data/sector
+        -r ${_twowell_useflux_flux_result_path}
+        -f TWOWELL_DUMPFLUX_FLUX_1D
+        -p "bash ${PROJECT_SOURCE_DIR}/tests/check-twowell-useflux-smoke.sh ${PROJECT_BINARY_DIR}/bin/flow_blackoil ${OPM_COMPARE_ECL_BIN} ${PROJECT_SOURCE_DIR}/tests/data/sector/TWOWELL_DUMPFLUX_FLUX_1D.DATA ${PROJECT_SOURCE_DIR}/tests/data/sector/TWOWELL_USEFLUX_FLUX_1D.DATA"
+    )
+
+    set(_twowell_useflux_grup_result_path ${PROJECT_BINARY_DIR}/tests/results/flux/flow_blackoil+twowell_useflux_grup_smoke)
+    opm_add_test(twowell_useflux_grup_smoke
+      DEPENDS
+        flux_smoke_shape_check
+      EXE_TARGET
+        flow_blackoil
+      DRIVER_ARGS
+        -i ${PROJECT_SOURCE_DIR}/tests/data/sector
+        -r ${_twowell_useflux_grup_result_path}
+        -f TWOWELL_DUMPFLUX_GRUP_1D
+        -p "bash ${PROJECT_SOURCE_DIR}/tests/check-twowell-useflux-smoke.sh ${PROJECT_BINARY_DIR}/bin/flow_blackoil ${OPM_COMPARE_ECL_BIN} ${PROJECT_SOURCE_DIR}/tests/data/sector/TWOWELL_DUMPFLUX_GRUP_1D.DATA ${PROJECT_SOURCE_DIR}/tests/data/sector/TWOWELL_USEFLUX_GRUP_1D.DATA"
+    )
+
+    set(_twowell_useflux_live_result_path ${PROJECT_BINARY_DIR}/tests/results/flux/flow_blackoil+twowell_useflux_live_smoke)
+    opm_add_test(twowell_useflux_live_smoke
+      EXE_TARGET
+        flow_blackoil
+      DRIVER_ARGS
+        -i ${PROJECT_SOURCE_DIR}/tests/data/sector
+        -r ${_twowell_useflux_live_result_path}
+        -f TWOWELL_DUMPFLUX_LIVE_1D
+        -p "bash ${PROJECT_SOURCE_DIR}/tests/check-twowell-useflux-live-smoke.sh ${PROJECT_BINARY_DIR}/bin/flow_blackoil ${OPM_COMPARE_ECL_BIN} ${PROJECT_SOURCE_DIR}/tests/data/sector/TWOWELL_DUMPFLUX_LIVE_1D.DATA ${PROJECT_SOURCE_DIR}/tests/data/sector/TWOWELL_USEFLUX_LIVE_1D.DATA"
+    )
+
+    set(_twowell_useflux_nnc_result_path ${PROJECT_BINARY_DIR}/tests/results/flux/flow_blackoil+twowell_useflux_nnc_smoke)
+    opm_add_test(twowell_useflux_nnc_smoke
+      EXE_TARGET
+        flow_blackoil
+      DRIVER_ARGS
+        -i ${PROJECT_SOURCE_DIR}/tests/data/sector
+        -r ${_twowell_useflux_nnc_result_path}
+        -f TWOWELL_DUMPFLUX_NNC_1D
+        -p "bash ${PROJECT_SOURCE_DIR}/tests/check-twowell-useflux-nnc-smoke.sh ${PROJECT_BINARY_DIR}/bin/flow_blackoil ${OPM_COMPARE_ECL_BIN} ${PROJECT_SOURCE_DIR}/tests/data/sector/TWOWELL_DUMPFLUX_NNC_1D.DATA ${PROJECT_SOURCE_DIR}/tests/data/sector/TWOWELL_USEFLUX_NNC_1D.DATA"
+    )
+
+    set(_twowell_useflux_pressure_result_path ${PROJECT_BINARY_DIR}/tests/results/flux/flow_blackoil+twowell_useflux_pressure_smoke)
+    opm_add_test(twowell_useflux_pressure_smoke
+      DEPENDS
+        flux_smoke_shape_check
+      EXE_TARGET
+        flow_blackoil
+      DRIVER_ARGS
+        -i ${PROJECT_SOURCE_DIR}/tests/data/sector
+        -r ${_twowell_useflux_pressure_result_path}
+        -f TWOWELL_DUMPFLUX_PRESSURE_1D
+        -p "bash ${PROJECT_SOURCE_DIR}/tests/check-twowell-useflux-smoke.sh ${PROJECT_BINARY_DIR}/bin/flow_blackoil ${OPM_COMPARE_ECL_BIN} ${PROJECT_SOURCE_DIR}/tests/data/sector/TWOWELL_DUMPFLUX_PRESSURE_1D.DATA ${PROJECT_SOURCE_DIR}/tests/data/sector/TWOWELL_USEFLUX_PRESSURE_1D.DATA"
+    )
+
+    set(_twowell_useflux_smry_fallback_result_path ${PROJECT_BINARY_DIR}/tests/results/flux/flow_blackoil+twowell_useflux_smry_fallback_smoke)
+    opm_add_test(twowell_useflux_smry_fallback_smoke
+      DEPENDS
+        flux_smoke_mutate
+      EXE_TARGET
+        flow_blackoil
+      DRIVER_ARGS
+        -i ${PROJECT_SOURCE_DIR}/tests/data/sector
+        -r ${_twowell_useflux_smry_fallback_result_path}
+        -f TWOWELL_DUMPFLUX_FLUX_1D
+        -p "bash ${PROJECT_SOURCE_DIR}/tests/check-twowell-useflux-smry-fallback-smoke.sh ${PROJECT_BINARY_DIR}/bin/flow_blackoil ${PROJECT_BINARY_DIR}/bin/flux_smoke_mutate ${OPM_COMPARE_ECL_BIN} ${PROJECT_SOURCE_DIR}/tests/data/sector/TWOWELL_DUMPFLUX_FLUX_1D.DATA ${PROJECT_SOURCE_DIR}/tests/data/sector/TWOWELL_USEFLUX_FLUX_1D.DATA"
+    )
+
+    # The region map is dimensioned over every cell of the grid, so it also
+    # assigns a region to inactive cells. This case has an inactive cell inside
+    # the region, which is what separates the region from the set of cells that
+    # actually take part in the flow.
+    set(_twowell_useflux_inactive_result_path ${PROJECT_BINARY_DIR}/tests/results/flux/flow_blackoil+twowell_useflux_inactive_smoke)
+    opm_add_test(twowell_useflux_inactive_smoke
+      DEPENDS
+        flux_smoke_shape_check
+      EXE_TARGET
+        flow_blackoil
+      DRIVER_ARGS
+        -i ${PROJECT_SOURCE_DIR}/tests/data/sector
+        -r ${_twowell_useflux_inactive_result_path}
+        -f TWOWELL_DUMPFLUX_INACTIVE_2D
+        -p "bash ${PROJECT_SOURCE_DIR}/tests/check-twowell-useflux-smoke.sh ${PROJECT_BINARY_DIR}/bin/flow_blackoil ${OPM_COMPARE_ECL_BIN} ${PROJECT_SOURCE_DIR}/tests/data/sector/TWOWELL_DUMPFLUX_INACTIVE_2D.DATA ${PROJECT_SOURCE_DIR}/tests/data/sector/TWOWELL_USEFLUX_INACTIVE_2D.DATA"
+    )
+
+    # Boundary data is written per time step by default; the report-step cadence
+    # of earlier versions remains available behind a switch.
+    set(_twowell_useflux_cadence_result_path ${PROJECT_BINARY_DIR}/tests/results/flux/flow_blackoil+twowell_useflux_cadence_smoke)
+    opm_add_test(twowell_useflux_cadence_smoke
+      DEPENDS
+        flux_smoke_shape_check
+      EXE_TARGET
+        flow_blackoil
+      DRIVER_ARGS
+        -i ${PROJECT_SOURCE_DIR}/tests/data/sector
+        -r ${_twowell_useflux_cadence_result_path}
+        -f TWOWELL_DUMPFLUX_FLUX_1D
+        -p "bash ${PROJECT_SOURCE_DIR}/tests/check-twowell-useflux-cadence-smoke.sh ${PROJECT_BINARY_DIR}/bin/flow_blackoil ${OPM_COMPARE_ECL_BIN} ${PROJECT_SOURCE_DIR}/tests/data/sector/TWOWELL_DUMPFLUX_FLUX_1D.DATA ${PROJECT_SOURCE_DIR}/tests/data/sector/TWOWELL_USEFLUX_FLUX_1D.DATA"
+    )
+  endif()
 endif()

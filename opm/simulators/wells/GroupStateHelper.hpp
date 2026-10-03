@@ -41,11 +41,13 @@
 #include <opm/simulators/utils/ParallelCommunication.hpp>
 
 #include <algorithm>
+#include <array>
 #include <map>
 #include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -442,6 +444,34 @@ public:
         report_step_ = report_step;
     }
 
+    /// Rates of a well that belongs to the group tree but is not simulated
+    /// here, so that what it produces or injects is known and fixed.
+    ///
+    /// Indexed by canonical phase (IndexTraits::waterPhaseIdx and friends),
+    /// as positive magnitudes for producers and injectors alike, before any
+    /// efficiency factor.
+    struct FixedWellRates {
+        std::array<Scalar, IndexTraits::numPhases> surface{};
+        std::array<Scalar, IndexTraits::numPhases> reservoir{};
+    };
+
+    /// Take part in group control with wells whose rates cannot respond to it.
+    ///
+    /// A sector run carries the whole schedule, including wells completed
+    /// outside the sector. Those are gone from the grid, but their production
+    /// is known from the run the sector was cut from, and it still counts
+    /// against every group they belong to. Each such well is treated as if it
+    /// were on individual control at the given rates: it contributes to its
+    /// groups' rates and to the target reduction, and it is never handed a
+    /// share of a group target, which it could not follow.
+    ///
+    /// The contributions are added on rank 0 only, like satellite rates,
+    /// since the group sums are reduced across the ranks afterwards.
+    void setFixedWellRates(std::unordered_map<std::string, FixedWellRates> rates)
+    {
+        fixed_well_rates_ = std::move(rates);
+    }
+
     const SummaryState& summaryState() const
     {
         return this->summary_state_;
@@ -806,6 +836,7 @@ private:
     bool terminal_output_ {false};
     int report_step_ {0};
     ReservoirCoupling::Proxy<Scalar> rescoup_{};
+    std::unordered_map<std::string, FixedWellRates> fixed_well_rates_{};
 };
 
 // -----------------------------------------------------------------------------

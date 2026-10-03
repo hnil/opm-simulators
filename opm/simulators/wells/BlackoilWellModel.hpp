@@ -738,6 +738,10 @@ template<class Scalar> class WellContributions;
             void assignWellSpeciesRates_(data::Wells& wsrpt) const;
             void assignWellTracerRates_(data::Wells& wsrpt) const;
 
+            /// @brief Hand the rate converter the parent run's sums for the
+            ///   cells a sector run does not have, as of the current time.
+            void updateRateConverterExternalContribution_();
+
             /// @brief True when this process takes part in a *shared* (cross-rescoup)
             ///   network this sync step: a master with at least one master-group
             ///   network leaf, or a slave connected to the master's network.
