@@ -126,6 +126,8 @@ list (APPEND MAIN_SOURCE_FILES
   opm/simulators/flow/GenericTemperatureModel.cpp
   opm/simulators/flow/GenericThresholdPressure.cpp
   opm/simulators/flow/GenericTracerModel.cpp
+  opm/simulators/flow/flux/FluxActivation.cpp
+  opm/simulators/flow/flux/FluxBoundary.cpp
   opm/simulators/flow/flux/FluxDumper.cpp
   opm/simulators/flow/flux/FluxRegions.cpp
   opm/simulators/flow/HybridNewtonConfig.cpp
@@ -509,6 +511,8 @@ list (APPEND TEST_SOURCE_FILES
   tests/test_glift1.cpp
   tests/test_graphcoloring.cpp
   tests/test_GroupState.cpp
+  tests/test_FluxActivation.cpp
+  tests/test_FluxBoundary.cpp
   tests/test_FluxDumper.cpp
   tests/test_FluxRegions.cpp
   tests/test_injection_topup_phase_validation.cpp
@@ -1122,6 +1126,8 @@ list (APPEND PUBLIC_HEADER_FILES
   opm/simulators/flow/OutputExtractor.hpp
   opm/simulators/flow/flux/FluxDumper.hpp
   opm/simulators/flow/flux/FluxRegions.hpp
+  opm/simulators/flow/flux/FluxActivation.hpp
+  opm/simulators/flow/flux/FluxBoundary.hpp
   opm/simulators/flow/partitionCells.hpp
   opm/simulators/flow/PolyhedralGridVanguard.hpp
   opm/simulators/flow/priVarsPacking.hpp
@@ -1493,6 +1499,7 @@ list (APPEND EXAMPLE_SOURCE_FILES
   examples/diffusion_pvs.cpp
   examples/groundwater_immiscible.cpp
   examples/infiltration_pvs.cpp
+  examples/inspect_flux.cpp
   examples/lens_immiscible_ecfv_ad.cpp
   examples/lens_immiscible_ecfv_ad_23.cpp
   examples/lens_immiscible_ecfv_ad_trans.cpp
