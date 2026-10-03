@@ -938,6 +938,29 @@ BOOST_AUTO_TEST_CASE(a_shut_well_puts_nothing_into_its_node)
     }
 }
 
+// The judge counts nothing from a shut well either, whatever rounding its oil rate carries: with
+// 1e-18 it took the water line at the oil line's shut-in bhp and wanted the branch 2 bar higher
+// than the route's answer (MODEL5 MSW's C-1H, every such answer rejected).
+BOOST_AUTO_TEST_CASE(the_judge_counts_nothing_from_a_shut_well)
+{
+    ProductionCase c;
+    auto& w0 = c.wells()[0];
+    w0.ipr_a[0] = -w0.ipr_b[0] * convert::from(150.0, bars);
+    auto system = c.system();
+    system.resetDead();
+    system.killWell(0);
+    const auto r = NetworkSolve::solveReduced(system, ProductionCase::guess(), kParams, /*eliminate=*/true,
+                                              NetworkSolve::CliffRule::Die, /*keep_dead=*/true);
+    BOOST_REQUIRE(r.converged);
+    std::string letters;
+    for (int w = 0; w < system.numWells(); ++w) { letters += system.controlLetter(w); }
+    BOOST_REQUIRE_EQUAL(letters[0], 'S');
+    auto q = r.well_rate;
+    q[0] = 1e-18;
+    const auto v = NetworkSolve::verifyAnswer(system, r.node_pressure, q, letters);
+    BOOST_CHECK_EQUAL(v.violations.count("node pressure off its branch"), 0u);
+}
+
 // The same for an injection network: a well at half efficiency halves what the
 // branch carries, and the analytic Jacobian has to know it.
 BOOST_AUTO_TEST_CASE(injection_efficiency_enters_the_branch)

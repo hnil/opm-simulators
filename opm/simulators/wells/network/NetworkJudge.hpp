@@ -70,7 +70,10 @@ Verdict verifyAnswer(const Sys& sys, const std::vector<double>& p, const std::ve
         // The pressure at the well head: its own thp limit on the no-network route.
         const double pw = well.own_thp > 0.0 ? well.own_thp : p[well.node];
         bhp[w] = (qo > 0.0 && well.ipr_b[1] < 0.0) ? (qo - well.ipr_a[1]) / well.ipr_b[1] : well.bhp_limit;
-        for (int ph = 0; ph < NP; ++ph) { q[w][ph] = qo > 0.0 ? std::max(sys.ipr(well, ph, bhp[w]), 0.0) : 0.0; }
+        // A shut or dead well puts nothing into its node, whatever rounding its oil rate carries:
+        // its water and gas lines would still flow at the oil line's shut-in bhp (MODEL5 MSW's C-1H).
+        const bool off = well.shut || c == 'S' || c == 'D';
+        for (int ph = 0; ph < NP; ++ph) { q[w][ph] = (qo > 0.0 && !off) ? std::max(sys.ipr(well, ph, bhp[w]), 0.0) : 0.0; }
         if (well.shut || c == 'S' || c == 'D') {
             if (qo > 1e-9) { fail("shut well producing"); }
             // The branch rule: shut only because nothing can lift it.
