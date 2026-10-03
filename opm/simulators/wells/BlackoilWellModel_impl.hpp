@@ -199,6 +199,32 @@ namespace Opm {
     template<typename TypeTag>
     void
     BlackoilWellModel<TypeTag>::
+    updateRateConverterExternalContribution_()
+    {
+        // A sector run only has part of the original model, so averaging over
+        // its own cells alone would give a well on a reservoir-volume target a
+        // different target than it had in the full model. The run that produced
+        // its boundary data recorded the sums for everything outside, which are
+        // added here.
+        //
+        // Every time the converter's state is defined, not once per report
+        // step: the full model redefines it at the end of every time step, and
+        // an outside contribution left at the report step's opening value would
+        // be paired with this grid's cells as they stand steps later.
+        std::array<Scalar, 8> hydrocarbonPvWeighted{};
+        std::array<Scalar, 8> poreVolumeWeighted{};
+        if (this->simulator_.problem().fluxConverterExternalSums(hydrocarbonPvWeighted,
+                                                                 poreVolumeWeighted))
+        {
+            this->rateConverter_->setExternalContribution(0,
+                                                          hydrocarbonPvWeighted,
+                                                          poreVolumeWeighted);
+        }
+    }
+
+    template<typename TypeTag>
+    void
+    BlackoilWellModel<TypeTag>::
     beginReportStep(const int timeStepIdx)
     {
         this->groupStateHelper().setReportStep(timeStepIdx);
@@ -207,6 +233,8 @@ namespace Opm {
 
         this->rateConverter_ = std::make_unique<RateConverterType>
             (std::vector<int>(this->local_num_cells_, 0));
+
+        this->updateRateConverterExternalContribution_();
 
         {
             const bool initializeWellState = !this->deserialized_state_pending_;
@@ -746,6 +774,7 @@ namespace Opm {
         }
 
         // update the rate converter with current averages pressures etc in
+        this->updateRateConverterExternalContribution_();
         rateConverter_->template defineState<ElementContext>(simulator_);
 
         // calculate the well potentials

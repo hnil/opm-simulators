@@ -104,6 +104,9 @@ public:
     const data::Wells& globalWellData() const
     { return globalWellData_; }
 
+    data::Wells& globalWellData()
+    { return globalWellData_; }
+
     const data::WellBlockAveragePressures& globalWBPData() const
     { return this->globalWBPData_; }
 

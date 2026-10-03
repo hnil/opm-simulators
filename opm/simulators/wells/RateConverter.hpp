@@ -198,9 +198,56 @@ namespace Opm {
 
                 OPM_END_PARALLEL_TRY_CATCH("SurfaceToReservoirVoidage::defineState() failed: ", simulator.vanguard().grid().comm());
 
+                // Cells this grid does not have. A sector run gets these sums
+                // from the full-field run that produced its boundary data, and
+                // adds them here, before the normalisation, so that the average
+                // is taken over the whole of the original model. When the
+                // sector reproduces the full-field run the result is identical
+                // to it; when the sector is changed, only its own contribution
+                // moves, which is the part it actually simulates.
+                //
+                // Added on one rank only, because sumRates reduces across all
+                // of them.
+                if (comm.rank() == 0) {
+                    const auto addExternal = [](const auto& external, auto& attributes)
+                    {
+                        for (const auto& [reg, ext] : external) {
+                            auto pos = attributes.find(reg);
+                            if (pos == attributes.end()) {
+                                continue;
+                            }
+
+                            for (std::size_t i = 0; i < ext.size(); ++i) {
+                                pos->second.data[i] += ext[i];
+                            }
+                        }
+                    };
+
+                    addExternal(this->externalHpv_, attributes_hpv);
+                    addExternal(this->externalPv_, attributes_pv);
+                }
+
                 this->sumRates(attributes_hpv,
                                attributes_pv,
                                comm);
+            }
+
+            /**
+             * Pore-volume weighted sums for cells outside this grid.
+             *
+             * \details Both arrays are un-normalised sums in the same layout
+             * as the internal accumulation: pressure, temperature, rs, rv, rsw,
+             * rvw, pv and salt concentration, each already multiplied by its
+             * weight. The first is weighted by hydrocarbon pore volume and the
+             * second by total pore volume. They are added to this grid's own
+             * sums before the averages are formed.
+             */
+            void setExternalContribution(const typename RegionMapping<Region>::RegionId r,
+                                         const std::array<Scalar, 8>& hydrocarbonPvWeighted,
+                                         const std::array<Scalar, 8>& poreVolumeWeighted)
+            {
+                this->externalHpv_[r] = hydrocarbonPvWeighted;
+                this->externalPv_[r] = poreVolumeWeighted;
             }
 
             /**
@@ -415,6 +462,11 @@ namespace Opm {
                           Parallel::Communication comm);
 
             RegionAttributeHelpers::RegionAttributes<RegionId, Attributes> attr_;
+
+            //! \brief Sums contributed by cells outside this grid, empty unless
+            //!        set by setExternalContribution().
+            std::unordered_map<RegionId, std::array<Scalar, 8>> externalHpv_{};
+            std::unordered_map<RegionId, std::array<Scalar, 8>> externalPv_{};
         };
 
     } // namespace RateConverter

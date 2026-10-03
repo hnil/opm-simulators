@@ -1,0 +1,159 @@
+RUNSPEC
+
+TITLE
+  2D sector run with an inactive cell inside the FLUX region /
+
+DIMENS
+  11 3 1 /
+
+OIL
+WATER
+GAS
+
+METRIC
+
+START
+  1 JAN 2020 /
+
+TABDIMS
+  1 1 20 20 1 20 20 1 1 1 1 1 1 1 1 /
+
+WELLDIMS
+  2 2 2 2 /
+
+UDQDIMS
+  10*10 /
+
+UNIFOUT
+
+GRID
+
+DXV
+  11*100 /
+
+DYV
+  3*100 /
+
+DZV
+  1*10 /
+
+TOPS
+  33*2000 /
+
+PORO
+  33*0.25 /
+
+PERMX
+  33*1500 /
+
+PERMY
+  33*1500 /
+
+PERMZ
+  33*150 /
+
+-- Same inactive cell as the parent run. The sector's ACTNUM is the region
+-- selection combined with this array, so cell (4,1,1) must stay inactive and
+-- must not be counted when boundary faces are mapped onto active cells.
+ACTNUM
+  3*1 0 29*1 /
+
+FLUXNUM
+  2*0 3*1 6*0
+  2*0 3*1 6*0
+  2*0 3*1 6*0 /
+
+FLUXREG
+  1 /
+
+FLUXTYPE
+  FLUX /
+
+USEFLUX
+ 1* /
+
+
+PROPS
+
+DENSITY
+  800 1000 1.2 /
+
+PVTW
+  250.0 1.03 3.0E-5 0.30 /
+
+PVDO
+  200.0 1.20 0.90
+  300.0 1.10 1.00
+  400.0 1.03 1.10 /
+
+PVDG
+  20.0 0.012 0.020
+  50.0 0.006 0.030
+  100.0 0.003 0.050
+  200.0 0.0015 0.080 /
+
+SWOF
+  0.10 0.00 1.00 0.00
+  0.20 0.05 0.70 0.00
+  0.40 0.30 0.30 0.00
+  0.60 0.70 0.05 0.00
+  0.80 1.00 0.00 0.00 /
+
+SGOF
+  0.00 0.00 1.00 0.00
+  0.05 0.02 0.80 0.00
+  0.20 0.20 0.30 0.00
+  0.40 0.70 0.05 0.00
+  0.70 1.00 0.00 0.00 /
+
+SOLUTION
+
+PRESSURE
+  33*300 /
+
+SWAT
+  33*0.20 /
+
+SGAS
+  33*0.00 /
+
+SUMMARY
+
+ALL
+PERFORMA
+
+SCHEDULE
+UDQ
+  ASSIGN FUORAT 50 /
+  DEFINE FUORAT FUORAT + 5 /
+/
+RPTRST
+  'BASIC=2' 'FLOWS' 'FLORES' /
+
+GRUPTREE
+  'G1' 'FIELD' /
+ /
+
+WELSPECS
+  'P1' 'G1' 4 2 1* 'OIL' 2* 'SHUT' /
+  'P2' 'G1' 8 2 1* 'OIL' 2* 'SHUT' /
+ /
+
+COMPDAT
+  'P1' 4 2 1 1 'OPEN' 2* 0.216 1* 0 1* 'Z' /
+  'P2' 8 2 1 1 'OPEN' 2* 0.216 1* 0 1* 'Z' /
+ /
+
+WCONPROD
+  'P1' 'OPEN' 'ORAT' 100 4* 50 1* /
+  'P2' 'OPEN' 'ORAT' 100 4* 50 1* /
+ /
+
+GCONPROD
+  'G1' 'ORAT' FUORAT /
+ /
+
+TSTEP
+  6*5 /
+
+END
