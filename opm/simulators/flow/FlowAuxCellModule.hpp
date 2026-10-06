@@ -183,6 +183,10 @@ public:
     virtual LocalStepTolerance localStepTolerance() const
     { return {}; }
 
+    //! Newton temperature step limit [K] for these cells; <= 0 keeps the global one.
+    virtual double maxTemperatureChange() const
+    { return 0.0; }
+
     /*!
      * \brief Whether this auxiliary cell currently takes part in the flow problem.
      *

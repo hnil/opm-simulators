@@ -72,6 +72,7 @@ class BlackOilNewtonMethod : public GetPropType<TypeTag, Properties::DiscNewtonM
     using FluidSystem = GetPropType<TypeTag, Properties::FluidSystem>;
     using Scalar = GetPropType<TypeTag, Properties::Scalar>;
     using Linearizer = GetPropType<TypeTag, Properties::Linearizer>;
+    using Problem = GetPropType<TypeTag, Properties::Problem>;
     static constexpr bool enableBioeffects = getPropValue<TypeTag, Properties::EnableBioeffects>();
     using BioeffectsModule = BlackOilBioeffectsModule<TypeTag, enableBioeffects>;
 
@@ -341,8 +342,15 @@ protected:
                 delta *= satAlpha;
             }
             else if (enableFullyImplicitThermal && pvIdx == Indices::temperatureIdx) {
+                Scalar maxChange = bparams_.maxTempChange_;
+                if constexpr (requires (const Problem& p) { p.auxMaxTemperatureChange(0u); }) {
+                    const Scalar auxMax = this->problem().auxMaxTemperatureChange(globalDofIdx);
+                    if (auxMax > 0.0) {
+                        maxChange = auxMax;
+                    }
+                }
                 const double sign = delta >= 0. ? 1. : -1.;
-                delta = sign * std::min(std::abs(delta), bparams_.maxTempChange_);
+                delta = sign * std::min(std::abs(delta), maxChange);
             }
             else if (enableBrine && pvIdx == Indices::saltConcentrationIdx &&
                      enableSaltPrecipitation &&

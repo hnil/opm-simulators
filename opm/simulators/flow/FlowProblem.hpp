@@ -1854,6 +1854,23 @@ protected:
         return 0;
     }
 
+public:
+    //! Newton temperature step limit of an auxiliary cell, or <= 0 for the global one.
+    Scalar auxMaxTemperatureChange(unsigned globalDofIdx) const
+    {
+        if (globalDofIdx < this->model().numGridDof()) {
+            return 0.0;
+        }
+        for (const auto& module : this->auxCellModules_) {
+            const auto begin = static_cast<unsigned>(module->dofOffset());
+            if ((globalDofIdx >= begin) && (globalDofIdx < begin + module->numDofs())) {
+                return static_cast<Scalar>(module->maxTemperatureChange());
+            }
+        }
+        return 0.0;
+    }
+
+protected:
     //! Depth of an auxiliary cell, by global degree of freedom index.
     Scalar auxCellDepth_(unsigned globalSpaceIdx) const
     {
