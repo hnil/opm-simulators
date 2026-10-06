@@ -281,6 +281,13 @@ pressureImbalance(const int reportStepIdx) const
             worst = {diff, name};
         }
     }
+    // The recomputation above shares the walk through the trees; each node's own row does not.
+    const NetworkPressureComputation<BlackoilWellModelGeneric<Scalar, IndexTraits>, VFPProdProperties<Scalar>>
+        rows(well_model_, network, *well_model_.getVFPProperties().getProd(), well_model_.schedule().getUnits(),
+             reportStepIdx, well_model_.comm());
+    if (const auto row = rows.worstRowResidual(node_pressures_); row.first > worst.first) {
+        worst = row;
+    }
     return worst;
 }
 

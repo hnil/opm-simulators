@@ -36,6 +36,8 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cmath>
+#include <limits>
 #include <map>
 #include <ranges>
 #include <set>
@@ -179,6 +181,50 @@ public:
         }
 
         return {node_pressures_, branch_data_};
+    }
+
+    /// The worst node row at these pressures, each node from its own branch and its parent's pressure
+    /// alone, so a wrong walk through the trees cannot pass its own check. A node or parent missing from
+    /// the pressures counts as infinitely off.
+    std::pair<Scalar, std::string> worstRowResidual(const std::map<std::string, Scalar>& pressures) const
+    {
+        using Calc = NetworkVfpPressureCalculator<Scalar, IndexTraits, VfpProperties>;
+        std::pair<Scalar, std::string> worst{Scalar{0}, ""};
+        for (const auto& root : network_.roots()) {
+            if (network_.uptree_branch(root.get().name())) {
+                continue;
+            }
+            const auto [nodes, leaves] = collectTreeNodes(root.get().name());
+            auto inflows = initializeLeafInflows(leaves);
+            accumulateInflows(nodes, inflows);
+            for (const auto& node : nodes) {
+                const auto& n = network_.node(node);
+                const auto upbranch = network_.uptree_branch(node);
+                if (!n.terminal_pressure() && n.as_choke()) {
+                    continue;
+                }
+                Scalar off = std::numeric_limits<Scalar>::infinity();
+                const auto at = pressures.find(node);
+                const auto up = upbranch ? pressures.find((*upbranch).uptree_node()) : pressures.end();
+                if (at != pressures.end() && (n.terminal_pressure() || up != pressures.end())) {
+                    Scalar want = 0;
+                    if (n.terminal_pressure()) {
+                        want = *n.terminal_pressure();
+                    } else if (!(*upbranch).vfp_table()) {
+                        want = up->second;
+                    } else {
+                        auto rates = inflows.at(node);
+                        Calc::prepareRates(rates);
+                        want = Calc::compute(vfp_props_, *(*upbranch).vfp_table(), rates, up->second, *upbranch, unit_system_);
+                    }
+                    off = std::abs(at->second - want);
+                }
+                if (off > worst.first) {
+                    worst = {off, node};
+                }
+            }
+        }
+        return worst;
     }
 
 private:
