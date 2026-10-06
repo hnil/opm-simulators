@@ -1660,8 +1660,8 @@ applyHostTransToRefinedFaces_()
                 }
 
                 const auto& geom = is.geometry();
-                DimVector areaNormal = is.centerUnitOuterNormal();
-                areaNormal *= geom.volume();
+                // The unrefined grid's area convention, as the main loop uses on level zero.
+                DimVector areaNormal = grid_.faceAreaNormalEcl(is.id(), 0);
 
                 DimVector d = faceCentre(f);
                 d -= centre;
