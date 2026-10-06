@@ -151,7 +151,10 @@ public:
     using IndexTraits = GenericWellModel::IndexTraits;
     std::pair<std::map<std::string, Scalar>, std::map<std::string, data::BranchData>> run()
     {
-        const auto roots = network_.roots();
+        // True roots first: a fixed-pressure node below another node is computed in its parent's tree.
+        auto roots = network_.roots();
+        std::ranges::stable_partition(roots, [this](const auto& root)
+                                      { return !network_.uptree_branch(root.get().name()).has_value(); });
         for (const auto& root : roots) {
             // Fixed pressure nodes of the network are the roots of trees.
             // Leaf nodes must correspond to groups in the group structure.
@@ -309,9 +312,10 @@ private:
 
             if (terminal_pressure) {
                 node_pressures_[node] = *terminal_pressure;
-                if (upbranch) {
+                const auto up = upbranch ? node_pressures_.find((*upbranch).uptree_node()) : node_pressures_.end();
+                if (up != node_pressures_.end()) {
                     // If terminal pressure is specified on a non-root node, we still want to calculate the branch data for the uptree branch.
-                    const Scalar up_press = node_pressures_[(*upbranch).uptree_node()];
+                    const Scalar up_press = up->second;
                     auto rates = node_inflows.at(node);
                     branch_data_.try_emplace(node,
                                              *terminal_pressure - up_press,
@@ -325,7 +329,7 @@ private:
                 continue;
             }
 
-            const Scalar up_press = node_pressures_[(*upbranch).uptree_node()];
+            const Scalar up_press = node_pressures_.at((*upbranch).uptree_node());
             const auto vfp_table = (*upbranch).vfp_table();
             if (!vfp_table) {
                 // Table number specified as 9999 in the deck, no pressure loss.
