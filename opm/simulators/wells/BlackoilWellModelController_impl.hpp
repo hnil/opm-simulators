@@ -481,9 +481,10 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                                         branch.vfp_table().value_or(NetworkSolve::NoTable)};
                 node.efficiency = child_node.efficiency();
                 system.addNode(std::move(node), alq);
-                // Satellite production: a rate with no well behind it.
-                const auto& grp = schedule.getGroup(child, reportStepIdx);
-                if (grp.hasSatelliteProduction()) {
+                // Satellite production: a rate with no well behind it. An extended network's node need
+                // not be a group; it is then only a pass-through node.
+                if (schedule.hasGroup(child, reportStepIdx)
+                    && schedule.getGroup(child, reportStepIdx).hasSatelliteProduction()) {
                     const auto& gsat = schedule[reportStepIdx].satelliteProduction;
                     if (gsat.has(child)) {
                         const auto r = gsat.get(child).getRates(summary_state);
