@@ -76,7 +76,8 @@ solveReducedOnExtension(Sys& system,
                         const Parameters<typename Sys::ScalarType> params,
                         const Closing closing = Closing::All,
                         const int max_passes = 20,
-                        const bool keep_dead = false)
+                        const bool keep_dead = false,
+                        const typename Sys::ScalarType below_table_tol = 0)
 {
     using Scalar = typename Sys::ScalarType;
     constexpr int NP = Sys::NP;
@@ -109,7 +110,13 @@ solveReducedOnExtension(Sys& system,
             const Scalar p_node = well.own_thp > Scalar{0} ? well.own_thp
                                 : well.node == 0 ? system.terminalPressure() : p[well.node];
             const auto tp = system.touchingPoint(well, p_node, q);
-            if (tp.valid && tp.gap > Scalar{0}) { on.push_back({w, tp.gap, tp.res, bhp}); }
+            if (tp.valid && tp.gap > Scalar{0}) { on.push_back({w, tp.gap, tp.res, bhp}); continue; }
+            // At fixed fractions the line still crosses, at the true ones the table wants more than the
+            // bhp gives: no operating point, as the judge reads it (NORNE-NET-01 E-4AH).
+            if (below_table_tol > Scalar{0}) {
+                const Scalar short_by = system.tableBhp(well, p_node, q) - well.vfp_dp - bhp;
+                if (short_by > below_table_tol) { on.push_back({w, short_by, short_by, bhp}); }
+            }
         }
         if (on.empty()) { out.converged = true; break; }
         std::sort(on.begin(), on.end(), [](const Candidate& a, const Candidate& b) { return a.gap > b.gap; });

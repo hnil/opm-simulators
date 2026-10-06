@@ -50,6 +50,8 @@ struct Verdict
     std::vector<double> over_ratio;      // their rate on mode over the target
     int over_irreducible = 0;            // groups above their target with nothing left to reduce
     std::vector<int> wells_unliftable;   // non-thp wells whose tubing cannot lift their rate
+    std::vector<std::pair<int, double>> wells_off_curve;  // thp wells and their bhp minus the table's
+    std::vector<int> wells_open_at_zero;
 };
 
 template<class Sys>
@@ -81,7 +83,7 @@ Verdict verifyAnswer(const Sys& sys, const std::vector<double>& p, const std::ve
                 && !(well.dead_above > 0.0 && pw >= well.dead_above)) { ++v.hysteresis; }
             continue;
         }
-        if (!(qo > 0.0)) { fail("open well at zero"); continue; }
+        if (!(qo > 0.0)) { fail("open well at zero"); v.wells_open_at_zero.push_back(w); continue; }
         if (well.pinned) {
             if (std::abs(qo - well.oil_rate_limit) > r_tol * well.oil_rate_limit) { fail("pinned well off its rate"); }
             continue;
@@ -91,7 +93,10 @@ Verdict verifyAnswer(const Sys& sys, const std::vector<double>& p, const std::ve
         if (well.vfp_table > 0) {
             const double need = sys.tableBhp(well, pw, q[w]) - well.vfp_dp;
             if (c == 'T') {
-                if (std::abs(bhp[w] - need) > dp_tol) { fail("thp well off its tubing curve"); }
+                if (std::abs(bhp[w] - need) > dp_tol) {
+                    fail("thp well off its tubing curve");
+                    v.wells_off_curve.emplace_back(w, bhp[w] - need);
+                }
                 if (sys.thpPotential(well, pw) > 0.0
                     && std::abs(qo - sys.thpPotential(well, pw)) > r_tol * qo) { fail("thp well not on the stable crossing"); }
             } else if (need > bhp[w] + dp_tol && qo > 1.0 / 86400.0) {

@@ -1095,7 +1095,8 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
             const auto rule = param_.group_controller_closing_ == "worst"  ? NetworkSolve::Closing::Sequential
                             : param_.group_controller_closing_ == "tiered" ? NetworkSolve::Closing::Tiered
                                                                            : NetworkSolve::Closing::All;
-            auto ex = NetworkSolve::solveReducedOnExtension(system, start, params, rule, 20, keep_dead);
+            auto ex = NetworkSolve::solveReducedOnExtension(system, start, params, rule, 20, keep_dead,
+                                                              param_.group_controller_network_tolerance_);
             if (std::getenv("OPM_CONTROLLER_TRACE")) {
                 deferred_logger.debug(fmt::format("EXTDBG step={} it={} passes={} closed={} of {} wells",
                                                   reportStepIdx, simulator_.problem().iterationContext().iteration(),
@@ -1443,6 +1444,16 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                 for (const int w : verdict.wells_unliftable) {
                     names += fmt::format(" [cannot lift: {} {} {:.1f}]", system.wells()[w].name, system.controlLetter(w),
                                          rr.well_rate[w] * 86400.0);
+                }
+                for (const auto& [w, gap] : verdict.wells_off_curve) {
+                    const auto& well = system.wells()[w];
+                    const double pw = well.own_thp > 0.0 ? well.own_thp : rr.node_pressure[well.node];
+                    names += fmt::format(" [off curve: {} {:.1f} sm3/d, bhp {:+.3f} bar from the table, thp {:.2f}, gap {:.3f}]",
+                                         well.name, rr.well_rate[w] * 86400.0, gap / unit::barsa, pw / unit::barsa,
+                                         system.tubingGap(well, pw, system.ratesAt(well, (rr.well_rate[w] - well.ipr_a[1]) / well.ipr_b[1])) / unit::barsa);
+                }
+                for (const int w : verdict.wells_open_at_zero) {
+                    names += fmt::format(" [open at zero: {} {}]", system.wells()[w].name, system.controlLetter(w));
                 }
                 const auto& groups = system.groups();
                 for (std::size_t k = 0; k < verdict.groups_over.size(); ++k) {

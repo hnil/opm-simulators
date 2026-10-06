@@ -1066,18 +1066,43 @@ public:
                 for (int ph = 0; ph < NP; ++ph) { q[ph] = std::max(ipr(w, ph, b), Scalar{0}); }
                 return q;
             };
+            // On the table itself: continuous, and where it has a root the continued curve equals it.
             auto h = [&](const Scalar b) {
                 ++lookups_;
-                return b - (tubingBhp(w, p_node, rates(b)) - dp);
+                return b - (tableBhp(w, p_node, rates(b)) - dp);
             };
             // Bracketed, and only the root with the stable crossing's sign
             // pattern (h rising through zero): an unguarded secant from
             // here walked to the unstable crossing of the same tubing curve
             // and the rate jumped by half between two nearby pressures.
-            Scalar lo = bhp * Scalar{0.9}, hi = bhp * Scalar{1.1};
-            Scalar hlo = h(lo), hhi = h(hi);
+            // Walked, not a fixed +-10 %: near the cliff both crossings are within a few percent.
+            const Scalar h0 = h(bhp);
+            Scalar lo = bhp, hi = bhp, hlo = h0, hhi = h0;
+            const Scalar step = Scalar{0.25} * unit::barsa;
+            if (h0 > Scalar{0}) {
+                for (Scalar d = step; hlo >= Scalar{0} && bhp - d > Scalar{0}; d *= 2) { lo = bhp - d; hlo = h(lo); }
+            } else if (h0 < Scalar{0}) {
+                // Uphill to the hump, below the oil shut-in (above it water and gas cross with no oil).
+                const Scalar oil_shut = w.ipr_b[1] < Scalar{0} ? -w.ipr_a[1] / w.ipr_b[1]
+                                                               : std::numeric_limits<Scalar>::max();
+                const Scalar dir = h(bhp + step) >= h0 ? Scalar{1} : Scalar{-1};
+                Scalar b = bhp, hb = h0;
+                bool above = false, found = false, none = false;
+                for (int k = 1; k <= 400 && !found; ++k) {
+                    const Scalar bn = bhp + dir * k * step;
+                    if (!(bn > Scalar{0}) || bn >= oil_shut) { none = !above; break; }
+                    const Scalar hn = h(bn);
+                    if (dir > 0 && hn > Scalar{0}) { lo = b; hlo = hb; hi = bn; hhi = hn; found = true; }
+                    else if (dir < 0 && !above && hn > Scalar{0}) { hi = bn; hhi = hn; above = true; }
+                    else if (dir < 0 && above && hn < Scalar{0}) { lo = bn; hlo = hn; found = true; }
+                    else if (!above && hn < hb) { none = true; break; }
+                    b = bn; hb = hn;
+                }
+                // No crossing on the table; on the extension the continued one stands.
+                if (none && !tubing_extension_) { return Scalar{0}; }
+            }
             if (hlo < Scalar{0} && hhi > Scalar{0}) {
-                Scalar b1 = bhp, h1 = h(b1);
+                Scalar b1 = bhp, h1 = h0;
                 int side = 0;
                 for (int it = 0; it < 8 && std::abs(h1) > Scalar{1e-4} * unit::barsa; ++it) {
                     (h1 < Scalar{0} ? lo : hi) = b1;

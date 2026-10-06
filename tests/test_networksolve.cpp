@@ -817,6 +817,64 @@ BOOST_AUTO_TEST_CASE(the_judge_reads_a_thp_well_at_its_own_limit)
     BOOST_CHECK(v.ok);
 }
 
+// Near the cliff the hump's unstable crossing comes within 10 % of the stable one, and a
+// thp potential polished only inside a +-10 % bracket stayed off the table (NORNE-NET-01 E-4AH).
+BOOST_AUTO_TEST_CASE(a_thp_potential_near_the_cliff_is_on_the_table)
+{
+    using Sys = NetworkSolve::ProductionSystem<double>;
+    const auto deck = Parser{}.parseString(R"(
+VFPPROD
+     5     250.00      LIQ        WCT         GOR         THP        GRAT      METRIC   BHP      /
+       20.0       100.0    1000.0     2000.0 /
+      10.00      50.00 /
+      0.000      0.5      1.0 /
+       100.0 /
+        0.0 /
+  1  1  1  1   210.0  110.0  120.0  160.0 /
+  1  2  1  1   215.0  115.0  125.0  165.0 /
+  1  3  1  1   220.0  120.0  130.0  170.0 /
+  2  1  1  1   270.0  170.0  180.0  220.0 /
+  2  2  1  1   275.0  175.0  185.0  225.0 /
+  2  3  1  1   280.0  180.0  190.0  230.0 /
+)");
+    const VFPProdTable table(deck["VFPPROD"].front(), /*gaslift_opt_active=*/false, UnitSystem{});
+    VFPProdProperties<double> props;
+    props.addTable(table);
+    Sys system(props, UnitSystem{});
+    system.addNode(NetworkSolve::Node{"TERM", -1, NetworkSolve::NoTable}, 0.0);
+    Sys::Well w;
+    w.name = "P";
+    w.vfp_table = 5;
+    w.bhp_limit = convert::from(1.0, bars);
+    // Water shuts in above oil, so the cut moves along the line and fixed fractions miss the root.
+    const double q0 = 1500.0 / 86400.0;
+    const double share[3] = {0.3, 0.7, 70.0};
+    const double shut[3] = {convert::from(180.0, bars), convert::from(160.0, bars), convert::from(160.0, bars)};
+    for (int ph = 0; ph < Sys::NP; ++ph) {
+        w.ipr_a[ph] = 2.0 * share[ph] * q0;
+        w.ipr_b[ph] = -2.0 * share[ph] * q0 / shut[ph];
+    }
+    system.addWell(w);
+    system.finish();
+    system.setExactPotential(true);
+
+    const auto& well = system.wells()[0];
+    double worst = 0.0, worst_p = 0.0;
+    int lifting = 0;
+    for (double p = 10.0; p < 50.0; p += 0.05) {
+        const double thp = convert::from(p, bars);
+        const double q = system.thpPotential(well, thp);
+        if (!(q > 0.0)) { break; }
+        ++lifting;
+        const double bhp = (q - well.ipr_a[1]) / well.ipr_b[1];
+        const double off = std::abs(bhp - system.tableBhp(well, thp, system.ratesAt(well, bhp)));
+        if (off > worst) { worst = off; worst_p = p; }
+    }
+    BOOST_TEST_MESSAGE(lifting << " thp values lift, worst " << convert::to(worst, bars) << " bar off the table at thp " << worst_p);
+    BOOST_CHECK_GT(lifting, 20);
+    BOOST_CHECK_LT(convert::to(worst, bars), 0.01);
+}
+
 // Efficiency factors, lift gas and node sources all change what the branch
 // carries without changing what any well does. The check is the same for each:
 // the node pressure is the table's answer to the branch flow the terms imply,
