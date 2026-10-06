@@ -723,10 +723,8 @@ update(bool global, const TransUpdateQuantities update_quantities,
         halfTransMap.finalize();
     }
 
-    // Before the deck's own modifiers: a refined face that inherits its host's
-    // transmissibility must still be subject to the deck's TRANX/MULT* for its
-    // cell, and those are applied below.  Run the other way round and this would
-    // discard them.
+    // Before the deck's TRAN* edits, which must act on the inherited value.
+    // MULT* and MULTREGT are reapplied inside, since the main loop's are overwritten.
     if (this->lgrTransFromHost_) {
         this->applyHostTransToRefinedFaces_();
     }
@@ -1678,6 +1676,30 @@ applyHostTransToRefinedFaces_()
             return slot.half * (area / slot.area) * (slot.dist / dist);
         };
 
+        // The value written below replaces one that carried the deck's face and
+        // region multipliers; apply them again exactly as the main loop does.
+        const auto& transMult = eclState_.getTransMult();
+        const auto& nncInput = eclState_.getInputNNC().input();
+        auto multiplier = [&](const int c1, const int f1, const int c2, const int f2)
+        {
+            Scalar mult = 1.0;
+            if (c1 != c2) {
+                mult *= transMult.getMultiplier(c1, FaceDir::FromIntersectionIndex(f1))
+                      * transMult.getMultiplier(c2, FaceDir::FromIntersectionIndex(f2));
+            }
+            const auto it = std::lower_bound(nncInput.begin(), nncInput.end(),
+                                             NNCdata { static_cast<std::size_t>(c1),
+                                                       static_cast<std::size_t>(c2), 0.0 });
+            const bool isInputNnc = (it != nncInput.end()) &&
+                (it->cell1 == static_cast<std::size_t>(c1)) &&
+                (it->cell2 == static_cast<std::size_t>(c2));
+            if (!isInputNnc) {
+                mult *= transMult.getRegionMultiplier(c1, c2, (f1 < 2) ? FaceDir::XPlus
+                                                                        : FaceDir::YPlus);
+            }
+            return mult;
+        };
+
         std::size_t applied = 0, vertical = 0, noHost = 0;
 
         for (const auto& elem : elements(gridView_)) {
@@ -1748,7 +1770,15 @@ applyHostTransToRefinedFaces_()
 
                 auto it = trans_.find(details::isId(inIdx, outIdx));
                 if (it != trans_.end()) {
-                    it->second = 1.0 / (1.0 / *halfIn + 1.0 / *halfOut);
+                    const int cIn = this->lookUpCartesianData_.
+                        template getFieldPropCartesianIdx<Grid>(inIdx);
+                    const int cOut = this->lookUpCartesianData_.
+                        template getFieldPropCartesianIdx<Grid>(outIdx);
+                    // Same (cartesian, element) order as the main loop.
+                    const auto mult = (std::tie(cIn, inIdx) <= std::tie(cOut, outIdx))
+                        ? multiplier(cIn, fIn, cOut, fOut)
+                        : multiplier(cOut, fOut, cIn, fIn);
+                    it->second = mult / (1.0 / *halfIn + 1.0 / *halfOut);
                     ++applied;
                 }
             }
