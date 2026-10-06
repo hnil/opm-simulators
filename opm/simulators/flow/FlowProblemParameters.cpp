@@ -53,9 +53,9 @@ void registerFlowProblemParameters()
     Parameters::Register<Parameters::LgrTransFromHost>
         ("Take each refined cell's lateral transmissibility from its host "
          "cell's, scaled by the child's own face area and centre-to-face "
-         "distance, as the reference simulator does; vertical faces are always "
-         "computed from the child geometry. Set to false to compute every "
-         "refined transmissibility from the child geometry.");
+         "distance; vertical faces are always computed from the child geometry. "
+         "By default every refined transmissibility is computed from the child "
+         "geometry.");
 
     Parameters::Register<Parameters::EnableDriftCompensation>
         ("Enable partial compensation of systematic mass losses via "

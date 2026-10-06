@@ -725,7 +725,8 @@ update(bool global, const TransUpdateQuantities update_quantities,
 
     // Before the deck's TRAN* edits, which must act on the inherited value.
     // MULT* and MULTREGT are reapplied inside, since the main loop's are overwritten.
-    if (this->lgrTransFromHost_) {
+    // Always run on CpGrid: it also records the host-level values the output needs.
+    if (std::is_same_v<Grid, Dune::CpGrid> || this->lgrTransFromHost_) {
         this->applyHostTransToRefinedFaces_();
     }
 
@@ -1837,6 +1838,9 @@ applyHostTransToRefinedFaces_()
                 }
                 hostLevelTrans_[{ca, cb}] = t;
             }
+        }
+        if (!this->lgrTransFromHost_) {
+            return;
         }
 
         // A refined cell with its own PERM or NTG (a CARFIN block's values)
