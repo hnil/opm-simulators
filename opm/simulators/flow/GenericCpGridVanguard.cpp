@@ -622,6 +622,9 @@ doCreateGrids_(const bool edge_conformal, EclipseState& eclState)
     // simulation grid is distributed before the initial condition is
     // calculated.
     //
+    // Raised by the I/O reference grid's refinement, which runs on rank 0 alone.
+    std::string outputGridError{};
+
     // After loadbalance, grid_ will contain a global and distribute view.
     // equilGrid_ being a shallow copy only the global view.
     if (isRoot) {
@@ -654,7 +657,7 @@ doCreateGrids_(const bool edge_conformal, EclipseState& eclState)
 #else
                 constexpr bool canRefine = true;
 #endif
-                if (canRefine) {
+                if (canRefine) try {
                     auto outGrid = std::make_unique<Dune::CpGrid>(Dune::MPIHelper::getLocalCommunicator());
 #if OPM_HAVE_REFINEMENT_BUILDER
                     // Build it from the corner-point description grid_ was
@@ -690,6 +693,9 @@ doCreateGrids_(const bool edge_conformal, EclipseState& eclState)
                     this->outputCartesianIndexMapper_ =
                         std::make_unique<CartesianIndexMapper>(*this->outputGrid_);
                 }
+                catch (const std::exception& e) {
+                    outputGridError = e.what();
+                }
             }
         }
 #endif
@@ -697,6 +703,17 @@ doCreateGrids_(const bool edge_conformal, EclipseState& eclState)
         eclState.reset_actnum(UgGridHelpers::createACTNUM(*this->grid_));
         eclState.set_active_indices(this->grid_->globalCell());
     }
+
+#if HAVE_MPI
+    // Rank 0's refusal must stop every rank, which would otherwise wait below.
+    if (this->grid_->comm().size() > 1) {
+        Parallel::MpiSerializer ser(this->grid_->comm());
+        ser.broadcast(Parallel::RootRank{0}, outputGridError);
+        if (!outputGridError.empty()) {
+            OPM_THROW(std::invalid_argument, outputGridError);
+        }
+    }
+#endif
 
     {
         auto size = removed_cells.size();
