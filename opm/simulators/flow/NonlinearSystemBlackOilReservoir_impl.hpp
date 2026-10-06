@@ -29,10 +29,13 @@
 #include <opm/simulators/flow/NonlinearSystemBlackOilReservoir.hpp>
 #endif
 
+#include <dune/common/fmatrix.hh>
 #include <dune/common/timer.hh>
 
 #include <opm/common/ErrorMacros.hpp>
 #include <opm/common/OpmLog/OpmLog.hpp>
+
+#include <opm/input/eclipse/Units/Units.hpp>
 
 #include <opm/simulators/flow/countGlobalCells.hpp>
 
@@ -709,6 +712,86 @@ localConvergenceData(std::vector<Scalar>& R_sum,
 }
 
 template <class TypeTag>
+typename NonlinearSystemBlackOilReservoir<TypeTag>::AuxStepData
+NonlinearSystemBlackOilReservoir<TypeTag>::
+auxCellLocalStep() const
+{
+    AuxStepData out;
+    const auto& model = this->simulator_.model();
+    const auto& jacobian = model.linearizer().jacobian().istlMatrix();
+    const auto& residual = model.linearizer().residual();
+    const auto& solution = model.solution(/*timeIdx=*/0);
+    constexpr auto inf = std::numeric_limits<Scalar>::infinity();
+    const auto pressureScale = Parameters::Get<Parameters::PressureScale<Scalar>>();
+
+    Scalar worstRatio = 0.0;
+    for (const auto& module : this->simulator_.problem().auxCellModules()) {
+        const auto tol = module->localStepTolerance();
+        if (!(tol.dp > 0.0 || tol.ds > 0.0 || tol.dT > 0.0)) {
+            continue;
+        }
+        out.checked = true;
+        const std::array<Scalar, 3> tols {static_cast<Scalar>(tol.dp),
+                                          static_cast<Scalar>(tol.ds),
+                                          static_cast<Scalar>(tol.dT)};
+
+        for (unsigned localIdx = 0; localIdx < module->numDofs(); ++localIdx) {
+            if (!module->isActive(localIdx)) {
+                continue;
+            }
+            const auto cell = static_cast<unsigned>(module->localToGlobalDof(localIdx));
+            const auto& pv = solution[cell];
+
+            // Neighbours (and wells) held fixed: the change this cell's own rows still ask for.
+            VectorBlockType dx(0.0);
+            try {
+                jacobian[cell][cell].solve(dx, residual[cell]);
+            }
+            catch (const Dune::MathError&) {
+                dx = inf;
+            }
+
+            std::array<Scalar, 3> step {};
+            for (unsigned pvIdx = 0; pvIdx < dx.size(); ++pvIdx) {
+                const Scalar v = std::isfinite(dx[pvIdx]) ? std::abs(dx[pvIdx]) : inf;
+                if (pvIdx == Indices::pressureSwitchIdx) {
+                    step[0] = std::max(step[0], v * pressureScale);
+                }
+                else if ((pvIdx == Indices::waterSwitchIdx
+                          && pv.primaryVarsMeaningWater() == PrimaryVariables::WaterMeaning::Sw)
+                         || (pvIdx == Indices::compositionSwitchIdx
+                             && pv.primaryVarsMeaningGas() == PrimaryVariables::GasMeaning::Sg)) {
+                    step[1] = std::max(step[1], v);
+                }
+                else if (has_energy_ && pvIdx == temperatureIdx) {
+                    step[2] = std::max(step[2], v);
+                }
+            }
+
+            for (int q = 0; q < 3; ++q) {
+                out.step[q] = std::max(out.step[q], step[q]);
+                if (tols[q] > 0.0) {
+                    const Scalar r = step[q] / tols[q];
+                    out.ratio[q] = std::max(out.ratio[q], r);
+                    if (r > worstRatio) {
+                        worstRatio = r;
+                        out.worstCell = static_cast<int>(cell);
+                    }
+                }
+            }
+        }
+    }
+
+    const auto& comm = this->grid_.comm();
+    out.checked = comm.max(static_cast<int>(out.checked)) > 0;
+    for (int q = 0; q < 3; ++q) {
+        out.step[q] = comm.max(out.step[q]);
+        out.ratio[q] = comm.max(out.ratio[q]);
+    }
+    return out;
+}
+
+template <class TypeTag>
 typename NonlinearSystemBlackOilReservoir<TypeTag>::CnvPvSplitData
 NonlinearSystemBlackOilReservoir<TypeTag>::
 characteriseCnvPvSplit(const std::vector<Scalar>& B_avg, const double dt)
@@ -957,6 +1040,26 @@ getReservoirConvergence(const double reportTime,
             });
     }
 
+    // Embedded/auxiliary cells outside CNV: their own local Newton step must be small.
+    const auto auxStep = this->auxCellLocalStep();
+    if (auxStep.checked) {
+        const int phase[3] = {0, 0, has_energy_ ? contiEnergyEqIdx : 0};
+        bool failed = false;
+        for (int q = 0; q < 3; ++q) {
+            if (!(auxStep.ratio[q] <= 1.0)) {
+                failed = true;
+                report.setReservoirFailed({CR::ReservoirFailure::Type::Cnv,
+                                           CR::Severity::Normal, phase[q]});
+            }
+        }
+        if (failed && this->terminal_output_) {
+            OpmLog::debug(fmt::format("Auxiliary cells not converged: local step dp {:.3g} bar, "
+                                      "dS {:.3g}, dT {:.3g} K (worst dof {})",
+                                      auxStep.step[0] / unit::barsa, auxStep.step[1],
+                                      auxStep.step[2], auxStep.worstCell));
+        }
+    }
+
     // Compute the Newton convergence per cell.
     this->convergencePerCell(B_avg, dt, tol_cnv, tol_cnv_energy);
 
@@ -982,6 +1085,10 @@ getReservoirConvergence(const double reportTime,
                 msg += use_ds_tol ? "    DS     " : "";
                 msg += use_drs_tol ? "    DRS    " : "";
                 msg += use_drv_tol ? "    DRV    " : "";
+            }
+
+            if (auxStep.checked) {
+                msg += "  AUX dP[b]   AUX dS     AUX dT  ";
             }
 
             msg += "   MBFLAG";
@@ -1020,6 +1127,12 @@ getReservoirConvergence(const double reportTime,
             print_dsol(use_ds_tol, maxSolUpd.dSMax);
             print_dsol(use_drs_tol, maxSolUpd.dRsMax);
             print_dsol(use_drv_tol, maxSolUpd.dRvMax);
+        }
+
+        if (auxStep.checked) {
+            ss << std::setw(11) << auxStep.step[0] / unit::barsa
+               << std::setw(11) << auxStep.step[1]
+               << std::setw(11) << auxStep.step[2];
         }
 
         const auto mb_flag = use_relaxed_mb
