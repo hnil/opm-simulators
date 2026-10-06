@@ -1700,6 +1700,22 @@ applyHostTransToRefinedFaces_()
             return mult;
         };
 
+        // A refined cell with its own PERM or NTG (a CARFIN block's values)
+        // scales the share it takes of its host's half-transmissibility.
+        const auto ntgLeaf = fp.has_double("NTG")
+            ? this->lookUpData_.assignFieldPropsDoubleOnLeaf(fp, "NTG")
+            : std::vector<double>(elemMapper.size(), 1.0);
+        auto ownRatio = [&](const std::size_t leaf, const std::size_t h, const int f)
+        {
+            const auto dir = f / 2;
+            const auto kHost = (dir == 0) ? permx[h] : permy[h];
+            Scalar ratio = (kHost > 0.0) ? permeability_[leaf][dir][dir] / kHost : 1.0;
+            if (ntgArr[h] > 0.0) {
+                ratio *= ntgLeaf[leaf] / ntgArr[h];
+            }
+            return ratio;
+        };
+
         std::size_t applied = 0, vertical = 0, noHost = 0;
 
         for (const auto& elem : elements(gridView_)) {
@@ -1759,8 +1775,14 @@ applyHostTransToRefinedFaces_()
                     continue;
                 }
 
-                const auto halfIn = scaled(hIn, fIn, area, dIn);
-                const auto halfOut = scaled(hOut, fOut, area, dOut);
+                auto halfIn = scaled(hIn, fIn, area, dIn);
+                auto halfOut = scaled(hOut, fOut, area, dOut);
+                if (halfIn.has_value()) {
+                    *halfIn *= ownRatio(inIdx, hIn, fIn);
+                }
+                if (halfOut.has_value()) {
+                    *halfOut *= ownRatio(outIdx, hOut, fOut);
+                }
                 if (!halfIn.has_value() || !halfOut.has_value() ||
                     (*halfIn <= 0.0) || (*halfOut <= 0.0))
                 {

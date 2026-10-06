@@ -333,6 +333,7 @@ void ParallelEclipseState::switchToDistributedProps()
     if (m_comm.size() == 1) { // No need for the parallel frontend
         return;
     }
+    m_fieldProps.set_lgr_block_values(this->getLgrs());
     m_parProps = true;
 }
 
