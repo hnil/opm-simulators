@@ -675,9 +675,8 @@ doCreateGrids_(const bool edge_conformal, EclipseState& eclState)
                         retained->zcorn.data(),
                         retained->actnum.empty() ? nullptr : retained->actnum.data()
                     };
-                    outGrid->processEclipseFormat(raw,
-                                                  /* remove_ij_boundary = */ false,
-                                                  /* turn_normals = */ false,
+                    outGrid->processEclipseFormat(raw, retained->pinchNnc,
+                                                  retained->pinchActive,
                                                   retained->edgeConformal);
                     Opm::Refinement::GridStateWriter::setRetainedCornerPointInput(
                         *outGrid->currentData().front(), retained);
