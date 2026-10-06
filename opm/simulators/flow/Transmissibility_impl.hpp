@@ -1628,7 +1628,24 @@ applyHostTransToRefinedFaces_()
 
         for (const auto& elem : elements(level0)) {
             const auto idx = levelMapper.index(elem);
-            const auto centre = elem.geometry().center();
+
+            // The unrefined grid's convention: centres are corner averages.
+            const auto& cellGeom = elem.geometry();
+            DimVector centre(0.0);
+            for (int c = 0; c < 8; ++c) {
+                centre += cellGeom.corner(c);
+            }
+            centre /= 8.0;
+            auto faceCentre = [&cellGeom](const int f) {
+                DimVector fc(0.0);
+                for (int c = 0; c < 8; ++c) {
+                    if (((c >> (f / 2)) & 1) == (f % 2)) {
+                        fc += cellGeom.corner(c);
+                    }
+                }
+                fc /= 4.0;
+                return fc;
+            };
 
             DimMatrix K(0.0);
             K[0][0] = permx[idx]; K[1][1] = permy[idx]; K[2][2] = permz[idx];
@@ -1643,10 +1660,8 @@ applyHostTransToRefinedFaces_()
                 DimVector areaNormal = is.centerUnitOuterNormal();
                 areaNormal *= geom.volume();
 
-                DimVector d = geom.center();
-                for (unsigned i = 0; i < dimWorld; ++i) {
-                    d[i] -= centre[i];
-                }
+                DimVector d = faceCentre(f);
+                d -= centre;
 
                 auto half = computeHalfTrans_(areaNormal, f, d, K);
                 if (f < 4) {                // lateral faces carry NTG
