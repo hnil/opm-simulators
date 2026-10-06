@@ -1616,6 +1616,14 @@ applyHostTransToRefinedFaces_()
         // accumulate the pieces.
         struct Face { Scalar half{0}, area{0}, dist{0}; };
         auto host = std::vector<std::array<Face,6>>(numHost);
+        auto isHost = std::vector<bool>(numHost, false);
+        for (const auto& elem : elements(gridView_)) {
+            if (elem.level() > 0) {
+                isHost[levelMapper.index(elem.getOrigin())] = true;
+            }
+        }
+        // The same per neighbouring host: across a fault each takes its own piece.
+        auto hostPair = std::map<std::tuple<std::size_t,int,std::size_t>, Face>{};
 
 
         for (const auto& elem : elements(level0)) {
@@ -1649,6 +1657,12 @@ applyHostTransToRefinedFaces_()
                 slot.half += half;
                 slot.area += geom.volume();
                 slot.dist += d.two_norm() * geom.volume();   // area-weighted
+
+                if (is.neighbor() && (isHost[idx] || isHost[levelMapper.index(is.outside())])) {
+                    auto& pair = hostPair[{idx, f, levelMapper.index(is.outside())}];
+                    pair.half += half;
+                    pair.area += geom.volume();
+                }
             }
 
             for (auto& slot : host[idx]) {
@@ -1660,15 +1674,86 @@ applyHostTransToRefinedFaces_()
 
         const auto elemMapper = ElementMapper { gridView_, Dune::mcmgElementLayout() };
 
-        auto scaled = [&host](const std::size_t h, const int f,
-                              const Scalar area, const Scalar dist)
-            -> std::optional<Scalar>
+        // The host-to-child distance ratio is the inverse of the child's width
+        // fraction of its host along the face's axis, as the box describes it
+        // (N*FIN/H*FIN included).  Nested boxes fall back to the geometric ratio.
+        auto widths = std::vector<std::array<std::vector<double>,2>>(grid_.maxLevel() + 1);
+        const auto& lgrs = eclState_.getLgrs();
+        for (const auto& [name, level] : grid_.getLgrNameToLevel()) {
+            for (std::size_t n = 0; n < lgrs.size(); ++n) {
+                const auto& lgr = lgrs.getLgr(n);
+                if ((level > 0) && (lgr.NAME() == name) && (lgr.PARENT_NAME() == "GLOBAL")) {
+                    for (std::size_t dim = 0; dim < 2; ++dim) {
+                        const auto columns = lgr.refinedColumns(dim);
+                        for (std::size_t c = 0; c < columns.fracLo.size(); ++c) {
+                            widths[level][dim].push_back(columns.fracHi[c] - columns.fracLo[c]);
+                        }
+                    }
+                }
+            }
+        }
+        auto widthRatio = [&widths](const auto& elem, const int f) -> std::optional<Scalar>
         {
-            const auto& slot = host[h][f];
-            if ((slot.area <= 0.0) || (slot.dist <= 0.0) || (dist <= 0.0)) {
+            const auto level = static_cast<std::size_t>(elem.level());
+            const auto axis = f / 2;
+            if ((level >= widths.size()) || widths[level][axis].empty()) {
                 return std::nullopt;
             }
-            return slot.half * (area / slot.area) * (slot.dist / dist);
+            const auto nx = widths[level][0].size();
+            const auto cart = static_cast<std::size_t>(elem.getLevelCartesianIdx());
+            const auto column = (axis == 0) ? (cart % nx) : ((cart / nx) % widths[level][1].size());
+            return 1.0 / widths[level][axis][column];
+        };
+
+        // A host pair's transmissibility is shared among the refined faces that
+        // join the two hosts by area -- not those faces' share of the coarse
+        // overlap, which a fault's refined pieces do not reproduce.
+        auto leafPairArea = std::map<std::tuple<std::size_t,int,std::size_t>, Scalar>{};
+        for (const auto& elem : elements(gridView_)) {
+            if (elem.level() == 0) {
+                continue;
+            }
+            const auto h = levelMapper.index(elem.getOrigin());
+            for (const auto& is : intersections(gridView_, elem)) {
+                if (!is.neighbor() || (is.indexInInside() < 0) || (is.indexInInside() > 3)) {
+                    continue;
+                }
+                const auto other = levelMapper.index(is.outside().getOrigin());
+                if (other == h) {
+                    continue;
+                }
+                const auto area = static_cast<Scalar>(is.geometry().volume());
+                leafPairArea[{h, is.indexInInside(), other}] += area;
+                if (is.outside().level() == 0) {
+                    leafPairArea[{other, is.indexInOutside(), h}] += area;
+                }
+            }
+        }
+
+        auto scaled = [&host, &hostPair, &leafPairArea](const std::size_t h, const int f,
+                                                        const std::size_t other,
+                                                        const Scalar area, const Scalar ratio)
+            -> std::optional<Scalar>
+        {
+            if (!(ratio > 0.0)) {
+                return std::nullopt;
+            }
+            const auto pair = hostPair.find({h, f, other});
+            const auto leaf = leafPairArea.find({h, f, other});
+            if ((other != h) && (pair != hostPair.end()) && (leaf != leafPairArea.end())
+                && (leaf->second > 0.0)) {
+                return pair->second.half * (area / leaf->second) * ratio;
+            }
+            const auto& slot = host[h][f];
+            if (slot.area <= 0.0) {
+                return std::nullopt;
+            }
+            return slot.half * (area / slot.area) * ratio;
+        };
+        auto geometricRatio = [&host](const std::size_t h, const int f, const Scalar dist)
+        {
+            const auto& slot = host[h][f];
+            return (dist > 0.0) ? slot.dist / dist : Scalar{0};
         };
 
         // The value written below replaces one that carried the deck's face and
@@ -1712,6 +1797,7 @@ applyHostTransToRefinedFaces_()
         };
 
         std::size_t applied = 0, vertical = 0, noHost = 0;
+        std::map<std::tuple<std::size_t,std::size_t,int>, std::vector<decltype(trans_.begin())>> dbgPairs;
 
         for (const auto& elem : elements(gridView_)) {
             if (elem.level() == 0) {
@@ -1727,8 +1813,11 @@ applyHostTransToRefinedFaces_()
             const auto hIn = levelMapper.index(elem.getOrigin());
 
             for (const auto& is : intersections(gridView_, elem)) {
-                if (!is.neighbor() || (is.outside().level() != elem.level())) {
-                    continue;               // LGR boundary or NNC: leave computed
+                // A box-boundary face takes the coarse side from that cell's own
+                // half-transmissibility.
+                const bool boundary = is.neighbor() && (is.outside().level() == 0);
+                if (!is.neighbor() || (!boundary && (is.outside().level() != elem.level()))) {
+                    continue;
                 }
 
                 const auto fIn = is.indexInInside();
@@ -1738,7 +1827,7 @@ applyHostTransToRefinedFaces_()
                 }
 
                 const auto outIdx = elemMapper.index(is.outside());
-                if (inIdx > outIdx) {
+                if (!boundary && (inIdx > outIdx)) {
                     continue;
                 }
 
@@ -1770,8 +1859,11 @@ applyHostTransToRefinedFaces_()
                     continue;
                 }
 
-                auto halfIn = scaled(hIn, fIn, area, dIn);
-                auto halfOut = scaled(hOut, fOut, area, dOut);
+                const auto ratioIn = widthRatio(elem, fIn).value_or(geometricRatio(hIn, fIn, dIn));
+                const auto ratioOut = boundary ? Scalar{1}
+                    : widthRatio(is.outside(), fOut).value_or(geometricRatio(hOut, fOut, dOut));
+                auto halfIn = scaled(hIn, fIn, hOut, area, ratioIn);
+                auto halfOut = scaled(hOut, fOut, hIn, area, ratioOut);
                 if (halfIn.has_value()) {
                     *halfIn *= ownRatio(inIdx, hIn, fIn);
                 }
