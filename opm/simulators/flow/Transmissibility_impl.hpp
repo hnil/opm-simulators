@@ -1914,6 +1914,17 @@ applyEditNncToGridTransHelper_(const CartesianToLeaf& globalToLocal,
         OpmLog::warning(keyword, warning);
     };
 
+    // As in the reference, a record does not reach a connection of a refined
+    // cell: it names the coarse cells, and their connection is replaced.
+    std::unordered_set<std::size_t> refined;
+    const ElementMapper elemMapper(gridView_, Dune::mcmgElementLayout());
+    for (const auto& elem : elements(gridView_)) {
+        if (elem.level() > 0) {
+            refined.insert(cartMapper_.cartesianIndex(elemMapper.index(elem)));
+        }
+    }
+    std::size_t skipped = 0;
+
     // editNnc is supposed to only reference non-neighboring connections and not
     // neighboring connections. Use all entries for scaling if there is an NNC.
     // variable nnc incremented in loop body.
@@ -1923,6 +1934,11 @@ applyEditNncToGridTransHelper_(const CartesianToLeaf& globalToLocal,
     while (nnc != end) {
         auto c1 = nnc->cell1;
         auto c2 = nnc->cell2;
+        if (refined.count(c1) || refined.count(c2)) {
+            ++skipped;
+            ++nnc;
+            continue;
+        }
         auto lowIt = globalToLocal.find(c1);
         auto highIt = globalToLocal.find(c2);
 
@@ -1936,13 +1952,8 @@ applyEditNncToGridTransHelper_(const CartesianToLeaf& globalToLocal,
             continue;
         }
 
-        // Without refinement each deck cell is one leaf cell and this is the
-        // single face the record names.  With it, a connection between two coarse
-        // cells became a face between each pair of their children that touch, and
-        // the record's multiplier belongs to every one of them: it is
-        // dimensionless, so it carries over unchanged however the coarse face was
-        // divided.  Collect the faces first -- a record may be repeated, and each
-        // repeat must multiply each face exactly once.
+        // Collect the faces first: a record may be repeated, and each repeat
+        // must act on each face exactly once.
         auto faces = std::vector<decltype(trans_.begin())>{};
         for (const auto childLow : lowIt->second) {
             for (const auto childHigh : highIt->second) {
@@ -1979,6 +1990,10 @@ applyEditNncToGridTransHelper_(const CartesianToLeaf& globalToLocal,
         auto warning = fmt::format("Problems with {} keyword\n"
                                    "A total of {} connections not defined in grid", keyword, warning_count);
         OpmLog::warning(warning);
+    }
+    if ((skipped > 0) && warnEditNNC_) {
+        OpmLog::info(fmt::format("{} {} record(s) name a refined cell and are not applied "
+                                 "to the refined connections.", skipped, keyword));
     }
 }
 
