@@ -1060,11 +1060,17 @@ exportNncStructure_(const std::vector<std::unordered_map<int,int>>& levelCartToL
                                             static_cast<int>(entry.cell2)};
                 const double* gathered = this->findGatheredTrans_(key);
                 if (!this->gatheredLgrTrans_.has_value() || gathered != nullptr) {
-                    trans = (gathered != nullptr)
-                        ? *gathered
-                        : this->globalTrans().transmissibility(c1, c2);
+                    // The refined output grid of a parallel run does not carry the
+                    // numerical aquifer's connections; keep the input value there.
+                    const auto found = (gathered != nullptr)
+                        ? std::optional<double>{*gathered}
+                        : std::optional<double>{this->globalTrans().findTransmissibility(c1, c2)};
+                    if (!found.has_value() && (maxLevel == 0)) {
+                        trans = this->globalTrans().transmissibility(c1, c2);   // reports the miss
+                    }
+                    trans = found.value_or(trans);
 
-                    if (! generatedNnc.empty()) {
+                    if (found.has_value() && ! generatedNnc.empty()) {
                         for (const auto& generated : generatedNnc) {
                             if (entry.cell1 == generated.cell1 && entry.cell2 == generated.cell2) {
                                 trans -= generated.trans;

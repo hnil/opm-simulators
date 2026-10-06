@@ -236,6 +236,14 @@ transmissibility(unsigned elemIdx1, unsigned elemIdx2) const
 }
 
 template<class Grid, class GridView, class ElementMapper, class CartesianIndexMapper, class Scalar>
+std::optional<Scalar> Transmissibility<Grid,GridView,ElementMapper,CartesianIndexMapper,Scalar>::
+findTransmissibility(unsigned elemIdx1, unsigned elemIdx2) const
+{
+    const auto entry = trans_.find(details::isId(elemIdx1, elemIdx2));
+    return (entry == trans_.end()) ? std::nullopt : std::optional<Scalar>{entry->second};
+}
+
+template<class Grid, class GridView, class ElementMapper, class CartesianIndexMapper, class Scalar>
 Scalar Transmissibility<Grid,GridView,ElementMapper,CartesianIndexMapper,Scalar>::
 transmissibilityBoundary(unsigned elemIdx, unsigned boundaryFaceIdx) const
 {
