@@ -113,6 +113,10 @@ public:
     virtual LocalStepTolerance localStepTolerance() const
     { return {}; }
 
+    //! Newton temperature step limit [K] for these cells; <= 0 keeps the global one.
+    virtual double maxTemperatureChange() const
+    { return 0.0; }
+
     //! Inactive (preallocated) cells have empty rows; the module conditions them in linearize().
     virtual bool isActive(unsigned /*localIdx*/) const
     { return true; }
