@@ -38,6 +38,7 @@
 #include <array>
 #include <functional>
 #include <map>
+#include <optional>
 #include <cstdint>
 #include <unordered_map>
 #include <vector>
@@ -79,6 +80,9 @@ public:
      * \brief Return the transmissibility for the intersection between two elements.
      */
     Scalar transmissibility(unsigned elemIdx1, unsigned elemIdx2) const;
+
+    //! \brief The transmissibility between two elements, if the grid joins them.
+    std::optional<Scalar> findTransmissibility(unsigned elemIdx1, unsigned elemIdx2) const;
 
     /*!
      * \brief Return the transmissibility for a given boundary segment.
