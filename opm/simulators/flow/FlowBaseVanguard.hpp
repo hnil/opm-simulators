@@ -29,6 +29,7 @@
 
 #include <dune/grid/common/partitionset.hh>
 
+#include <opm/grid/CpGrid.hpp>
 #include <opm/grid/common/GridEnums.hpp>
 #include <opm/grid/common/CartesianIndexMapper.hpp>
 #include <opm/grid/LookUpCellCentroid.hh>
@@ -48,6 +49,7 @@
 #include <array>
 #include <cstddef>
 #include <optional>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
@@ -394,11 +396,11 @@ protected:
         ElementMapper elemMapper(this->gridView(), Dune::mcmgElementLayout());
 
         const auto num_aqu_cells = this->allAquiferCells();
-        const auto* depthEdits = this->editedCellDepths_(numCells);
+        const auto depthEdits = this->editedCellDepths_(numCells);
 
         for (const auto& element : elements(this->gridView())) {
             const unsigned int elemIdx = elemMapper.index(element);
-            cellCenterDepth_[elemIdx] = depthEdits != nullptr
+            cellCenterDepth_[elemIdx] = depthEdits.has_value()
                 ? (*depthEdits)[elemIdx]
                 : cellCenterDepth(element);
 
@@ -421,7 +423,7 @@ protected:
      * likewise only known on the root process, so the flag has to be communicated to
      * keep all ranks on the same branch.
      */
-    const std::vector<double>* editedCellDepths_(const int numCells) const
+    std::optional<std::vector<double>> editedCellDepths_(const int numCells) const
     {
         const auto& comm = this->gridView().comm();
 
@@ -430,19 +432,30 @@ protected:
         depthEdited = comm.max(depthEdited);
 
         if (!depthEdited) {
-            return nullptr;
+            return std::nullopt;
         }
 
         const auto& depth = this->eclState().fieldProps().get_double("DEPTH");
-
-        // The field properties are given on the level zero grid, so they cannot be
-        // indexed by leaf element index when the grid has been refined.
-        if (static_cast<int>(depth.size()) != numCells) {
-            throw std::runtime_error("DEPTH assigned in the EDIT section is not "
-                                      "supported in combination with LGR");
+        if (static_cast<int>(depth.size()) == numCells) {
+            return depth;
         }
 
-        return &depth;
+        if constexpr (std::is_same_v<Grid, Dune::CpGrid>) {
+            // DEPTH is given per level-zero cell: a refined cell takes its host's
+            // edited depth plus its own offset from the host's centre.
+            auto leafDepth = std::vector<double>(numCells);
+            ElementMapper elemMapper(this->gridView(), Dune::mcmgElementLayout());
+            for (const auto& element : elements(this->gridView())) {
+                const auto origin = element.getOrigin();
+                leafDepth[elemMapper.index(element)] = depth[origin.index()]
+                    + (cellCenterDepth(element) - cellCenterDepth(origin));
+            }
+            return leafDepth;
+        }
+        else {
+            throw std::runtime_error("DEPTH assigned in the EDIT section does not match "
+                                     "the number of grid cells.");
+        }
     }
     void updateCellThickness_()
     {
