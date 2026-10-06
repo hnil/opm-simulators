@@ -107,6 +107,12 @@ public:
     virtual double cnvReferencePoreVolume(unsigned /*localIdx*/) const
     { return 0.0; }
 
+    //! Largest local Newton step (D_ii^{-1} R_i) an active cell may still ask for
+    //! at convergence: pressure [Pa], saturation, temperature [K]; 0 = unchecked.
+    struct LocalStepTolerance { double dp{0.0}, ds{0.0}, dT{0.0}; };
+    virtual LocalStepTolerance localStepTolerance() const
+    { return {}; }
+
     //! Inactive (preallocated) cells have empty rows; the module conditions them in linearize().
     virtual bool isActive(unsigned /*localIdx*/) const
     { return true; }
