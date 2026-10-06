@@ -128,7 +128,7 @@ struct GroupControllerInjectionDamping { static constexpr Scalar value = 0.0; };
 struct GroupControllerInjectionFeedback { static constexpr bool value = true; };
 struct GroupControllerShutPersistence { static constexpr int value = 1; };
 struct GroupControllerKeepFlowing { static constexpr bool value = false; };
-struct GroupControllerHoldStopped { static constexpr bool value = false; };
+struct GroupControllerHoldStopped { static constexpr bool value = true; };
 struct GroupControllerClosing { static constexpr auto value = "all"; };
 template<class Scalar>
 struct GroupTreeBalancerTolerance { static constexpr Scalar value = 1e-5; };
