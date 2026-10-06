@@ -179,6 +179,11 @@ public:
     void update(bool global, TransUpdateQuantities update_quantities = TransUpdateQuantities::All,
                 const std::function<unsigned int(unsigned int)>& map = {}, bool applyNncMultRegT = false);
 
+    /// Connections of refined cells' hosts as the unrefined grid has them, keyed
+    /// by the two level-zero Cartesian indices, smaller first.  For output.
+    const std::map<std::pair<int,int>, Scalar>& hostLevelTransmissibilities() const
+    { return hostLevelTrans_; }
+
 protected:
     void updateFromEclState_(bool global);
 
@@ -353,6 +358,7 @@ protected:
     bool enableDiffusivity_;
     bool enableDispersivity_;
     bool lgrTransFromHost_{false};
+    std::map<std::pair<int,int>, Scalar> hostLevelTrans_;
     bool warnEditNNC_ = true;
     std::unordered_map<std::uint64_t, Scalar> thermalHalfTrans_; //NB this is based on direction map size is ca 2*trans_ (diffusivity_)
     std::unordered_map<std::uint64_t, Scalar> halfTrans_; // directional, only filled when storeHalfTrans_

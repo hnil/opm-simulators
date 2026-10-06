@@ -1626,8 +1626,10 @@ applyHostTransToRefinedFaces_()
         auto hostPair = std::map<std::tuple<std::size_t,int,std::size_t>, Face>{};
 
 
+        auto level0Cart = std::vector<int>(numHost);
         for (const auto& elem : elements(level0)) {
             const auto idx = levelMapper.index(elem);
+            level0Cart[idx] = elem.getLevelCartesianIdx();
 
             // The unrefined grid's convention: centres are corner averages.
             const auto& cellGeom = elem.geometry();
@@ -1790,10 +1792,47 @@ applyHostTransToRefinedFaces_()
                 (it->cell2 == static_cast<std::size_t>(c2));
             if (!isInputNnc) {
                 mult *= transMult.getRegionMultiplier(c1, c2, (f1 < 2) ? FaceDir::XPlus
-                                                                        : FaceDir::YPlus);
+                                                            : (f1 < 4) ? FaceDir::YPlus
+                                                                       : FaceDir::ZPlus);
             }
             return mult;
         };
+
+        // The hosts' own connections as the unrefined grid has them, for the
+        // output's global section; as in the reference, without EDITNNC.
+        hostLevelTrans_.clear();
+        {
+            auto pinchAll = std::map<std::pair<std::size_t,std::size_t>, Scalar>{};
+            for (const auto& nnc : eclState_.getPinchNNC()) {
+                pinchAll[{std::min(nnc.cell1, nnc.cell2), std::max(nnc.cell1, nnc.cell2)}] = nnc.trans;
+            }
+            auto halves = std::map<std::pair<std::size_t,std::size_t>, std::pair<Scalar,int>>{};
+            for (const auto& [key, face] : hostPair) {
+                auto& half = halves[{std::get<0>(key), std::get<2>(key)}];
+                half.first += face.half;
+                half.second = std::get<1>(key);
+            }
+            for (const auto& [key, half] : halves) {
+                const auto [a, b] = key;
+                const auto reverse = halves.find({b, a});
+                if ((a > b) || (reverse == halves.end()) ||
+                    !(half.first > 0.0) || !(reverse->second.first > 0.0)) {
+                    continue;
+                }
+                auto ca = level0Cart[a], cb = level0Cart[b];
+                auto fa = half.second, fb = reverse->second.second;
+                if (ca > cb) {
+                    std::swap(ca, cb);
+                    std::swap(fa, fb);
+                }
+                Scalar t = multiplier(ca, fa, cb, fb) / (1.0 / half.first + 1.0 / reverse->second.first);
+                const auto pair = std::make_pair(static_cast<std::size_t>(ca), static_cast<std::size_t>(cb));
+                if (const auto pinch = pinchAll.find(pair); pinch != pinchAll.end()) {
+                    t = pinch->second * transMult.getRegionMultiplierNNC(pair.first, pair.second);
+                }
+                hostLevelTrans_[{ca, cb}] = t;
+            }
+        }
 
         // A refined cell with its own PERM or NTG (a CARFIN block's values)
         // scales the share it takes of its host's half-transmissibility.
