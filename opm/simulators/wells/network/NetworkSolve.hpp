@@ -48,6 +48,8 @@ struct Node
     int vfp_table = NoTable;
     /// NEFAC: what this node passes on of what it collects.
     double efficiency = 1.0;
+    /// > 0: a fixed-pressure node below the root, held there; its flow still counts upward.
+    double fixed_pressure = 0.0;
 };
 
 template<class Scalar>

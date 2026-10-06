@@ -192,6 +192,9 @@ public:
         : props_(&props), units_(&units)
     {}
 
+    static bool isFixed(const Node& node) { return node.fixed_pressure > 0.0; }
+    void setFixedPressure(const int n, const Scalar p) { nodes_[n].fixed_pressure = p; }
+
     void addNode(Node n, const Scalar alq)
     {
         nodes_.push_back(std::move(n));
@@ -647,7 +650,8 @@ public:
         for (int n = 1; n <= numNodes(); ++n) {      // parents are added before their children
             const auto& node = nodes_[n];
             const Scalar upstream = (node.parent <= 0) ? terminal_pressure_ : p[node.parent];
-            p[n] = hasTable(node) ? tableBhp(node.vfp_table, upstream, Q[n], branch_alq_[n]) : upstream;
+            p[n] = isFixed(node) ? Scalar(node.fixed_pressure)
+                 : hasTable(node) ? tableBhp(node.vfp_table, upstream, Q[n], branch_alq_[n]) : upstream;
         }
         return p;
     }
@@ -1270,6 +1274,8 @@ public:
                 // node pressure is whatever that takes. No table on a choke
                 // branch -- the drop *is* the unknown.
                 r[n - 1] = (x[qIdx(n, 1)] - node_choke_target_[n]) / rate_scale_;
+            } else if (isFixed(node)) {
+                r[n - 1] = (x[pIdx(n)] - Scalar(node.fixed_pressure)) / pressure_scale_;
             } else {
                 r[n - 1] = (hasTable(node)
                     ? x[pIdx(n)] - tableBhp(node.vfp_table, upstream, branchRates(n), branch_alq_[n])
@@ -2026,8 +2032,8 @@ public:
             const Scalar upstream = (node.parent == 0) ? terminal_pressure_ : x[pIdx(node.parent)];
             std::array<Scalar, NP> q{};
             for (int ph = 0; ph < NP; ++ph) { q[ph] = x[qIdx(n, ph)]; }
-            const Scalar p_calc = hasTable(node)
-                ? tableBhp(node.vfp_table, upstream, q, branch_alq_[n]) : upstream;
+            const Scalar p_calc = isFixed(node) ? Scalar(node.fixed_pressure)
+                : hasTable(node) ? tableBhp(node.vfp_table, upstream, q, branch_alq_[n]) : upstream;
             r[n - 1] = (x[pIdx(n)] - p_calc) / pressure_scale_;
         }
         noteRates(x);
@@ -2638,6 +2644,8 @@ public:
                 add(row, qIdx(n, 1), -g[1], rate_scale_);
             } else if (isChoke(n) && choked(n) && !(complementarity_ && analytic_jacobian_)) {
                 add(row, qIdx(n, 1), 1.0, rate_scale_);
+            } else if (isFixed(node)) {
+                add(row, pIdx(n), 1.0, pressure_scale_);
             } else {
                 add(row, pIdx(n), 1.0, pressure_scale_);
                 if (hasTable(node)) {
@@ -2901,6 +2909,7 @@ void write(const ProductionSystem<Scalar>& system, const std::vector<Scalar>& gu
         os << "node " << node.name << ' ' << node.parent << ' ' << node.vfp_table << ' '
            << node.efficiency << ' ' << system.branchAlq(n) << ' ' << src[0] << ' ' << src[1] << ' '
            << src[2] << ' ' << system.chokeTarget(n) << '\n';
+        if (node.fixed_pressure > 0.0) { os << "fixed " << n << ' ' << node.fixed_pressure << '\n'; }
     }
     for (const auto& w : system.wells()) {
         os << "well " << w.name << ' ' << w.node << ' ' << w.vfp_table << ' ' << w.alq << ' '
@@ -2949,6 +2958,10 @@ readProduction(std::istream& is, const VFPProdProperties<Scalar>& props, const U
             const int idx = static_cast<int>(system.nodes().size()) - 1;
             system.setNodeSource(idx, {s0, s1, s2});
             if (choke > Scalar{0}) { system.setChokeTarget(idx, choke); }
+        } else if (tag == "fixed") {
+            int idx; Scalar p;
+            in >> idx >> p;
+            system.setFixedPressure(idx, p);
         } else if (tag == "well") {
             typename ProductionSystem<Scalar>::Well w; int in_group, pinned, adds;
             in >> w.name >> w.node >> w.vfp_table >> w.alq

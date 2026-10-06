@@ -440,6 +440,12 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
     } else {
         for (const auto& root_ref : network.roots()) {
             const auto& r = root_ref.get();
+            // Each tree once, from its top: roots() lists a root per branch below it, and a fixed-pressure
+            // node with a branch above it is a node of its parent's system.
+            if (network.uptree_branch(r.name()).has_value()
+                || std::any_of(roots.begin(), roots.end(), [&r](const auto& x) { return x.root_name == r.name(); })) {
+                continue;
+            }
             roots.push_back({r.name(), r.terminal_pressure().has_value()
                                            ? std::optional<Scalar>(static_cast<Scalar>(*r.terminal_pressure()))
                                            : std::nullopt});
@@ -466,9 +472,6 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                 index[child] = static_cast<int>(order.size());
                 order.push_back(child);
                 const auto& child_node = network.node(child);
-                if (child_node.terminal_pressure().has_value()) {
-                    return giveUp(fmt::format("{} is a fixed-pressure node below the root", child));
-                }
                 if (child_node.as_choke()) {
                     return giveUp(fmt::format("{} is an autochoke node", child));
                 }
@@ -480,6 +483,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                 NetworkSolve::Node node{child, static_cast<int>(at),
                                         branch.vfp_table().value_or(NetworkSolve::NoTable)};
                 node.efficiency = child_node.efficiency();
+                node.fixed_pressure = child_node.terminal_pressure().value_or(0.0);
                 system.addNode(std::move(node), alq);
                 // Satellite production: a rate with no well behind it. An extended network's node need
                 // not be a group; it is then only a pass-through node.

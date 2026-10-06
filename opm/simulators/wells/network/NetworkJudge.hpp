@@ -192,8 +192,8 @@ Verdict verifyAnswer(const Sys& sys, const std::vector<double>& p, const std::ve
     for (int n = 1; n <= sys.numNodes(); ++n) {
         const auto& node = sys.nodes()[n];
         const double up = node.parent == 0 ? sys.terminalPressure() : p[node.parent];
-        const double want = node.vfp_table != NetworkSolve::NoTable
-            ? sys.tableBhp(node.vfp_table, up, Q[n], sys.branchAlq(n)) : up;
+        const double want = node.fixed_pressure > 0.0 ? node.fixed_pressure
+            : node.vfp_table != NetworkSolve::NoTable ? sys.tableBhp(node.vfp_table, up, Q[n], sys.branchAlq(n)) : up;
         if (std::abs(p[n] - want) > dp_tol) { fail("node pressure off its branch"); }
     }
     return v;

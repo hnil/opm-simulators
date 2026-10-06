@@ -217,6 +217,7 @@ solveLegacy(Sys& system,
             const auto& node = system.nodes()[n];
             const Scalar up = computed[node.parent];
             computed[n] = (n == choke) ? std::max(group_thp, up)
+                : (node.fixed_pressure > 0.0) ? Scalar(node.fixed_pressure)
                 : (node.vfp_table != NoTable) ? system.tableBhp(node.vfp_table, up, Q[n], system.branchAlq(n)) : up;
         }
         // The damped, capped move.

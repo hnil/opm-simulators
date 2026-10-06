@@ -875,6 +875,61 @@ VFPPROD
     BOOST_CHECK_LT(convert::to(worst, bars), 0.01);
 }
 
+// A fixed-pressure node below the root (NETWORK-01-MULTIROOT's GRPB) is held at its pressure,
+// and its flow still loads its parent's branch.
+BOOST_AUTO_TEST_CASE(a_fixed_pressure_node_below_the_root)
+{
+    using Sys = NetworkSolve::ProductionSystem<double>;
+    const auto deck = Parser{}.parseString(vfp_prod);
+    const VFPProdTable table(deck["VFPPROD"].front(), /*gaslift_opt_active=*/false, UnitSystem{});
+    VFPProdProperties<double> props;
+    props.addTable(table);
+    auto build = [&](const bool lower_well_open) {
+        Sys system(props, UnitSystem{});
+        system.setTerminalPressure(convert::from(80.0, bars));
+        system.addNode(NetworkSolve::Node{"FIELD", -1, NetworkSolve::NoTable}, 0.0);
+        system.addNode(NetworkSolve::Node{"A", 0, 3}, 0.0);
+        NetworkSolve::Node fixed{"B", 1, 3};
+        fixed.fixed_pressure = convert::from(95.0, bars);
+        system.addNode(fixed, 0.0);
+        for (const int node : {1, 2}) {
+            Sys::Well w;
+            w.name = node == 1 ? "P-A" : "P-B";
+            w.node = node;
+            w.vfp_table = 3;
+            w.bhp_limit = convert::from(40.0, bars);
+            // Shut as the controller shuts a well: no inflow.
+            const double q0 = (node == 2 && !lower_well_open) ? 0.0 : convert::from(400.0, cubic(meter) / day);
+            for (int ph = 0; ph < Sys::NP; ++ph) {
+                const double share = (ph == 0) ? 0.3 : (ph == 1) ? 0.7 : 70.0;
+                w.ipr_a[ph] = 2.0 * share * q0;
+                w.ipr_b[ph] = -2.0 * share * q0 / convert::from(200.0, bars);
+            }
+            system.addWell(w);
+        }
+        system.finish();
+        return system;
+    };
+    const std::vector<double> guess{convert::from(80.0, bars), convert::from(90.0, bars), convert::from(95.0, bars)};
+    auto system = build(true);
+    const auto r = NetworkSolve::solveReduced(system, guess, kParams, /*eliminate=*/true);
+    BOOST_REQUIRE(r.converged);
+    std::string controls;
+    for (int w = 0; w < system.numWells(); ++w) { controls += system.controlLetter(w); }
+    const auto v = NetworkSolve::verifyAnswer(system, r.node_pressure, r.well_rate, controls);
+    for (const auto& [what, n] : v.violations) { BOOST_TEST_MESSAGE(what << " x" << n); }
+    BOOST_CHECK(v.ok);
+    BOOST_CHECK_CLOSE(convert::to(r.node_pressure[2], bars), 95.0, 1e-8);
+    BOOST_CHECK_GT(r.well_rate[1], 0.0);
+
+    auto alone = build(false);
+    const auto ra = NetworkSolve::solveReduced(alone, guess, kParams, /*eliminate=*/true);
+    BOOST_REQUIRE(ra.converged);
+    BOOST_TEST_MESSAGE("A at " << convert::to(r.node_pressure[1], bars) << " bar with B's well, "
+                       << convert::to(ra.node_pressure[1], bars) << " without");
+    BOOST_CHECK_GT(r.node_pressure[1], ra.node_pressure[1] + convert::from(0.1, bars));
+}
+
 // Efficiency factors, lift gas and node sources all change what the branch
 // carries without changing what any well does. The check is the same for each:
 // the node pressure is the table's answer to the branch flow the terms imply,
