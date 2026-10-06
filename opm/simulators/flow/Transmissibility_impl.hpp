@@ -2189,6 +2189,10 @@ applyNncMultreg_(const CartesianToLeaf& cartesianToCompressed)
             if ((low == -1) || (high == -1)) {
                 continue;
             }
+            // As in applyEditNncrToGridTrans_, EDITNNCR does not reach a refined cell.
+            if ((nncList == &NNC::editr) && (refined(c1) || refined(c2))) {
+                continue;
+            }
 
             if (low > high) {
                 std::swap(low, high);
