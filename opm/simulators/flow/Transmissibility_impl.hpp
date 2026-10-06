@@ -1302,31 +1302,26 @@ computeFaceProperties(const Intersection& intersection,
     }
     else {
         if ((intersection.inside().level() != intersection.outside().level())) {
-            // For CpGrid with LGRs, intersection laying on the boundary of an LGR, having two neighboring cells:
-            // one coarse neighboring cell and one refined neighboring cell, we get the corresponding parent
-            // intersection (from level 0), and use the center of the parent intersection for the coarse
-            // neighboring cell.
-
-            // Get parent intersection and its geometry
-            const auto& parentIntersection =
-                grid_.getParentIntersectionFromLgrBoundaryFace(intersection);
-            const auto& parentIntersectionGeometry = parentIntersection.geometry();
-
-            // For the coarse neighboring cell, take the center of the parent intersection.
-            // For the refined neighboring cell, take the 'usual' center.
+            // The coarse cell measures to its whole face's corner average, as the reference.
+            auto coarseFaceCenter = [](const auto& element, const int face) {
+                DimVector center(0.0);
+                const auto& geometry = element.geometry();
+                for (int corner = 0; corner < 8; ++corner) {
+                    if (((corner >> (face / 2)) & 1) == face % 2) {
+                        for (int d = 0; d < 3; ++d) {
+                            center[d] += geometry.corner(corner)[d] / 4.0;
+                        }
+                    }
+                }
+                return center;
+            };
             inside.faceCenter =  (intersection.inside().level() == 0)
-                ? parentIntersectionGeometry.center()
+                ? coarseFaceCenter(intersection.inside(), inside.faceIdx)
                 : grid_.faceCenterEcl(inside.elemIdx, inside.faceIdx, intersection);
             outside.faceCenter = (intersection.outside().level() == 0)
-                ?  parentIntersectionGeometry.center()
+                ? coarseFaceCenter(intersection.outside(), outside.faceIdx)
                 : grid_.faceCenterEcl(outside.elemIdx, outside.faceIdx, intersection);
 
-            // For some computations, it seems to be benefitial to replace the actual area of the refined face, by
-            // the area of its parent face.
-            // faceAreaNormal = parentIntersection.centerUnitOuterNormal();
-            // faceAreaNormal *= parentIntersectionGeometry.volume();
-
-            /// Alternatively, the actual area of the refined face can be computed as follows:
             faceAreaNormal = intersection.centerUnitOuterNormal();
             faceAreaNormal *= intersection.geometry().volume();
         }
