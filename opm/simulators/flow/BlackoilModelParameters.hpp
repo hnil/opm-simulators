@@ -115,7 +115,7 @@ template<class Scalar>
 struct GroupControllerNetworkTolerance { static constexpr Scalar value = 0.1; };
 struct GroupControllerMaxPasses { static constexpr int value = 4; };
 struct GroupControllerMaxPassesNetwork { static constexpr int value = 6; };
-struct GroupControllerMaxRevivals { static constexpr int value = 3; };
+struct GroupControllerMaxRevivals { static constexpr int value = 1; };
 struct EnableGroupControllerThpRoute { static constexpr bool value = true; };
 struct GroupControllerMaxRepairs { static constexpr int value = 3; };
 struct GroupControllerRequireSettled { static constexpr bool value = true; };
