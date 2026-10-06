@@ -44,6 +44,7 @@
 
 #include <opm/simulators/wells/BlackoilWellModel.hpp>
 
+#include <array>
 #include <memory>
 #include <tuple>
 #include <vector>
@@ -212,6 +213,17 @@ public:
                          std::vector<Scalar>& maxCoeff,
                          std::vector<Scalar>& B_avg,
                          std::vector<int>& maxCoeffCell);
+
+    /// Largest local Newton step (pressure [Pa], saturation, temperature [K]) over
+    /// auxiliary cells whose module sets a LocalStepTolerance; ratio is step/tolerance.
+    struct AuxStepData
+    {
+        bool checked{false};
+        std::array<Scalar, 3> step{};
+        std::array<Scalar, 3> ratio{};
+        int worstCell{-1};
+    };
+    AuxStepData auxCellLocalStep() const;
 
     /// \brief Compute pore-volume/cell count split among "converged",
     /// "relaxed converged", "unconverged" cells based on CNV point
