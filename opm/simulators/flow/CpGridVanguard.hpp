@@ -43,6 +43,7 @@
 
 #include <algorithm>
 #include <array>
+#include <exception>
 #include <cmath>
 #include <functional>
 #include <map>
@@ -693,7 +694,20 @@ public:
                 return;
             }
             OpmLog::info("\nAdding LGRs to the grid and updating its leaf grid view");
-            this->addLgrsUpdateLeafView(lgrs, lgrs.size(), *this->grid_);
+            // Each rank refines its own boxes; a refusal on one must stop all of them.
+            std::exception_ptr refineError;
+            try {
+                this->addLgrsUpdateLeafView(lgrs, lgrs.size(), *this->grid_);
+            }
+            catch (...) {
+                refineError = std::current_exception();
+            }
+            if (this->grid_->comm().max(refineError ? 1 : 0) > 0) {
+                if (refineError) {
+                    std::rethrow_exception(refineError);
+                }
+                OPM_THROW(std::runtime_error, "Adding the LGRs failed on another rank.");
+            }
 
             // Refinement changed the leaf cell count and ordering, so the
             // state derived at load-balance time -- in particular the
