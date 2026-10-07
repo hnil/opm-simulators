@@ -245,6 +245,29 @@ facilityCheck_(DeferredLogger& deferred_logger)
             this->updateAndCommunicateGroupData(step, /*update_wellgrouptarget*/ true);
 
             network_off = this->network_.pressureImbalance(step);
+            if (std::getenv("OPM_FACILITY_CHECK_DETAIL") && network_off.first > 0.1 * unit::barsa
+                && schedule.hasGroup(network_off.second, step)) {
+                std::string rows;
+                for (const auto& wname : schedule.getGroup(network_off.second, step).wells()) {
+                    if (!this->wellState().has(wname)) { continue; }
+                    const auto& ws = this->wellState().well(wname);
+                    const auto it = this->controller_assigned_rates_.find(wname);
+                    auto ph = [&](const std::vector<Scalar>& r, const int c) {
+                        return pu.phaseIsActive(c) ? -r[pu.canonicalToActivePhaseIdx(c)] * 86400.0 : 0.0;
+                    };
+                    rows += fmt::format(" | {} cmode {} status {} alq {:.0f}: oil {:.1f} gas {:.0f} wat {:.1f}", wname,
+                                        static_cast<int>(ws.production_cmode), static_cast<int>(ws.status),
+                                        ws.alq_state.get() * 86400.0,
+                                        ph(ws.surface_rates, IndexTraits::oilPhaseIdx), ph(ws.surface_rates, IndexTraits::gasPhaseIdx),
+                                        ph(ws.surface_rates, IndexTraits::waterPhaseIdx));
+                    if (it != this->controller_assigned_rates_.end()) {
+                        rows += fmt::format(" (assigned oil {:.1f} gas {:.0f} wat {:.1f})", ph(it->second, IndexTraits::oilPhaseIdx),
+                                            ph(it->second, IndexTraits::gasPhaseIdx), ph(it->second, IndexTraits::waterPhaseIdx));
+                    }
+                }
+                OpmLog::debug(fmt::format("Facility check detail: {} off {:.3f} bar{}", network_off.second,
+                                          network_off.first / unit::barsa, rows));
+            }
         })
         && stage([&] {
 

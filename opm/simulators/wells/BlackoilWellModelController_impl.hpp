@@ -1516,8 +1516,65 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                 [&](const std::vector<Scalar>& start, const bool keep) { return solveRoute(start, keep); },
                 [&](const std::string& name) { const auto it = flips.find(name);
                                                return it != flips.end() && it->second.first > 0 && it->second.second > 0; });
-            if (!rr.converged) {
-                rr = solveRoute(rr.node_pressure, true);
+            // Always: a method that ends on a trial leaves the system's controls and shares at that trial, and
+            // they are what is handed to the wells (NORNE-NET-GL-01: B-TPL 0.86 bar off on every accepted step
+            // with LIFTOPT on, though no B well had lift gas).
+            rr = solveRoute(rr.node_pressure, true);
+            // The lines were taken at the old lift gas: re-anchor each well whose lift gas changed through the well
+            // model's own operating point at its node pressure and new lift gas (slopes kept), and solve again, so
+            // the hand-over is what the wells will do (NORNE-NET-GL-01: B-TPL 0.47 bar off at the median).
+            if (param_.group_controller_gas_lift_reanchor_ && rr.converged) {
+                std::vector<int> changed;
+                for (const auto& l : prob.wells) {
+                    const auto& name = system.wells()[l.w].name;
+                    if (this->wellState().has(name)
+                        && std::abs(system.wells()[l.w].alq - this->wellState().well(name).alq_state.get()) > Scalar{1e-12}
+                        && rr.well_rate[l.w] > Scalar{0}) { changed.push_back(l.w); }
+                }
+                constexpr int stride = 2 + Sys::NP;
+                std::vector<Scalar> ans(changed.size() * stride, Scalar{0});
+                for (std::size_t c = 0; c < changed.size(); ++c) {
+                    const auto& well = system.wells()[changed[c]];
+                    const auto widx = this->wellState().index(well.name);
+                    if (!widx.has_value() || !this->wellState().wellIsOwned(*widx, well.name)) { continue; }
+                    const auto wit = std::find_if(well_container_.begin(), well_container_.end(),
+                                                  [&](const auto& x) { return x->name() == well.name; });
+                    if (wit == well_container_.end()) { continue; }
+                    auto& wi = *wit;
+                    const Scalar p_w = well.own_thp > Scalar{0} ? well.own_thp
+                                     : well.node == 0 ? terminal : rr.node_pressure[well.node];
+                    const auto saved = wi->getDynamicThpLimit();
+                    wi->setDynamicThpLimit(p_w);
+                    const auto bhp = wi->computeBhpAtThpLimitProdWithAlq(simulator_, this->groupStateHelper(),
+                                                                         summary_state, well.alq, false);
+                    wi->setDynamicThpLimit(saved);
+                    if (!bhp) { continue; }
+                    std::vector<Scalar> q(pu.numActivePhases(), Scalar{0});
+                    wi->computeWellRatesWithBhp(simulator_, *bhp, q, deferred_logger);
+                    Scalar* r = ans.data() + c * stride;
+                    r[0] = 1;
+                    r[1] = *bhp;
+                    for (int ph = 0; ph < Sys::NP; ++ph) {
+                        const Scalar q_true = pos[ph] >= 0 ? std::max(-q[pos[ph]], Scalar{0}) : Scalar{0};
+                        r[2 + ph] = q_true - well.ipr_b[ph] * *bhp;
+                    }
+                }
+                if (this->comm().size() > 1 && !ans.empty()) {
+                    this->comm().sum(ans.data(), ans.size());
+                }
+                int moved = 0;
+                for (std::size_t c = 0; c < changed.size(); ++c) {
+                    const Scalar* r = ans.data() + c * stride;
+                    if (r[0] < Scalar{0.5}) { continue; }
+                    std::array<Scalar, Sys::NP> a{};
+                    for (int ph = 0; ph < Sys::NP; ++ph) { a[ph] = r[2 + ph]; }
+                    system.setWellIpr(changed[c], a, system.wells()[changed[c]].ipr_b);
+                    ++moved;
+                }
+                if (moved > 0) {
+                    rr = solveRoute(rr.node_pressure, true);
+                    this->controller_stats_.gaslift_reanchored += moved;
+                }
             }
             ++this->controller_stats_.gaslift_decisions;
             this->controller_stats_.gaslift_moves += st.moves;
