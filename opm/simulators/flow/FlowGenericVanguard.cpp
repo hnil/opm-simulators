@@ -137,6 +137,7 @@ FlowGenericVanguard::FlowGenericVanguard(SimulationModelParams&& params)
 
     ownersFirst_ = Parameters::Get<Parameters::OwnerCellsFirst>();
     edgeConformal_ = Parameters::Get<Parameters::EdgeConformal>();
+    edgeConformalMergeTolerance_ = Parameters::Get<Parameters::EdgeConformalMergeTolerance>();
     refineBeforeRedistribute_ = Parameters::Get<Parameters::RefineBeforeRedistribute>();
     lgrBackend_ = Parameters::Get<Parameters::LgrBackend>();
     if (lgrBackend_ != "trilinear" && lgrBackend_ != "conforming") {
@@ -486,6 +487,11 @@ void FlowGenericVanguard::registerParameters_()
         ("Order cells owned by rank before ghost/overlap cells.");
     Parameters::Register<Parameters::EdgeConformal>
         ("Edge conformal cornerpoint processing.");
+    Parameters::Register<Parameters::EdgeConformalMergeTolerance>
+        ("With edge conformal processing: cells thinner than this (m, on average) "
+         "are merged into their neighbours like pinched cells, and corner points "
+         "closer than this along a pillar become one node. The PINCH threshold "
+         "is used when it is larger.");
     Parameters::Register<Parameters::LgrBackend>
         ("How LGRs are refined: 'trilinear' (default) or 'conforming', the "
          "corner-point builder that also handles graded boxes, block MINPV, "

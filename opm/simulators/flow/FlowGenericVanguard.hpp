@@ -78,6 +78,7 @@ struct PartitionMethod { static constexpr auto value = "zoltanwell"; };
 struct AddCorners { static constexpr bool value = false; };
 struct NumOverlap { static constexpr int value = 1; };
 struct EdgeConformal { static constexpr bool value = false; };
+struct EdgeConformalMergeTolerance { static constexpr double value = 0.0; };
 
 /// Refine a CpGrid's LGRs with upstream's trilinear code or the corner-point conforming builder.
 struct LgrBackend { static constexpr auto value = "trilinear"; };
@@ -268,6 +269,9 @@ public:
     bool edgeConformal() const
     { return edgeConformal_; }
 
+    double edgeConformalMergeTolerance() const
+    { return edgeConformalMergeTolerance_; }
+
     bool refineBeforeRedistribute() const
     { return refineBeforeRedistribute_; }
 
@@ -388,6 +392,7 @@ protected:
 
     bool ownersFirst_;
     bool edgeConformal_;
+    double edgeConformalMergeTolerance_;
     bool refineBeforeRedistribute_;
     std::string lgrBackend_;
 
