@@ -231,10 +231,10 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
     if (no_network && !controllerThpRouteApplies_()) {
         return false;
     }
-    auto giveUp = [&](const std::string& why) {
-        deferred_logger.debug(fmt::format("Controller: the network route is not taken at report step {} ({}); "
-                                          "the balancer decides and legacy balances the network", reportStepIdx, why));
-        return false;
+    // No fallback to legacy: what the route cannot do is a gap to close, so it stops the run.
+    auto giveUp = [&](const std::string& why) -> bool {
+        OPM_THROW(std::logic_error, fmt::format("Group controller: the network route cannot decide at report "
+                                                  "step {} ({}); there is no fallback to legacy", reportStepIdx, why));
     };
     const auto& units = schedule.getUnits();
     const auto& summary_state = this->summaryState();
@@ -1863,7 +1863,8 @@ controllerInjectionDecide_(DeferredLogger& deferred_logger, const bool targets_o
     }
     auto& helper = this->groupStateHelper();
     if (helper.isReservoirCouplingMaster()) {
-        return false;
+        OPM_THROW(std::logic_error, "Group controller: injection under a reservoir coupling master is not supported; "
+                                      "there is no fallback to legacy");
     }
     std::vector<Scalar> group_resv(this->numPhases(), Scalar{0});
     calcInjResvCoeff(/*fipnum=*/0, /*pvtreg=*/0, group_resv);
