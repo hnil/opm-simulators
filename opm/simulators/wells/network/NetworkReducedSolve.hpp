@@ -29,6 +29,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -165,10 +166,13 @@ solveReduced(Sys& system,
     std::vector<std::pair<std::string, Scalar>> recent;   // set and residual, last few iterates
     int slow = 0;                                          // iterations since the best residual last fell by 10 %
     std::vector<int> cut_back_dying;                       // the wells the last step cut back at a cliff would have shut
+    auto best_p = p;                                       // the iterate with the smallest residual, for a solve that
+    Scalar best_residual = std::numeric_limits<Scalar>::max();   // ends unconverged on the wrong side of a cycle
     Scalar best = std::numeric_limits<Scalar>::max();
     for (int it = 1; it <= params.max_iterations; ++it) {
         out.iterations = it;
         out.residual = norm(r);
+        if (out.residual < best_residual) { best_residual = out.residual; best_p = p; }
         if (trace) {
             std::string ps;
             for (int i = 1; i <= n; ++i) { ps += fmt::format(" {:.3f}", p[i] / unit::barsa); }
@@ -422,6 +426,12 @@ solveReduced(Sys& system,
         }
         (void)system.reducedResidual(p);
         r = system.reducedResidual(p);
+        out.residual = norm(r);
+    }
+    if (!out.converged && best_residual < out.residual) {
+        p = best_p;
+        r = system.reducedResidual(p);
+        ++out.evaluations;
         out.residual = norm(r);
     }
     // Stalled at a lift cliff: flowing, the node row has no root (5_NETWORK_MODEL5_MSW's C-1H, report steps 0

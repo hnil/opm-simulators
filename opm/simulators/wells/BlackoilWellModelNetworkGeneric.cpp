@@ -353,8 +353,8 @@ assignNodeAndBranchValues(std::map<std::string, data::NodeData>& nodevalues,
                                                       reportStepIdx,
                                                       well_model_.comm());
     for (const auto& [node, converged_pressure] : converged_pressures) {
-        auto it = nodevalues.find(node);
-        assert(it != nodevalues.end() );
+        // A node the network gained since the last balance (an ACTIONX, COMBO-03_FULL) has no stored pressure yet.
+        auto it = nodevalues.try_emplace(node, data::NodeData{converged_pressure}).first;
         it->second.converged_pressure = converged_pressure;
         // Assign node values of group to GPR:WELLNAME
         const auto& sched = well_model_.schedule();
@@ -363,8 +363,7 @@ assignNodeAndBranchValues(std::map<std::string, data::NodeData>& nodevalues,
         }
         const auto& group = sched.getGroup(node, reportStepIdx);
         for (const std::string& wellname : group.wells()) {
-            auto it2 = nodevalues.find(wellname);
-            assert(it2 != nodevalues.end());
+            auto it2 = nodevalues.try_emplace(wellname, data::NodeData{converged_pressure}).first;
             it2->second.converged_pressure = converged_pressure;
         }
     }

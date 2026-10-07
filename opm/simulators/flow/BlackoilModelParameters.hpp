@@ -130,6 +130,7 @@ struct GroupControllerShutPersistence { static constexpr int value = 1; };
 struct GroupControllerKeepFlowing { static constexpr bool value = false; };
 struct GroupControllerHoldStopped { static constexpr bool value = true; };
 struct GroupControllerClosing { static constexpr auto value = "all"; };
+struct GroupControllerGasLift { static constexpr auto value = "steps"; };
 template<class Scalar>
 struct GroupTreeBalancerTolerance { static constexpr Scalar value = 1e-5; };
 
@@ -509,6 +510,7 @@ public:
 
     /// Controller: which wells the route closes after a solve on continued tubing curves
     std::string group_controller_closing_;
+    std::string group_controller_gas_lift_;
 
     template<class Serializer>
     void serializeOp(Serializer& serializer)

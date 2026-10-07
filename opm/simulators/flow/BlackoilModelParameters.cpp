@@ -153,6 +153,7 @@ BlackoilModelParameters<Scalar>::BlackoilModelParameters()
     group_controller_keep_flowing_ = Parameters::Get<Parameters::GroupControllerKeepFlowing>();
     group_controller_hold_stopped_ = Parameters::Get<Parameters::GroupControllerHoldStopped>();
     group_controller_closing_ = Parameters::Get<Parameters::GroupControllerClosing>();
+    group_controller_gas_lift_ = Parameters::Get<Parameters::GroupControllerGasLift>();
     if (enable_group_controller_) {
         enable_group_tree_balancer_ = true;
     }
@@ -396,6 +397,10 @@ void BlackoilModelParameters<Scalar>::registerParameters()
     Parameters::Register<Parameters::GroupControllerInjection>
         ("Group controller: injection groups are decided by the controller's tree; injection networks, "
          "satellite injection and MULTI injectors stay with the legacy rules");
+    Parameters::Register<Parameters::GroupControllerGasLift>
+        ("Group controller: how lift gas is allocated on the route (LIFTOPT): trials (one increment up and down per "
+         "well, a route solve each), steps (adjoint gradient, per-well steps doubling and halving) or projected "
+         "(adjoint gradient ascent on oil less LIFTOPT's minimum gradient times lift gas, with a line search)");
     Parameters::Register<Parameters::GroupControllerClosing>
         ("Group controller: after a solve on continued tubing curves, which of the wells left on a "
          "continuation are closed: all of them at once (all), the one furthest onto it and then solve "

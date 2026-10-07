@@ -19,6 +19,8 @@
 #include <config.h>
 #include "NetworkSolveTestSupport.hpp"
 #include <opm/simulators/wells/network/NetworkSteinStart.hpp>
+#include <opm/simulators/wells/network/NetworkGasLift.hpp>
+#include <opm/simulators/wells/network/NetworkTubingExtension.hpp>
 
 // The decks and the dumps: trees built from a deck, generated instances,
 // and every route scored by the judge on the systems MODEL5 dumped.
@@ -2033,6 +2035,92 @@ BOOST_AUTO_TEST_CASE(replay_one_failed_route)
         for (const double v : q) { qs += " " + std::to_string(v * 86400.0); }
         BOOST_TEST_MESSAGE("p " << convert::to(p[scan], bars) << " r " << convert::to(res[scan - 1] * convert::from(1.0, bars), bars)
                            << " q" << qs);
+    }
+}
+
+// The gas-lift methods against the best allocation on LIFTOPT's increments, on decisions dumped by
+// OPM_CONTROLLER_DUMP_GLIFT. Off unless OPM_GLIFT_DUMPS (a directory) and OPM_REPLAY_VFP are set.
+BOOST_AUTO_TEST_CASE(gas_lift_methods_against_the_best_allocation)
+{
+    const char* dir = std::getenv("OPM_GLIFT_DUMPS");
+    const char* vfp = std::getenv("OPM_REPLAY_VFP");
+    if (dir == nullptr || vfp == nullptr) {
+        BOOST_TEST_MESSAGE("OPM_GLIFT_DUMPS / OPM_REPLAY_VFP not set, nothing to compare");
+        return;
+    }
+    std::deque<VFPProdTable> tables;
+    VFPProdProperties<double> props;
+    const UnitSystem units{};
+    std::stringstream files(vfp);
+    for (std::string f; std::getline(files, f, ':');) {
+        const auto deck = Parser{}.parseFile(f);
+        for (const auto& kw : deck.getKeywordList("VFPPROD")) {
+            tables.emplace_back(*kw, /*gaslift_opt_active=*/true, units);
+            props.addTable(tables.back());
+        }
+    }
+    std::vector<std::filesystem::path> dumps;
+    for (const auto& e : std::filesystem::directory_iterator(dir)) {
+        if (e.path().string().find("_glift_") != std::string::npos) { dumps.push_back(e.path()); }
+    }
+    std::sort(dumps.begin(), dumps.end());
+    const NetworkSolve::Parameters<double> params{1e-2, 50};
+    const char* names[] = {"trials", "steps", "projected"};
+    std::array<double, 3> sum_gap{}, worst_gap{};
+    std::array<long, 3> solves{}, within{};
+    int compared = 0;
+    for (const auto& path : dumps) {
+        std::ifstream in(path);
+        std::string head;
+        std::getline(in, head);
+        auto [base, guess] = NetworkSolve::readProduction<double>(in, props, units);
+        std::ifstream in2(path);
+        const auto prob = NetworkSolve::readLiftProblem<double>(in2);
+        if (prob.wells.empty()) { continue; }
+        auto solveOn = [&](auto& sys) {
+            return [&sys, &params](const std::vector<double>& start, const bool keep) {
+                auto ex = NetworkSolve::solveReducedOnExtension(sys, start, params, NetworkSolve::Closing::All, 20, keep,
+                                                                convert::from(0.1, bars));
+                auto r = std::move(ex.last);
+                r.converged = r.converged && ex.converged;
+                return r;
+            };
+        };
+        std::array<double, 3> j{};
+        bool ok = true;
+        for (int m = 0; m < 3 && ok; ++m) {
+            auto sys = base;
+            auto solve = solveOn(sys);
+            auto r = solve(guess, false);
+            if (!r.converged) { ok = false; break; }
+            const auto st = NetworkSolve::allocateLiftGas(sys, r, prob, static_cast<NetworkSolve::LiftMethod>(m), solve,
+                                                          [](const std::string&) { return false; });
+            ok = r.converged;
+            j[m] = NetworkSolve::liftObjective(sys, r, prob);
+            solves[m] += st.solves;
+        }
+        auto sys = base;
+        auto solve = solveOn(sys);
+        const auto r0 = solve(guess, false);
+        if (!ok || !r0.converged) { continue; }
+        const auto [best, best_a] = NetworkSolve::bestLiftByEnumeration(sys, r0, prob, solve);
+        ++compared;
+        std::string row = path.filename().string() + fmt::format(" best {:.3f}", best * 86400.0);
+        for (int m = 0; m < 3; ++m) {
+            const double gap = (best - j[m]) / std::max(std::abs(best), 1e-12);
+            sum_gap[m] += gap;
+            worst_gap[m] = std::max(worst_gap[m], gap);
+            within[m] += gap < 1e-3;
+            row += fmt::format(" | {} {:+.2f} %", names[m], -100.0 * gap);
+        }
+        std::string alloc;
+        for (const double v : best_a) { alloc += fmt::format(" {:.0f}", v * 86400.0); }
+        BOOST_TEST_MESSAGE(row << " | best lift" << alloc);
+    }
+    for (int m = 0; m < 3; ++m) {
+        BOOST_TEST_MESSAGE(fmt::format("{}: {} of {} within 0.1 % of the best, mean {:.3f} %, worst {:.3f} % below, "
+                                       "{} route solves", names[m], within[m], compared,
+                                       compared ? 100.0 * sum_gap[m] / compared : 0.0, 100.0 * worst_gap[m], solves[m]));
     }
 }
 
