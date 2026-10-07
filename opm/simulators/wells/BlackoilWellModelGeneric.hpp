@@ -630,6 +630,7 @@ protected:
         long tree_walk_retries = 0;   // routes that failed on the balancer's tree, solved on the route's walk
         long gaslift_decisions = 0, gaslift_trials = 0, gaslift_moves = 0, gaslift_gradients = 0;
         long route_within_tolerance = 0;   // routes that stalled within the facility tolerance and were taken
+        long stall_shut_attempts = 0;      // routes solved again allowing a trial shut at the worst node
         long stein_decisions = 0, stein_inconsistent = 0;
         double worst_deviation = 0;
     } controller_stats_;

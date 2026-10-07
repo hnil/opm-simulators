@@ -193,6 +193,9 @@ public:
     {}
 
     static bool isFixed(const Node& node) { return node.fixed_pressure > 0.0; }
+    /// A stalled solve may shut a thp or tied well at its worst node on trial (the last attempt only).
+    void setStallShutTrials(const bool on) { stall_shut_trials_ = on; }
+    bool stallShutTrials() const { return stall_shut_trials_; }
     void setFixedPressure(const int n, const Scalar p) { nodes_[n].fixed_pressure = p; }
 
     void addNode(Node n, const Scalar alq)
@@ -2874,6 +2877,7 @@ private:
     bool exact_potential_ = false;
     bool dead_when_cannot_lift_ = false;
     bool tubing_extension_ = false;
+    bool stall_shut_trials_ = false;
     bool tangent_at_touch_ = false;
     std::vector<char> reduced_dead_;
     std::vector<Scalar> cliff_q_;

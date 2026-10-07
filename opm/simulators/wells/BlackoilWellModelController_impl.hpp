@@ -1135,12 +1135,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
             }
             auto r = std::move(ex.last);
             r.converged = r.converged && ex.converged;
-            // Stalled within the facility's own tolerance (0.025 bar at a tied well's table kink, GSATPROD5): an
-            // answer the judge accepts, so taken; the judge still checks it.
-            if (!r.converged && r.residual * unit::barsa < param_.group_controller_network_tolerance_) {
-                r.converged = true;
-                ++this->controller_stats_.route_within_tolerance;
-            }
+
             r.iterations = ex.iterations;
             r.evaluations = ex.evaluations;
             return r;
@@ -1158,6 +1153,19 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                 stein_set = false;
                 ++this->controller_stats_.tree_walk_retries;
                 r = solveRouteOnce(start, keep_dead);
+            }
+            // Then: a stalled solve may shut a thp or tied well at its worst node on trial (COMBO-03_FULL).
+            if (!r.converged) {
+                system.setStallShutTrials(true);
+                r = solveRouteOnce(start, keep_dead);
+                system.setStallShutTrials(false);
+                ++this->controller_stats_.stall_shut_attempts;
+            }
+            // Last: stalled within the facility's own tolerance (0.025 bar at a tied well's table kink, GSATPROD5)
+            // is an answer the judge accepts, so taken; the judge still checks it.
+            if (!r.converged && r.residual * unit::barsa < param_.group_controller_network_tolerance_) {
+                r.converged = true;
+                ++this->controller_stats_.route_within_tolerance;
             }
             return r;
         };

@@ -428,12 +428,6 @@ solveReduced(Sys& system,
         r = system.reducedResidual(p);
         out.residual = norm(r);
     }
-    if (!out.converged && best_residual < out.residual) {
-        p = best_p;
-        r = system.reducedResidual(p);
-        ++out.evaluations;
-        out.residual = norm(r);
-    }
     // Stalled at a lift cliff: flowing, the node row has no root (5_NETWORK_MODEL5_MSW's C-1H, report steps 0
     // and 1). The cliff rule above, shut, for the wells at the edge -- flowing here, unable to lift a quarter
     // bar higher -- and those the last cut-back step would have shut. Each retry shuts at least one more well.
@@ -455,6 +449,37 @@ solveReduced(Sys& system,
                             : well.node == 0 ? system.terminalPressure() : p[well.node];
             if (!(system.thpPotential(well, pn + Scalar{0.25} * unit::barsa) > Scalar{0})) { edge.push_back(w); }
         }
+        if (edge.empty() && system.stallShutTrials()) {
+            // No edge and nothing cut back: a flowline on its hydrostatic side, where less flow needs more
+            // pressure and the node row peaks short of zero with the wells flowing (COMBO-03_FULL report step 20,
+            // a tied well at its 500 sm3/d limit, -0.13 bar). Try the thp and tied wells on the worst node shut,
+            // one at a time, smallest rate first; the first converged answer stands.
+            int worst = 0;
+            for (int i = 1; i < system.numNodes(); ++i) { if (std::abs(r[i]) > std::abs(r[worst])) { worst = i; } }
+            std::vector<std::pair<Scalar, int>> at_node;
+            for (int w = 0; w < system.numWells(); ++w) {
+                const auto& well = system.wells()[w];
+                const char c = system.controlLetter(w);
+                if (well.node == worst + 1 && !well.shut && !system.committedDead()[w] && q[w] > Scalar{0}
+                    && (c == 'T' || c == 'C')) { at_node.emplace_back(q[w], w); }
+            }
+            std::sort(at_node.begin(), at_node.end());
+            for (const auto& [rate, w] : at_node) {
+                const auto saved = system.committedDead();
+                system.killWell(w);
+                if (trace) { std::fprintf(stderr, "[cliff] stalled at node %d; well %d shut on trial\n", worst + 1, w); }
+                auto again = solveReduced(system, p, params, eliminate, cliff_rule, /*keep_dead=*/true);
+                if (again.converged) {
+                    again.iterations += out.iterations;
+                    again.evaluations += out.evaluations;
+                    again.on_cliff = true;
+                    again.cliff_wells.push_back(w);
+                    return again;
+                }
+                system.restoreDead(saved);
+                (void)system.reducedResidual(p);
+            }
+        }
         if (!edge.empty()) {
             for (const int w : edge) { system.killWell(w); }
             if (trace) { std::fprintf(stderr, "[cliff] stalled; %zu well(s) at the edge shut, solving again\n", edge.size()); }
@@ -467,6 +492,14 @@ solveReduced(Sys& system,
                 return again;
             }
         }
+    }
+    // Nothing settled it: hand back the best iterate, not wherever a cycle left off (GSATPROD5: 0.025 bar
+    // against 10.9); the caller may take it within the facility's tolerance.
+    if (!out.converged && best_residual < out.residual) {
+        p = best_p;
+        r = system.reducedResidual(p);
+        ++out.evaluations;
+        out.residual = norm(r);
     }
     out.node_pressure = p;
     out.well_rate = system.wellRates(system.reducedState());
