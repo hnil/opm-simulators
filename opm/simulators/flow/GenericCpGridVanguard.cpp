@@ -800,6 +800,7 @@ void GenericCpGridVanguard<ElementMapper,GridView,Scalar>::addLgrsUpdateLeafView
                 }
             }
             request.minpvRemoved = minpvRemoved[lgr];
+            request.pillarsFromBoxLayer = lgrCollection.pillarsFromBoxLayer();
             requests.push_back(std::move(request));
         }
         return requests;
