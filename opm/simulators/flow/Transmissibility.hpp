@@ -38,6 +38,7 @@
 #include <array>
 #include <functional>
 #include <map>
+#include <optional>
 #include <cstdint>
 #include <unordered_map>
 #include <vector>
@@ -79,6 +80,9 @@ public:
      * \brief Return the transmissibility for the intersection between two elements.
      */
     Scalar transmissibility(unsigned elemIdx1, unsigned elemIdx2) const;
+
+    //! \brief The transmissibility between two elements, if the grid joins them.
+    std::optional<Scalar> findTransmissibility(unsigned elemIdx1, unsigned elemIdx2) const;
 
     /*!
      * \brief Set the transmissibility of a connection which is not a geometric face.
@@ -198,6 +202,11 @@ public:
     void update(bool global, TransUpdateQuantities update_quantities = TransUpdateQuantities::All,
                 const std::function<unsigned int(unsigned int)>& map = {}, bool applyNncMultRegT = false);
 
+    /// Connections of refined cells' hosts as the unrefined grid has them, keyed
+    /// by the two level-zero Cartesian indices, smaller first.  For output.
+    const std::map<std::pair<int,int>, Scalar>& hostLevelTransmissibilities() const
+    { return hostLevelTrans_; }
+
 protected:
     void updateFromEclState_(bool global);
 
@@ -230,11 +239,6 @@ protected:
     /// \returns an array of vector (TRANX, TRANY, TRANZ}
     std::array<std::vector<double>,3>
     createTransmissibilityArrays_(const std::array<bool,3>& is_tran);
-
-    /// Per transmissibility-array entry, the active cell whose TRAN* modifier
-    /// applies to it, or -1. Only meaningful for a refined grid, where the
-    /// arrays are longer than the deck's cell count.
-    std::array<std::vector<int>,3> tranActionIndex_(const std::array<bool,3>& is_tran);
 
     /// \brief overwrites calculated transmissibilities
     ///
@@ -372,6 +376,7 @@ protected:
     bool enableDiffusivity_;
     bool enableDispersivity_;
     bool lgrTransFromHost_{false};
+    std::map<std::pair<int,int>, Scalar> hostLevelTrans_;
     bool warnEditNNC_ = true;
     std::unordered_map<std::uint64_t, Scalar> thermalHalfTrans_; //NB this is based on direction map size is ca 2*trans_ (diffusivity_)
     std::unordered_map<std::uint64_t, Scalar> halfTrans_; // directional, only filled when storeHalfTrans_
