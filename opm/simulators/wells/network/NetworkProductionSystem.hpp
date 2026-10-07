@@ -1070,10 +1070,11 @@ public:
                 for (int ph = 0; ph < NP; ++ph) { q[ph] = std::max(ipr(w, ph, b), Scalar{0}); }
                 return q;
             };
-            // On the table itself: continuous, and where it has a root the continued curve equals it.
+            // On the curve the solve uses: the continued one on the extension, so the rate is continuous in the
+            // node pressure; the table itself without it.
             auto h = [&](const Scalar b) {
                 ++lookups_;
-                return b - (tableBhp(w, p_node, rates(b)) - dp);
+                return b - (tubingBhp(w, p_node, rates(b)) - dp);
             };
             // Bracketed, and only the root with the stable crossing's sign
             // pattern (h rising through zero): an unguarded secant from
@@ -2918,7 +2919,9 @@ void write(const ProductionSystem<Scalar>& system, const std::vector<Scalar>& gu
            << w.bhp_limit << ' ' << w.oil_rate_limit << ' ' << w.in_group << ' ' << w.guide << ' '
            << w.efficiency << ' ' << w.vfp_dp << ' ' << w.pinned << ' ' << w.dead_above << ' '
            << w.lift_gas << ' ' << w.node_adds_lift_gas << ' ' << w.q_start << ' ' << w.shut << ' '
-           << w.group << '\n';
+           << w.group << ' ' << w.own_thp << ' ' << w.min_ratio[0] << ' ' << w.min_ratio[1] << ' '
+           << w.min_ratio[2] << ' ' << w.explicit_vfp << ' ' << w.explicit_wfr << ' ' << w.explicit_gfr << ' '
+           << w.group_controllable << '\n';
     }
     os << "guess";
     for (const auto p : guess) { os << ' ' << p; }
@@ -2972,6 +2975,11 @@ readProduction(std::istream& is, const VFPProdProperties<Scalar>& props, const U
             in >> w.q_start;             // older dumps: stays 0
             int shut = 0; in >> shut; w.shut = shut != 0;
             int grp = -1; if (in >> grp) { w.group = grp; }   // older dumps: no tree
+            int expl = 0, ctrl = 0;
+            if (in >> w.own_thp >> w.min_ratio[0] >> w.min_ratio[1] >> w.min_ratio[2] >> expl
+                   >> w.explicit_wfr >> w.explicit_gfr >> ctrl) {
+                w.explicit_vfp = expl != 0; w.group_controllable = ctrl != 0;
+            }
             system.addWell(std::move(w));
         } else if (tag == "guess") { Scalar v; while (in >> v) { guess.push_back(v); } }
     }

@@ -164,6 +164,7 @@ solveReduced(Sys& system,
     const Scalar max_step = Scalar{50} * unit::barsa, floor = unit::barsa;
     std::vector<std::pair<std::string, Scalar>> recent;   // set and residual, last few iterates
     int slow = 0;                                          // iterations since the best residual last fell by 10 %
+    std::vector<int> cut_back_dying;                       // the wells the last step cut back at a cliff would have shut
     Scalar best = std::numeric_limits<Scalar>::max();
     for (int it = 1; it <= params.max_iterations; ++it) {
         out.iterations = it;
@@ -260,6 +261,10 @@ solveReduced(Sys& system,
             (void)system.reducedResidual(pt);
             ++out.evaluations;
             if (newDeath(system.deadNow())) {
+                cut_back_dying.clear();
+                for (std::size_t w = 0; w < system.deadNow().size(); ++w) {
+                    if (system.deadNow()[w] && !dead_here[w]) { cut_back_dying.push_back(static_cast<int>(w)); }
+                }
                 if (!at_cliff) {
                     // Cut back to the alive side: the largest step with no new death.
                     Scalar lo = 0, hi = alpha;
@@ -345,7 +350,9 @@ solveReduced(Sys& system,
         // against the best residual so far, so an alternation counts.
         if (eliminate && !out.differenced) {
             const Scalar now = norm(r);
-            if (now < Scalar{0.9} * best) { best = now; slow = 0; } else { ++slow; }
+            // Newton halves the residual at least; slower is a Jacobian that disagrees with the rows (NORNE-NET-01
+            // report step 87 zig-zagged 5 % per iteration for 50 iterations near E-4AH's cliff).
+            if (now < Scalar{0.5} * best) { best = now; slow = 0; } else { ++slow; }
             if (slow >= 4) {
                 out.differenced = true;
                 if (trace) { std::fprintf(stderr, "[slow] elimination steps not converging, differencing from here\n"); }
@@ -411,6 +418,40 @@ solveReduced(Sys& system,
         (void)system.reducedResidual(p);
         r = system.reducedResidual(p);
         out.residual = norm(r);
+    }
+    // Stalled at a lift cliff: flowing, the node row has no root (5_NETWORK_MODEL5_MSW's C-1H, report steps 0
+    // and 1). The cliff rule above, shut, for the wells at the edge -- flowing here, unable to lift a quarter
+    // bar higher -- and those the last cut-back step would have shut. Each retry shuts at least one more well.
+    if (!out.converged) {
+        (void)system.reducedResidual(p);
+        const auto q = system.wellRates(system.reducedState());
+        std::vector<int> edge;
+        for (int w = 0; w < system.numWells(); ++w) {
+            const auto& well = system.wells()[w];
+            if (well.shut || well.vfp_table <= 0 || system.committedDead()[w]) { continue; }
+            // Cut back at, whichever side of the cliff the last iterate is on (NORNE-NET-01 report step 105:
+            // a two-set cycle, 0 and 908 sm3/d, residuals -18 and +20 bar).
+            if (std::find(cut_back_dying.begin(), cut_back_dying.end(), w) != cut_back_dying.end()) {
+                edge.push_back(w);
+                continue;
+            }
+            if (!(q[w] > Scalar{0}) || system.controlLetter(w) != 'T') { continue; }
+            const Scalar pn = well.own_thp > Scalar{0} ? well.own_thp
+                            : well.node == 0 ? system.terminalPressure() : p[well.node];
+            if (!(system.thpPotential(well, pn + Scalar{0.25} * unit::barsa) > Scalar{0})) { edge.push_back(w); }
+        }
+        if (!edge.empty()) {
+            for (const int w : edge) { system.killWell(w); }
+            if (trace) { std::fprintf(stderr, "[cliff] stalled; %zu well(s) at the edge shut, solving again\n", edge.size()); }
+            auto again = solveReduced(system, p, params, eliminate, cliff_rule, /*keep_dead=*/true);
+            if (again.converged) {
+                again.iterations += out.iterations;
+                again.evaluations += out.evaluations;
+                again.on_cliff = true;
+                again.cliff_wells.insert(again.cliff_wells.end(), edge.begin(), edge.end());
+                return again;
+            }
+        }
     }
     out.node_pressure = p;
     out.well_rate = system.wellRates(system.reducedState());

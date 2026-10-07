@@ -728,13 +728,14 @@ namespace Opm {
                                       "({} iterations, {} evaluations, {} set changes, {} lookups), {} well solves, "
                                       "{} converged, {} stalled, {} cap hits, {} judge rejections, worst deviation {:.1f} %, "
                                       "written against the balancer's tree: {} of {} decisions differ, "
-                                      "{} unsettled iterations let through, kept flowing {} (tried {})",
+                                      "{} unsettled iterations let through, kept flowing {} (tried {}), "
+                                      "{} routes solved again on the route's walk",
                                       simulationTime / 86400.0, st.calls, st.passes, st.decisions, st.route_iterations,
                                       st.route_evaluations, st.set_changes, st.lookups, st.well_solves, st.converged,
                                       st.stalled, st.cap_hits,
                                       this->controller_judge_rejections_, 100.0 * st.worst_deviation,
                                       st.stein_inconsistent, st.stein_decisions, this->controller_accepted_unsettled_,
-                                      st.kept_flowing, st.kept_flowing + st.kept_flowing_failed));
+                                      st.kept_flowing, st.kept_flowing + st.kept_flowing_failed, st.tree_walk_retries));
         }
 
         // time step is finished and we are not any more at the beginning of an report step

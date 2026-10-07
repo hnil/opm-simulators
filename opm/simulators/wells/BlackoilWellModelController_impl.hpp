@@ -834,7 +834,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
             const char* v = std::getenv("OPM_CONTROLLER_GROUP_SET");
             return std::string(v != nullptr ? v : "stein");
         }();
-        const bool stein_set = group_set == "stein" && !tree_wells.empty();
+        bool stein_set = group_set == "stein" && !tree_wells.empty();
         int stein_mode_switches = 0, stein_trims = 0;
         ProdGroupTreeBalancer::Tree<Scalar> stein_last;   // the tree behind the set in force
         if (stein_set) {
@@ -1093,7 +1093,12 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
         // Stein's continuation: every inflow line crosses its tubing curve once, the shut decision
         // is taken after the solve for every well at once.
         const bool extension = param_.group_controller_tubing_extension_;
-        auto solveRoute = [&](const std::vector<Scalar>& start, const bool keep_dead) {
+        // OPM_CONTROLLER_DUMP_FAILED=<prefix>: what the last solve was given, written if the route then fails.
+        static const char* dump_failed = std::getenv("OPM_CONTROLLER_DUMP_FAILED");
+        std::optional<Sys> last_input;
+        std::vector<Scalar> last_start;
+        auto solveRouteOnce = [&](const std::vector<Scalar>& start, const bool keep_dead) {
+            if (dump_failed) { last_input = system; last_start = start; }
             if (!extension) {
                 return NetworkSolve::solveReduced(system, start, params, /*eliminate=*/true, cliff_rule, keep_dead);
             }
@@ -1111,6 +1116,22 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
             r.converged = r.converged && ex.converged;
             r.iterations = ex.iterations;
             r.evaluations = ex.evaluations;
+            return r;
+        };
+        // Stein's tree can be discontinuous in the node pressures -- a well's share against its own limit,
+        // NORNE-NET-01 report step 105 cycled at residual 1.5 -- so a route that fails with it is solved
+        // again on the route's own walk, for the rest of this decision.
+        auto solveRoute = [&](const std::vector<Scalar>& start, const bool keep_dead) {
+            auto r = solveRouteOnce(start, keep_dead);
+            if (!r.converged && stein_set) {
+                deferred_logger.debug(fmt::format("Controller: the route did not converge on the balancer's tree under {} "
+                                                  "at report step {} (residual {:.3g}); solving on the route's own walk",
+                                                  root.name(), reportStepIdx, r.residual));
+                system.setTreeAllocator({});
+                stein_set = false;
+                ++this->controller_stats_.tree_walk_retries;
+                r = solveRouteOnce(start, keep_dead);
+            }
             return r;
         };
         auto rr = solveRoute(guess, false);
@@ -1406,6 +1427,11 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                                               stein_valid ? "valid" : "NOT valid", 100.0 * stein_gap, stein_gap_well));
         }
         if (!rr.converged) {
+            if (last_input) {
+                std::ofstream out(fmt::format("{}_failed_{}_{}.txt", dump_failed, reportStepIdx,
+                                              this->controller_dumps_written_++));
+                if (out) { NetworkSolve::write(*last_input, last_start, out); }
+            }
             return giveUp(fmt::format("the reduced route did not converge under {} in {} iterations, residual {:.3g}",
                                       root.name(), rr.iterations, rr.residual));
         }

@@ -624,6 +624,7 @@ protected:
         long calls = 0, passes = 0, well_solves = 0, cap_hits = 0, judge_rejections = 0;
         long converged = 0, stalled = 0;
         long kept_flowing = 0, kept_flowing_failed = 0;
+        long tree_walk_retries = 0;   // routes that failed on the balancer's tree, solved on the route's walk
         long stein_decisions = 0, stein_inconsistent = 0;
         double worst_deviation = 0;
     } controller_stats_;

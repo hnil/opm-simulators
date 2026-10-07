@@ -1984,4 +1984,56 @@ BOOST_AUTO_TEST_CASE(scan_reduced_residual)
     }
 }
 
+// One route the simulator could not solve, written by OPM_CONTROLLER_DUMP_FAILED: solved as the controller
+// solves it, then node OPM_REPLAY_SCAN_NODE scanned +-1 bar around the end point. Off unless
+// OPM_REPLAY_DUMP (the dump) and OPM_REPLAY_VFP (colon-separated deck files with the VFPPROD tables) are set.
+BOOST_AUTO_TEST_CASE(replay_one_failed_route)
+{
+    const char* dump = std::getenv("OPM_REPLAY_DUMP");
+    const char* vfp = std::getenv("OPM_REPLAY_VFP");
+    if (dump == nullptr || vfp == nullptr) {
+        BOOST_TEST_MESSAGE("OPM_REPLAY_DUMP / OPM_REPLAY_VFP not set, nothing to replay");
+        return;
+    }
+    std::deque<VFPProdTable> tables;
+    VFPProdProperties<double> props;
+    const UnitSystem units{};
+    std::stringstream files(vfp);
+    for (std::string f; std::getline(files, f, ':');) {
+        const auto deck = Parser{}.parseFile(f);
+        for (const auto& kw : deck.getKeywordList("VFPPROD")) {
+            tables.emplace_back(*kw, /*gaslift_opt_active=*/true, units);
+            props.addTable(tables.back());
+        }
+    }
+    std::ifstream in(dump);
+    std::string head;
+    std::getline(in, head);
+    auto [system, guess] = NetworkSolve::readProduction<double>(in, props, units);
+    const NetworkSolve::Parameters<double> params{1e-2, 50};
+    const auto ex = NetworkSolve::solveReducedOnExtension(system, guess, params, NetworkSolve::Closing::All, 20, false,
+                                                          convert::from(0.1, bars));
+    const auto& r = ex.last;
+    BOOST_TEST_MESSAGE("converged " << (r.converged && ex.converged) << " residual " << r.residual << " iterations "
+                       << ex.iterations << " passes " << ex.passes << " closed " << ex.closed);
+    std::string ps;
+    for (const double p : r.node_pressure) { ps += " " + std::to_string(convert::to(p, bars)); }
+    BOOST_TEST_MESSAGE("pressures" << ps);
+    const int scan = std::getenv("OPM_REPLAY_SCAN_NODE") ? std::atoi(std::getenv("OPM_REPLAY_SCAN_NODE")) : -1;
+    if (scan < 1) { return; }
+    system.setTubingExtension(true);
+    const double half = std::getenv("OPM_REPLAY_SCAN_WIDTH") ? std::atof(std::getenv("OPM_REPLAY_SCAN_WIDTH")) : 1.0;
+    const double inc = std::getenv("OPM_REPLAY_SCAN_STEP") ? std::atof(std::getenv("OPM_REPLAY_SCAN_STEP")) : 0.05;
+    for (double d = -half; d <= half + 1e-9; d += inc) {
+        auto p = r.node_pressure;
+        p[scan] += convert::from(d, bars);
+        const auto res = system.reducedResidual(p);
+        const auto q = system.wellRates(system.reducedState());
+        std::string qs;
+        for (const double v : q) { qs += " " + std::to_string(v * 86400.0); }
+        BOOST_TEST_MESSAGE("p " << convert::to(p[scan], bars) << " r " << convert::to(res[scan - 1] * convert::from(1.0, bars), bars)
+                           << " q" << qs);
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()
