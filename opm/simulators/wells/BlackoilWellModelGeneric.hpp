@@ -609,6 +609,7 @@ protected:
     mutable long controller_accepted_unsettled_ = 0;    // iterations let through unsettled after the budget
     /// Per time step (time, dt): how often the route gave each zero-rate well a rate again.
     std::pair<double, double> controller_revival_step_{-1.0, -1.0};
+    double controller_glift_time_ = -1.0;   // when the controller last optimised lift gas
     std::map<std::string, int> controller_revivals_{};
     std::map<std::string, Well::ProducerCMode> controller_assigned_cmode_{};
     std::map<std::string, std::vector<Scalar>> controller_assigned_rates_{};
@@ -625,6 +626,7 @@ protected:
         long converged = 0, stalled = 0;
         long kept_flowing = 0, kept_flowing_failed = 0;
         long tree_walk_retries = 0;   // routes that failed on the balancer's tree, solved on the route's walk
+        long gaslift_decisions = 0, gaslift_trials = 0, gaslift_moves = 0;
         long stein_decisions = 0, stein_inconsistent = 0;
         double worst_deviation = 0;
     } controller_stats_;

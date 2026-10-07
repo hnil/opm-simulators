@@ -333,6 +333,9 @@ template<class Scalar> class WellContributions;
             /// Diagnostic: score the state handed to the linearisation as a facility
             /// solution, by the physics and by what one more legacy pass would change.
             void facilityCheck_(DeferredLogger& deferred_logger);
+            /// LIFTOPT's timing for the controller's gas lift: every Newton iteration or the first of a
+            /// time step (item 4), and the least time between optimisations (item 3).
+            bool controllerGasLiftDue_();
 
             void updateAndCommunicate(const int reportStepIdx, bool injectors_only = false);
 

@@ -181,7 +181,9 @@ Verdict verifyAnswer(const Sys& sys, const std::vector<double>& p, const std::ve
         auto sum = sys.nodeSource(n);
         for (int w = 0; w < sys.numWells(); ++w) {
             if (sys.wells()[w].node != n) { continue; }
-            for (int ph = 0; ph < NP; ++ph) { sum[ph] += sys.wells()[w].efficiency * (q[w][ph] + (ph == 2 ? sys.wells()[w].lift_gas : 0.0)); }
+            // Lift gas only through a well that flows, as the route's rows have it.
+            const double lift = q[w][1] > 0.0 ? sys.wells()[w].lift_gas : 0.0;
+            for (int ph = 0; ph < NP; ++ph) { sum[ph] += sys.wells()[w].efficiency * (q[w][ph] + (ph == 2 ? lift : 0.0)); }
         }
         for (int c = 1; c <= sys.numNodes(); ++c) {
             if (sys.nodes()[c].parent != n) { continue; }
