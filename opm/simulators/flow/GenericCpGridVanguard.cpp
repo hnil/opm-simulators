@@ -524,7 +524,8 @@ distributeGrid(const Dune::EdgeWeightMethod                          edgeWeights
 
 template<class ElementMapper, class GridView, class Scalar>
 void GenericCpGridVanguard<ElementMapper,GridView,Scalar>::
-doCreateGrids_(const bool edge_conformal, EclipseState& eclState)
+doCreateGrids_(const bool edge_conformal, EclipseState& eclState,
+               const double merge_tolerance)
 {
     const auto isRoot = this->mpiRank == 0;
 
@@ -555,7 +556,8 @@ doCreateGrids_(const bool edge_conformal, EclipseState& eclState)
                                /* isPeriodic = */ false,
                                /* flipNormals = */ false,
                                /* clipZ = */ false,
-                               edge_conformal);
+                               edge_conformal,
+                               merge_tolerance);
 
     if (isRoot) {
         const auto& active_porv = eclState.fieldProps().porv(false);

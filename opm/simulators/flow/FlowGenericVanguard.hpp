@@ -82,6 +82,7 @@ struct PartitionMethod { static constexpr auto value = "zoltanwell"; };
 struct AddCorners { static constexpr bool value = false; };
 struct NumOverlap { static constexpr int value = 1; };
 struct EdgeConformal { static constexpr bool value = false; };
+struct EdgeConformalMergeTolerance { static constexpr double value = 0.0; };
 
 /// Experimental: for LGR decks, refine the global grid *before* load
 /// balancing (refine-then-distribute) instead of the default rank-interior
@@ -274,6 +275,9 @@ public:
     bool edgeConformal() const
     { return edgeConformal_; }
 
+    double edgeConformalMergeTolerance() const
+    { return edgeConformalMergeTolerance_; }
+
     bool refineBeforeRedistribute() const
     { return refineBeforeRedistribute_; }
 
@@ -391,6 +395,7 @@ protected:
 
     bool ownersFirst_;
     bool edgeConformal_;
+    double edgeConformalMergeTolerance_;
     bool refineBeforeRedistribute_;
 
 #if HAVE_MPI
