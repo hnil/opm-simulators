@@ -632,6 +632,7 @@ protected:
         long route_within_tolerance = 0;   // routes that stalled within the facility tolerance and were taken
         long stall_shut_attempts = 0;      // routes solved again allowing a trial shut at the worst node
         long gaslift_reanchored = 0;       // lifted wells re-anchored at their new lift gas
+        long capacity_confirmed = 0;       // wells near their thp capacity re-anchored at the well model's point
         long stein_decisions = 0, stein_inconsistent = 0;
         double worst_deviation = 0;
     } controller_stats_;

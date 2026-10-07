@@ -155,6 +155,8 @@ BlackoilModelParameters<Scalar>::BlackoilModelParameters()
     group_controller_closing_ = Parameters::Get<Parameters::GroupControllerClosing>();
     group_controller_gas_lift_ = Parameters::Get<Parameters::GroupControllerGasLift>();
     group_controller_gas_lift_reanchor_ = Parameters::Get<Parameters::GroupControllerGasLiftReanchor>();
+    group_controller_gas_lift_revive_ = Parameters::Get<Parameters::GroupControllerGasLiftRevive>();
+    group_controller_confirm_capacity_ = Parameters::Get<Parameters::GroupControllerConfirmCapacity>();
     if (enable_group_controller_) {
         enable_group_tree_balancer_ = true;
     }
@@ -398,6 +400,12 @@ void BlackoilModelParameters<Scalar>::registerParameters()
     Parameters::Register<Parameters::GroupControllerInjection>
         ("Group controller: injection groups are decided by the controller's tree; injection networks, "
          "satellite injection and MULTI injectors stay with the legacy rules");
+    Parameters::Register<Parameters::GroupControllerConfirmCapacity>
+        ("Group controller: wells on thp, tied, or held at 90 % of their thp capacity have their inflow lines moved "
+         "through the well model's own point at the node pressure, and the route is solved again");
+    Parameters::Register<Parameters::GroupControllerGasLiftRevive>
+        ("Group controller: a lifted well dead when the gas-lift allocation starts comes back only through lift gas "
+         "(lift: shut again if it ends with none) or by whatever the allocation's trials leave (any)");
     Parameters::Register<Parameters::GroupControllerGasLiftReanchor>
         ("Group controller: after a lift-gas allocation, re-anchor each changed well's inflow lines through the well "
          "model's operating point at its node pressure and new lift gas, and solve the route again");

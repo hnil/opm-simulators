@@ -119,6 +119,9 @@ template<class Scalar>
 struct LiftProblem
 {
     Scalar inc = 0, eco = 0;
+    /// A lifted well dead when the allocation starts comes back only through lift gas: if it ends with none, it is
+    /// shut again (else the route's own lines may keep it flowing where the well model could not lift it).
+    bool revive_only_by_lift = true;
     std::vector<LiftWell<Scalar>> wells;
     std::vector<LiftCap<Scalar>> caps;
 };
@@ -187,8 +190,30 @@ void projectLift(std::vector<Scalar>& a, const LiftProblem<Scalar>& prob)
 /// keep_dead) re-solves the route; held(name) says a well is not to move this step. Every method first gives a
 /// dead well the least lift gas that makes it flow, if its oil per gas pays.
 template<class Sys, class Result, class Solve, class Held>
+LiftStats allocateLiftGasCore(Sys& system, Result& r, const LiftProblem<typename Sys::ScalarType>& prob,
+                              const LiftMethod method, Solve&& solve, Held&& held);
+
+template<class Sys, class Result, class Solve, class Held>
 LiftStats allocateLiftGas(Sys& system, Result& r, const LiftProblem<typename Sys::ScalarType>& prob,
                           const LiftMethod method, Solve&& solve, Held&& held)
+{
+    using Scalar = typename Sys::ScalarType;
+    std::vector<int> dead_at_start;
+    for (const auto& l : prob.wells) { if (!(r.well_rate[l.w] > Scalar{0})) { dead_at_start.push_back(l.w); } }
+    auto st = allocateLiftGasCore(system, r, prob, method, solve, held);
+    if (prob.revive_only_by_lift && r.converged) {
+        bool shut = false;
+        for (const int w : dead_at_start) {
+            if (r.well_rate[w] > Scalar{0} && !(system.wells()[w].alq > Scalar{0})) { system.killWell(w); shut = true; }
+        }
+        if (shut) { r = solve(r.node_pressure, true); ++st.solves; }
+    }
+    return st;
+}
+
+template<class Sys, class Result, class Solve, class Held>
+LiftStats allocateLiftGasCore(Sys& system, Result& r, const LiftProblem<typename Sys::ScalarType>& prob,
+                              const LiftMethod method, Solve&& solve, Held&& held)
 {
     using Scalar = typename Sys::ScalarType;
     LiftStats st;

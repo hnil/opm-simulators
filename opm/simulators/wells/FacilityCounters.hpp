@@ -33,6 +33,7 @@ struct FacilityCounters
     long network_sub_iterations = 0;
     long well_solves = 0, well_solves_failed = 0;
     long well_linearisations = 0;  // one per inner well iteration
+    long all_solves = 0;           // every well solve of any kind: main, trials on copies, tests
     long ipr_assemblies = 0;       // of those, the implicit IPR's (not a solve iteration)
     /// OPM_WELL_SOLVE_STATS=1: solves split by what changed since the well's previous solve.
     /// first = first in this Newton iteration; same = same control and target; changed = not.

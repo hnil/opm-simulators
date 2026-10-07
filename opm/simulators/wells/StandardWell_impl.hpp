@@ -2402,6 +2402,7 @@ namespace Opm
                              const GroupStateHelperType& groupStateHelper,
                              WellStateType& well_state)
     {
+        ++FacilityCounters::get().all_solves;
         auto& deferred_logger = groupStateHelper.deferredLogger();
 
         updatePrimaryVariables(groupStateHelper);
@@ -2469,6 +2470,7 @@ namespace Opm
                                const bool fixed_status /*false*/,
                                const bool solving_with_zero_rate /*false*/)
     {
+        ++FacilityCounters::get().all_solves;
         auto& deferred_logger = groupStateHelper.deferredLogger();
 
         updatePrimaryVariables(groupStateHelper);

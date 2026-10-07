@@ -132,6 +132,8 @@ struct GroupControllerHoldStopped { static constexpr bool value = true; };
 struct GroupControllerClosing { static constexpr auto value = "all"; };
 struct GroupControllerGasLift { static constexpr auto value = "steps"; };
 struct GroupControllerGasLiftReanchor { static constexpr bool value = true; };
+struct GroupControllerGasLiftRevive { static constexpr auto value = "lift"; };
+struct GroupControllerConfirmCapacity { static constexpr bool value = false; };
 template<class Scalar>
 struct GroupTreeBalancerTolerance { static constexpr Scalar value = 1e-5; };
 
@@ -513,6 +515,8 @@ public:
     std::string group_controller_closing_;
     std::string group_controller_gas_lift_;
     bool group_controller_gas_lift_reanchor_;
+    std::string group_controller_gas_lift_revive_;
+    bool group_controller_confirm_capacity_;
 
     template<class Serializer>
     void serializeOp(Serializer& serializer)

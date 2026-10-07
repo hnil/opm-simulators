@@ -1461,6 +1461,78 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                                               "allocation differs by at most {:.1f} % ({})", root.name(),
                                               stein_valid ? "valid" : "NOT valid", 100.0 * stein_gap, stein_gap_well));
         }
+        // The well model's own operating point of each well in `which` at its node pressure (thp) and lift gas;
+        // its inflow lines are moved through that point (slopes kept). Returns how many were moved.
+        auto reanchorAtWellModel = [&](const std::vector<int>& which) {
+            constexpr int stride = 2 + Sys::NP;
+            std::vector<Scalar> ans(which.size() * stride, Scalar{0});
+            for (std::size_t c = 0; c < which.size(); ++c) {
+                const auto& well = system.wells()[which[c]];
+                const auto widx = this->wellState().index(well.name);
+                if (!widx.has_value() || !this->wellState().wellIsOwned(*widx, well.name)) { continue; }
+                const auto wit = std::find_if(well_container_.begin(), well_container_.end(),
+                                              [&](const auto& x) { return x->name() == well.name; });
+                if (wit == well_container_.end()) { continue; }
+                auto& wi = *wit;
+                const Scalar p_w = well.own_thp > Scalar{0} ? well.own_thp
+                                 : well.node == 0 ? terminal : rr.node_pressure[well.node];
+                const auto saved = wi->getDynamicThpLimit();
+                wi->setDynamicThpLimit(p_w);
+                const auto bhp = wi->computeBhpAtThpLimitProdWithAlq(simulator_, this->groupStateHelper(),
+                                                                     summary_state, well.alq, false);
+                wi->setDynamicThpLimit(saved);
+                if (!bhp) { continue; }
+                std::vector<Scalar> q(pu.numActivePhases(), Scalar{0});
+                wi->computeWellRatesWithBhp(simulator_, *bhp, q, deferred_logger);
+                Scalar* r = ans.data() + c * stride;
+                r[0] = 1;
+                r[1] = *bhp;
+                for (int ph = 0; ph < Sys::NP; ++ph) {
+                    const Scalar q_true = pos[ph] >= 0 ? std::max(-q[pos[ph]], Scalar{0}) : Scalar{0};
+                    r[2 + ph] = q_true - well.ipr_b[ph] * *bhp;
+                }
+            }
+            if (this->comm().size() > 1 && !ans.empty()) {
+                this->comm().sum(ans.data(), ans.size());
+            }
+            int moved = 0;
+            for (std::size_t c = 0; c < which.size(); ++c) {
+                const Scalar* r = ans.data() + c * stride;
+                if (r[0] < Scalar{0.5}) { continue; }
+                std::array<Scalar, Sys::NP> a{};
+                for (int ph = 0; ph < Sys::NP; ++ph) { a[ph] = r[2 + ph]; }
+                system.setWellIpr(which[c], a, system.wells()[which[c]].ipr_b);
+                ++moved;
+            }
+            return moved;
+        };
+        // --group-controller-confirm-capacity: a well at or near its thp capacity is where the route's line is
+        // furthest from where it was taken (NORNE-NET-GL-01's B-1H, 15-20 % over near its cliff); the well model's
+        // own point at the node pressure is taken there, and the route solved again.
+        if (param_.group_controller_confirm_capacity_ && rr.converged) {
+            std::vector<int> near;
+            for (int w = 0; w < system.numWells(); ++w) {
+                const auto& well = system.wells()[w];
+                const char c = system.controlLetter(w);
+                if (well.shut || well.pinned || well.vfp_table <= 0 || !(rr.well_rate[w] > Scalar{0})) { continue; }
+                if (c == 'T' || c == 'C') { near.push_back(w); continue; }
+                if (c == 'R' || c == 'G') {
+                    const Scalar p_w = well.own_thp > Scalar{0} ? well.own_thp
+                                     : well.node == 0 ? terminal : rr.node_pressure[well.node];
+                    const Scalar cap = system.thpPotential(well, p_w);
+                    if (cap > Scalar{0} && cap < std::numeric_limits<Scalar>::max() && rr.well_rate[w] >= Scalar{0.9} * cap) {
+                        near.push_back(w);
+                    }
+                }
+            }
+            if (!near.empty()) {
+                const int moved = reanchorAtWellModel(near);
+                if (moved > 0) {
+                    rr = solveRoute(rr.node_pressure, true);
+                    this->controller_stats_.capacity_confirmed += moved;
+                }
+            }
+        }
         // Gas lift (LIFTOPT/WLIFTOPT/GLIFTOPT) on the route's answer, on the frozen IPRs: lift gas where the
         // system's marginal oil per lift gas meets LIFTOPT's minimum, within the groups' limits (satellite lift gas
         // counted). --group-controller-gas-lift picks the method (NetworkGasLift.hpp). A well that went up and down
@@ -1470,6 +1542,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
             NetworkSolve::LiftProblem<Scalar> prob;
             prob.inc = glo.gaslift_increment();
             prob.eco = glo.min_eco_gradient();
+            prob.revive_only_by_lift = param_.group_controller_gas_lift_revive_ != "any";
             for (int w = 0; w < system.numWells(); ++w) {
                 const auto& well = system.wells()[w];
                 if (!glo.has_well(well.name) || !glo.well(well.name).use_glo() || well.shut || well.pinned
@@ -1531,46 +1604,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                         && std::abs(system.wells()[l.w].alq - this->wellState().well(name).alq_state.get()) > Scalar{1e-12}
                         && rr.well_rate[l.w] > Scalar{0}) { changed.push_back(l.w); }
                 }
-                constexpr int stride = 2 + Sys::NP;
-                std::vector<Scalar> ans(changed.size() * stride, Scalar{0});
-                for (std::size_t c = 0; c < changed.size(); ++c) {
-                    const auto& well = system.wells()[changed[c]];
-                    const auto widx = this->wellState().index(well.name);
-                    if (!widx.has_value() || !this->wellState().wellIsOwned(*widx, well.name)) { continue; }
-                    const auto wit = std::find_if(well_container_.begin(), well_container_.end(),
-                                                  [&](const auto& x) { return x->name() == well.name; });
-                    if (wit == well_container_.end()) { continue; }
-                    auto& wi = *wit;
-                    const Scalar p_w = well.own_thp > Scalar{0} ? well.own_thp
-                                     : well.node == 0 ? terminal : rr.node_pressure[well.node];
-                    const auto saved = wi->getDynamicThpLimit();
-                    wi->setDynamicThpLimit(p_w);
-                    const auto bhp = wi->computeBhpAtThpLimitProdWithAlq(simulator_, this->groupStateHelper(),
-                                                                         summary_state, well.alq, false);
-                    wi->setDynamicThpLimit(saved);
-                    if (!bhp) { continue; }
-                    std::vector<Scalar> q(pu.numActivePhases(), Scalar{0});
-                    wi->computeWellRatesWithBhp(simulator_, *bhp, q, deferred_logger);
-                    Scalar* r = ans.data() + c * stride;
-                    r[0] = 1;
-                    r[1] = *bhp;
-                    for (int ph = 0; ph < Sys::NP; ++ph) {
-                        const Scalar q_true = pos[ph] >= 0 ? std::max(-q[pos[ph]], Scalar{0}) : Scalar{0};
-                        r[2 + ph] = q_true - well.ipr_b[ph] * *bhp;
-                    }
-                }
-                if (this->comm().size() > 1 && !ans.empty()) {
-                    this->comm().sum(ans.data(), ans.size());
-                }
-                int moved = 0;
-                for (std::size_t c = 0; c < changed.size(); ++c) {
-                    const Scalar* r = ans.data() + c * stride;
-                    if (r[0] < Scalar{0.5}) { continue; }
-                    std::array<Scalar, Sys::NP> a{};
-                    for (int ph = 0; ph < Sys::NP; ++ph) { a[ph] = r[2 + ph]; }
-                    system.setWellIpr(changed[c], a, system.wells()[changed[c]].ipr_b);
-                    ++moved;
-                }
+                const int moved = reanchorAtWellModel(changed);
                 if (moved > 0) {
                     rr = solveRoute(rr.node_pressure, true);
                     this->controller_stats_.gaslift_reanchored += moved;

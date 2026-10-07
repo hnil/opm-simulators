@@ -1571,6 +1571,7 @@ namespace Opm
                              const GroupStateHelperType& groupStateHelper,
                              WellStateType& well_state)
     {
+        ++FacilityCounters::get().all_solves;
         if (!this->isOperableAndSolvable() && !this->wellIsStopped()) return true;
 
         auto& deferred_logger = groupStateHelper.deferredLogger();
@@ -1700,6 +1701,7 @@ namespace Opm
                              const bool fixed_status /*false*/,
                              const bool solving_with_zero_rate /*false*/)
     {
+        ++FacilityCounters::get().all_solves;
         auto& deferred_logger = groupStateHelper.deferredLogger();
 
         const int max_iter_number = this->param_.max_inner_iter_ms_wells_;

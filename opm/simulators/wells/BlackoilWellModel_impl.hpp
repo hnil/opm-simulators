@@ -683,9 +683,9 @@ namespace Opm {
         if (std::getenv("OPM_FACILITY_CHECK") != nullptr) {
             const auto& c = FacilityCounters::get();
             OpmLog::debug(fmt::format("Facility cost totals at day {:.1f}: {} outer iterations, {} network sub-iterations, "
-                                      "{} well solves ({} failed), {} well linearisations",
+                                      "{} well solves ({} failed), {} well linearisations, {} well solves of any kind",
                                       simulationTime / 86400.0, c.outer_iterations, c.network_sub_iterations,
-                                      c.well_solves, c.well_solves_failed, c.well_linearisations));
+                                      c.well_solves, c.well_solves_failed, c.well_linearisations, c.all_solves));
         }
         if (std::getenv("OPM_WELL_SOLVE_STATS") != nullptr) {
             const auto& c = FacilityCounters::get();
