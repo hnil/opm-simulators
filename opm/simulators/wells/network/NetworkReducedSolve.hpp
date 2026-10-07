@@ -220,7 +220,12 @@ solveReduced(Sys& system,
         std::vector<Scalar> dx;
         if (eliminate && !out.differenced) {
             dx = reducedStepByElimination(system, r);
-            if (dx.empty()) { break; }
+            if (dx.empty()) {
+                // A singular elimination (GSATPROD5 with a well revived by lift gas): differences, same point.
+                out.differenced = true;
+                if (trace) { std::fprintf(stderr, "[stall] elimination singular, differencing from here\n"); }
+                continue;
+            }
         } else {
             DenseMatrix<Scalar> J(n);
             const Scalar h = Scalar{1e-3} * unit::barsa;

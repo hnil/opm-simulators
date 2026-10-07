@@ -35,6 +35,7 @@
 #include <opm/simulators/wells/ProdGroupTreeBalancer.hpp>
 #include <opm/simulators/wells/WellHelpers.hpp>
 #include <opm/simulators/wells/network/NetworkJudge.hpp>
+#include <opm/simulators/wells/network/NetworkGasLift.hpp>
 #include <opm/simulators/wells/network/NetworkProductionSystem.hpp>
 #include <opm/simulators/wells/network/NetworkReducedSolve.hpp>
 #include <opm/simulators/wells/network/NetworkTubingExtension.hpp>
@@ -435,6 +436,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
         this->controller_revival_step_ = step_key;
         this->controller_revivals_.clear();
         this->controller_shut_streak_.clear();
+        this->controller_glift_flips_.clear();
         this->controller_step_start_oil_.clear();
         for (const auto& [name, d] : route_data) {
             this->controller_step_start_oil_[name] = d.open ? std::max(-static_cast<double>(d.q[pos[1]]), 0.0) : 0.0;
@@ -1445,72 +1447,32 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                                               "allocation differs by at most {:.1f} % ({})", root.name(),
                                               stein_valid ? "valid" : "NOT valid", 100.0 * stein_gap, stein_gap_well));
         }
-        // Gas lift (LIFTOPT/WLIFTOPT/GLIFTOPT) on the route's answer: each lifted well's lift gas moves at most one
-        // increment per decision, down where the system's oil per lift gas falls below the economic minimum, up where
-        // it beats it, best first within the groups' limits. A trial is a route solve -- every well on its IPR, the
-        // network and the groups -- so it sees what the lift gas does to the node pressure and the other wells.
+        // Gas lift (LIFTOPT/WLIFTOPT/GLIFTOPT) on the route's answer: lift gas where the system's marginal oil per
+        // lift gas meets the economic minimum (LIFTOPT item 2), within the groups' limits. The gradient is global
+        // (adjoint of the node rows: it carries the node pressures' response, the other wells and the group
+        // allocation); the allocation is solved on the frozen IPRs, each well's step halving when its direction
+        // flips, down to LIFTOPT's increment. A well that went up and down within a time step is held there.
         const auto& glo = schedule[reportStepIdx].glo();
         if (rr.converged && glo.active() && controllerGasLiftDue_()) {
             const Scalar inc = glo.gaslift_increment();
             const Scalar eco = glo.min_eco_gradient();
-            auto totals = [&](const auto& r) {
-                Scalar oil = 0, gas = 0;
-                for (int w = 0; w < system.numWells(); ++w) {
-                    const auto& well = system.wells()[w];
-                    const Scalar q = r.well_rate[w];
-                    if (!(q > Scalar{0}) || !(well.ipr_b[1] < Scalar{0})) { continue; }
-                    const Scalar bhp = (q - well.ipr_a[1]) / well.ipr_b[1];
-                    oil += well.efficiency * q;
-                    gas += well.efficiency * std::max(Sys::ipr(well, 2, bhp), Scalar{0});
-                }
-                return std::pair{oil, gas};
-            };
-            auto setAlq = [&](const int w, const Scalar alq) {
-                system.setWellAlq(w, alq);
-            };
-            struct Move { int w; Scalar gradient; Scalar dgas; };
-            std::vector<Move> ups, downs;
-            const auto base = totals(rr);
-            const auto dead = system.committedDead();
-            // A well the route found dead may lift with more gas (the wells that need lift to flow at all): its
-            // up-trial starts with it alive.
-            auto trial = [&](const int w, const Scalar alq) {
-                const Scalar old_alq = system.wells()[w].alq;
-                setAlq(w, alq);
-                auto start_dead = dead;
-                if (alq > old_alq && static_cast<std::size_t>(w) < start_dead.size()) { start_dead[w] = 0; }
-                system.restoreDead(start_dead);
-                const auto rt = solveRouteOnce(rr.node_pressure, true);
-                const auto t = rt.converged ? std::optional{totals(rt)} : std::nullopt;
-                setAlq(w, old_alq);
-                system.restoreDead(dead);
-                return t;
-            };
+            struct Lifted { int w; Scalar lo, hi, step, wf, gf; int last = 0; };
+            std::vector<Lifted> lifted;
             for (int w = 0; w < system.numWells(); ++w) {
                 const auto& well = system.wells()[w];
                 if (!glo.has_well(well.name) || !glo.well(well.name).use_glo() || well.shut || well.pinned
                     || well.vfp_table <= 0) { continue; }
                 const auto& gw = glo.well(well.name);
                 const auto& axis = this->getVFPProperties().getProd()->getTable(well.vfp_table).getALQAxis();
-                const Scalar max_alq = std::min(gw.max_rate().has_value() ? static_cast<Scalar>(*gw.max_rate())
-                                                                          : std::numeric_limits<Scalar>::max(),
-                                                axis.empty() ? Scalar{0} : static_cast<Scalar>(axis.back()));
-                const Scalar min_alq = std::max(static_cast<Scalar>(gw.min_rate()), Scalar{0});
-                const Scalar wf = gw.weight_factor(), gf = gw.inc_weight_factor();
-                if (well.alq + inc <= max_alq * (1 + 1e-9)) {
-                    if (const auto t = trial(w, well.alq + inc)) {
-                        const Scalar dgas = t->second - base.second;
-                        ups.push_back({w, wf * (t->first - base.first) / (inc + gf * dgas), dgas});
-                    }
-                }
-                if (well.alq - inc >= min_alq * (1 - 1e-9)) {
-                    if (const auto t = trial(w, well.alq - inc)) {
-                        const Scalar dgas = base.second - t->second;
-                        downs.push_back({w, wf * (base.first - t->first) / (inc + gf * dgas), dgas});
-                    }
-                }
+                const Scalar hi = std::min(gw.max_rate().has_value() ? static_cast<Scalar>(*gw.max_rate())
+                                                                     : std::numeric_limits<Scalar>::max(),
+                                           axis.empty() ? Scalar{0} : static_cast<Scalar>(axis.back()));
+                const Scalar lo = std::max(static_cast<Scalar>(gw.min_rate()), Scalar{0});
+                // Steps start at one increment, double while the direction holds and halve when it flips.
+                const Scalar step = inc;
+                lifted.push_back({w, lo, hi, step, static_cast<Scalar>(gw.weight_factor()),
+                                  static_cast<Scalar>(gw.inc_weight_factor())});
             }
-            // The groups' limits: lift gas, and produced plus lift gas, summed over each group's lifted wells.
             auto groupsOf = [&](const std::string& well) {
                 std::vector<std::string> out;
                 for (std::string g = schedule.getWell(well, reportStepIdx).groupName(); !g.empty() && g != "FIELD";
@@ -1518,54 +1480,156 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                 out.push_back("FIELD");
                 return out;
             };
-            auto withinLimits = [&](const int w, const Scalar extra_lift, const Scalar extra_gas) {
-                for (const auto& g : groupsOf(system.wells()[w].name)) {
-                    if (!glo.has_group(g)) { continue; }
-                    const auto& gg = glo.group(g);
-                    Scalar lift = extra_lift;
-                    for (int k = 0; k < system.numWells(); ++k) {
-                        const auto gk = groupsOf(system.wells()[k].name);
-                        if (std::find(gk.begin(), gk.end(), g) != gk.end()) { lift += system.wells()[k].alq; }
-                    }
-                    if (gg.max_lift_gas().has_value() && lift > *gg.max_lift_gas() * (1 + 1e-9)) { return false; }
-                    if (gg.max_total_gas().has_value()
-                        && this->groupState().has_production_rates(g)
-                        && lift + extra_gas + std::abs(this->groupState().production_rates(g)[pu.canonicalToActivePhaseIdx(IndexTraits::gasPhaseIdx)])
-                               > *gg.max_total_gas() * (1 + 1e-9)) { return false; }
-                }
-                return true;
+            auto& flips = this->controller_glift_flips_;
+            std::vector<int> wells;
+            for (const auto& l : lifted) { wells.push_back(l.w); }
+            static const bool check = std::getenv("OPM_GLIFT_CHECK") != nullptr;
+            int moves = 0, inner = 0;
+            // A dead well has no gradient (its oil does not respond): one trial step, revived, kept if it flows and
+            // the system's oil per lift gas beats the minimum -- the wells that need lift to flow at all.
+            auto systemOil = [&](const auto& r) {
+                Scalar oil = 0;
+                for (int k = 0; k < system.numWells(); ++k) { oil += system.wells()[k].efficiency * r.well_rate[k]; }
+                return oil;
             };
-            int moved = 0;
-            auto final_dead = dead;
-            for (const auto& m : downs) {
-                if (m.gradient < eco || !withinLimits(m.w, 0, 0)) {
-                    setAlq(m.w, system.wells()[m.w].alq - inc);
-                    ++moved;
+            for (auto& l : lifted) {
+                if (rr.well_rate[l.w] > Scalar{0}) { continue; }
+                const Scalar a0 = system.wells()[l.w].alq;
+                const auto dead = system.committedDead();
+                bool kept = false;
+                // The least lift gas that makes it flow: one increment, doubling.
+                for (Scalar d = inc; !kept && std::max(a0, l.lo) + d <= l.hi * (1 + 1e-9); d *= 2) {
+                    const Scalar a1 = std::max(a0, l.lo) + d;
+                    auto start_dead = dead;
+                    if (static_cast<std::size_t>(l.w) < start_dead.size()) { start_dead[l.w] = 0; }
+                    system.setWellAlq(l.w, a1);
+                    system.restoreDead(start_dead);
+                    const auto rt = solveRouteOnce(rr.node_pressure, true);
+                    if (!(rt.converged && rt.well_rate[l.w] > Scalar{0})) { continue; }
+                    if ((systemOil(rt) - systemOil(rr)) / (a1 - a0) > eco) {
+                        rr = rt;
+                        l.last = 1;
+                        ++moves;
+                        kept = true;
+                    }
+                    break;      // it flows: more gas only lowers the oil per gas of this first step
+                }
+                if (!kept) {
+                    system.setWellAlq(l.w, a0);
+                    system.restoreDead(dead);
+                    (void)system.reducedResidual(rr.node_pressure);
                 }
             }
-            std::sort(ups.begin(), ups.end(), [](const Move& a, const Move& b) { return a.gradient > b.gradient; });
-            for (const auto& m : ups) {
-                const bool lowered = std::any_of(downs.begin(), downs.end(), [&](const Move& d) {
-                    return d.w == m.w && (d.gradient < eco); });
-                if (m.gradient > eco && !lowered && withinLimits(m.w, inc, m.dgas)) {
-                    setAlq(m.w, system.wells()[m.w].alq + inc);
-                    if (static_cast<std::size_t>(m.w) < final_dead.size()) { final_dead[m.w] = 0; }   // as its trial had it
-                    ++moved;
+            for (; inner < 30 && !lifted.empty() && rr.converged; ++inner) {
+                const auto g = NetworkSolve::liftGradients(system, rr.node_pressure, wells, Scalar{1e-2} * inc,
+                                                           Scalar{1e-3} * unit::barsa);
+                if (!g.ok) { break; }
+                ++this->controller_stats_.gaslift_gradients;
+                if (check && inner == 0) {
+                    // The adjoint gradient against a re-solved trial of one increment, first lifted well.
+                    const int w = lifted.front().w;
+                    const Scalar a0 = system.wells()[w].alq;
+                    const auto dead = system.committedDead();
+                    system.setWellAlq(w, a0 + inc);
+                    const auto rt = solveRouteOnce(rr.node_pressure, true);
+                    Scalar oil = 0;
+                    for (int k = 0; k < system.numWells(); ++k) { oil += system.wells()[k].efficiency * rt.well_rate[k]; }
+                    system.setWellAlq(w, a0);
+                    system.restoreDead(dead);
+                    (void)system.reducedResidual(rr.node_pressure);
+                    deferred_logger.debug(fmt::format("GLIFTCHECK step={} well {} alq {:.0f}: adjoint d(oil)/d(alq) {:.5g}, "
+                                                      "trial {:.5g}", reportStepIdx, system.wells()[w].name, a0 * 86400.0,
+                                                      g.doil.front(), rt.converged ? (oil - g.oil) / inc : -1.0));
                 }
+                bool moved = false;
+                for (std::size_t k = 0; k < lifted.size(); ++k) {
+                    auto& l = lifted[k];
+                    if (l.last == 2) { continue; }                      // settled this decision
+                    const auto& well = system.wells()[l.w];
+                    auto& f = flips[well.name];
+                    if (f.first > 0 && f.second > 0) { continue; }       // up and down this step: held
+                    const Scalar grad = l.wf * g.doil[k] / std::max(Scalar{1} + l.gf * g.dgas[k], Scalar{1e-12});
+                    const int dir = grad > eco ? 1 : (grad < eco && well.alq > l.lo) ? -1 : 0;
+                    if (dir == 0) { continue; }
+                    if (l.last != 0 && dir != l.last) { l.step = std::max(inc, inc * std::floor(l.step / (2 * inc))); }
+                    else if (l.last == dir) { l.step = std::min(2 * l.step, std::max(l.hi - l.lo, inc)); }
+                    if (l.last != 0 && dir != l.last && l.step <= inc) {
+                        // Settled between two increments: take the lower unless the upper still pays.
+                        if (dir < 0) { system.setWellAlq(l.w, std::max(l.lo, well.alq - inc)); moved = true; }
+                        l.last = 2;   // done
+                        continue;
+                    }
+                    const Scalar target = std::clamp(well.alq + dir * l.step, l.lo, l.hi);
+                    if (target == well.alq) { continue; }
+                    system.setWellAlq(l.w, target);
+                    l.last = dir;
+                    moved = true;
+                }
+                // The groups' lift-gas limits: over one, the wells with the lowest gradient give back first.
+                for (const auto& l0 : lifted) {
+                    for (const auto& grp : groupsOf(system.wells()[l0.w].name)) {
+                        if (!glo.has_group(grp) || !glo.group(grp).max_lift_gas().has_value()) { continue; }
+                        const Scalar cap = *glo.group(grp).max_lift_gas();
+                        std::vector<std::pair<Scalar, int>> under;
+                        // Satellite groups' lift gas (GSATPROD) counts against the limit too (GSATPROD5's SAT1).
+                        Scalar total = 0;
+                        for (const auto& name : schedule.groupNames(reportStepIdx)) {
+                            const auto& sg = schedule.getGroup(name, reportStepIdx);
+                            if (!sg.hasSatelliteProduction()
+                                || !schedule[reportStepIdx].satelliteProduction.has(name)) { continue; }
+                            bool below = false;
+                            for (std::string up = name; !up.empty(); up = up == "FIELD" ? "" : schedule.getGroup(up, reportStepIdx).parent()) {
+                                if (up == grp) { below = true; break; }
+                            }
+                            if (below) {
+                                total += static_cast<Scalar>(schedule[reportStepIdx].satelliteProduction(name)
+                                                                 .getRate(GSatProd::Rate::GLift, summary_state));
+                            }
+                        }
+                        for (std::size_t k = 0; k < lifted.size(); ++k) {
+                            const auto gk = groupsOf(system.wells()[lifted[k].w].name);
+                            if (std::find(gk.begin(), gk.end(), grp) == gk.end()) { continue; }
+                            total += system.wells()[lifted[k].w].alq;
+                            under.emplace_back(lifted[k].wf * g.doil[k], static_cast<int>(k));
+                        }
+                        std::sort(under.begin(), under.end());
+                        for (const auto& [grad, k] : under) {
+                            if (total <= cap * (1 + 1e-9)) { break; }
+                            const int w = lifted[k].w;
+                            const Scalar cut = std::min(system.wells()[w].alq - lifted[k].lo,
+                                                        inc * std::ceil((total - cap) / inc - 1e-9));
+                            if (cut <= 0) { continue; }
+                            system.setWellAlq(w, system.wells()[w].alq - cut);
+                            total -= cut;
+                            moved = true;
+                        }
+                    }
+                }
+                if (!moved) { break; }
+                ++moves;
+                const auto dead = system.committedDead();
+                auto start_dead = dead;
+                for (const auto& l : lifted) {
+                    if (system.wells()[l.w].alq > 0 && static_cast<std::size_t>(l.w) < start_dead.size()) { start_dead[l.w] = 0; }
+                }
+                system.restoreDead(start_dead);
+                rr = solveRoute(rr.node_pressure, true);
             }
-            // Always: the trials left the system's controls at their last one.
-            system.restoreDead(final_dead);
-            rr = solveRoute(rr.node_pressure, true);
             ++this->controller_stats_.gaslift_decisions;
-            this->controller_stats_.gaslift_moves += moved;
-            this->controller_stats_.gaslift_trials += static_cast<long>(ups.size() + downs.size());
-            // A well left at zero rate gets no lift gas: none goes down a well that does not flow, and the node
-            // and legacy's pressure computation (which counts every OPEN well's lift gas) then agree.
-            for (int w = 0; w < system.numWells(); ++w) {
-                const auto& well = system.wells()[w];
-                if (!glo.has_well(well.name)) { continue; }
-                if (!(rr.converged && rr.well_rate[w] > Scalar{0}) && well.alq > Scalar{0}) { system.setWellAlq(w, Scalar{0}); }
-                assigned_alq[well.name] = system.wells()[w].alq;
+            this->controller_stats_.gaslift_moves += moves;
+            this->controller_stats_.gaslift_trials += inner;
+            // A well left at zero rate gets no lift gas; record which way each well moved this step.
+            for (const auto& l : lifted) {
+                const auto& well = system.wells()[l.w];
+                if (!(rr.converged && rr.well_rate[l.w] > Scalar{0}) && well.alq > Scalar{0}) { system.setWellAlq(l.w, Scalar{0}); }
+                const auto it = this->wellState().has(well.name) ? std::optional<Scalar>(this->wellState().well(well.name).alq_state.get())
+                                                                 : std::nullopt;
+                if (it) {
+                    auto& f = flips[well.name];
+                    if (system.wells()[l.w].alq > *it + Scalar{1e-12}) { ++f.first; }
+                    if (system.wells()[l.w].alq < *it - Scalar{1e-12}) { ++f.second; }
+                }
+                assigned_alq[well.name] = system.wells()[l.w].alq;
             }
         }
         if (!rr.converged) {
