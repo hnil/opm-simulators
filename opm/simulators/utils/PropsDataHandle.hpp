@@ -34,6 +34,8 @@
 #include <opm/simulators/utils/MPISerializer.hpp>
 #include <opm/simulators/utils/ParallelEclipseState.hpp>
 #include <opm/simulators/utils/ParallelRestart.hpp>
+#include <opm/grid/LookUpData.hh>
+
 #include <dune/grid/common/datahandleif.hh>
 #include <dune/grid/common/mcmgmapper.hh>
 #include <dune/grid/common/partitionset.hh>
@@ -75,6 +77,12 @@ public:
             const FieldPropsManager& globalProps = eclState.globalFieldProps();
             m_intKeys = globalProps.keys<int>();
             m_doubleKeys = globalProps.keys<double>();
+            // PORV is derived on demand and else read through the parent's index on every rank.
+            if (m_grid.maxLevel() > 0 &&
+                std::find(m_doubleKeys.begin(), m_doubleKeys.end(), "PORV") == m_doubleKeys.end()) {
+                static_cast<void>(globalProps.get_double("PORV"));
+                m_doubleKeys.push_back("PORV");
+            }
             m_distributed_fieldProps.copyTran(globalProps);
 
             // Multi-valued fields such as ZMF use component-major storage:
@@ -129,8 +137,19 @@ public:
             // Record a single source cell's properties into elementData_, keyed
             // by the cell's local id; propIndex indexes the (level-zero/Cartesian
             // sized) global field properties.
+            // A grid refined before load balancing ships its leaf flat: give refined cells the
+            // values LookUpData would (PORV by volume share, an LGR's own arrays), since the
+            // distributed cells have no father to derive them from.
+            const bool refinedLeaf = m_grid.maxLevel() > 0;
+            using LeafView = typename Grid::LeafGridView;
+            const LeafView leafView = m_grid.leafGridView();  // LookUpData keeps a reference
+            const LookUpData<Grid, LeafView> lookup(leafView);
+            const auto leafPorv = (refinedLeaf && globalProps.has_double("PORV"))
+                ? lookup.assignFieldPropsDoubleOnLeaf(globalProps, "PORV") : std::vector<double>{};
+
             auto record = [&](const auto& element, const std::size_t propIndex)
             {
+                const bool refined = refinedLeaf && element.hasFather();
                 const auto& id = idSet.id(element);
                 auto& data = elementData_[id];
                 data.reserve(m_no_data);
@@ -138,7 +157,9 @@ public:
                 for (const auto& intKey : m_intKeys)
                 {
                     const auto& fieldData = globalProps.get_int_field_data(intKey);
-                    data.emplace_back(fieldData.data[propIndex],
+                    const double value = refined && globalProps.has_int(intKey)
+                        ? lookup.fieldPropInt(globalProps, intKey, element) : fieldData.data[propIndex];
+                    data.emplace_back(value,
                                       static_cast<unsigned char>(fieldData.value_status[propIndex]));
                 }
 
@@ -151,7 +172,14 @@ public:
                     for (std::size_t comp = 0; comp < m_doubleMult[keyIdx]; ++comp)
                     {
                         const auto dataIdx = comp * numCells + propIndex;
-                        data.emplace_back(fieldData.data[dataIdx],
+                        double value = fieldData.data[dataIdx];
+                        if (refined && m_doubleKeys[keyIdx] == "PORV" && !leafPorv.empty()) {
+                            value = leafPorv[leafView.indexSet().index(element)];
+                        }
+                        else if (refined && globalProps.has_double(m_doubleKeys[keyIdx])) {
+                            value = lookup.fieldPropDouble(globalProps, m_doubleKeys[keyIdx], element);
+                        }
+                        data.emplace_back(value,
                                           static_cast<unsigned char>(fieldData.value_status[dataIdx]));
                     }
                 }
