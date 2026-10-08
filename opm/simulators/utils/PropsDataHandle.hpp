@@ -157,33 +157,12 @@ public:
                 }
             };
 
-            if (m_grid.maxLevel() > 0)
+            // The view being scattered is the leaf: level zero, or the refined leaf
+            // in refine-before-redistribute. The serial grid is all on rank 0 here,
+            // and each cell takes the properties of its level-zero origin.
+            for (const auto& element : elements(m_grid.leafGridView(), Dune::Partitions::all))
             {
-                // refine-before-redistribute: the grid being load balanced is the
-                // refined leaf. The global field properties are defined on the
-                // level-zero (Cartesian) grid, so each leaf cell inherits the
-                // properties of its level-zero origin (getOrigin(): the cell
-                // itself for an unrefined coarse leaf cell, the level-zero
-                // ancestor for a refined cell). The whole serial leaf lives on
-                // rank 0 here, and the export list built for the scatter visits
-                // every leaf cell regardless of partition type, so record all of
-                // them (Partitions::all).
-                for (const auto& element : elements(m_grid.leafGridView(), Dune::Partitions::all))
-                {
-                    record(element, element.getOrigin().index());
-                }
-            }
-            else
-            {
-                const auto& gridView = m_grid.levelGridView(0);
-                using ElementMapper =
-                    Dune::MultipleCodimMultipleGeomTypeMapper<typename Grid::LevelGridView>;
-                ElementMapper elemMapper(gridView, Dune::mcmgElementLayout());
-
-                for (const auto &element : elements(gridView, Dune::Partitions::interiorBorder))
-                {
-                    record(element, elemMapper.index(element));
-                }
+                record(element, element.getOrigin().index());
             }
         }
     }
