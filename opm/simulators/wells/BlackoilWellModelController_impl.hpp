@@ -1530,6 +1530,84 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
             }
             return moved;
         };
+        // --group-controller-confirm-revival: a well's inflow line runs through a low-rate point at that point's
+        // fractions and can miss a high-rate crossing where more oil comes in (NORNE-NET-01 E-1H: about 1240 sm3/d
+        // at 54 bar, none on the line). A well the route leaves at zero rate is asked of the well model; where its
+        // stable crossing at the node pressure is confirmed by its equations, the line is moved through that point
+        // and the route solved again, kept only if the well then flows (otherwise a cliff: shut, as before).
+        if (param_.group_controller_confirm_revival_ && rr.converged) {
+            std::vector<int> zero;
+            for (int w = 0; w < system.numWells(); ++w) {
+                const auto& well = system.wells()[w];
+                if (well.shut || well.pinned || well.vfp_table <= 0 || rr.well_rate[w] > Scalar{0}
+                    || !(well.ipr_b[1] < Scalar{0})) { continue; }
+                zero.push_back(w);
+            }
+            constexpr int stride = 2 + Sys::NP;
+            std::vector<Scalar> ans(zero.size() * stride, Scalar{0});
+            for (std::size_t c = 0; c < zero.size(); ++c) {
+                const auto& well = system.wells()[zero[c]];
+                const auto widx = this->wellState().index(well.name);
+                if (!widx.has_value() || !this->wellState().wellIsOwned(*widx, well.name)) { continue; }
+                const auto wit = std::find_if(well_container_.begin(), well_container_.end(),
+                                              [&](const auto& x) { return x->name() == well.name; });
+                if (wit == well_container_.end()) { continue; }
+                auto& wi = *wit;
+                const Scalar p_w = well.own_thp > Scalar{0} ? well.own_thp
+                                 : well.node == 0 ? terminal : rr.node_pressure[well.node];
+                const auto saved_thp = wi->getDynamicThpLimit();
+                const auto saved_crossing = wi->stableThpCrossingSetting();
+                wi->setDynamicThpLimit(p_w);
+                wi->setStableThpCrossing(true);
+                auto bhp = wi->computeBhpAtThpLimitProdWithAlq(simulator_, this->groupStateHelper(), summary_state,
+                                                               well.alq, false);
+                if (bhp && wi->thpMarginWithIterations(simulator_, this->groupStateHelper(), *bhp)
+                               < -param_.group_controller_network_tolerance_) {
+                    bhp.reset();
+                }
+                wi->setDynamicThpLimit(saved_thp);
+                wi->setStableThpCrossing(saved_crossing);
+                if (!bhp) { continue; }
+                std::vector<Scalar> q(pu.numActivePhases(), Scalar{0});
+                wi->computeWellRatesWithBhp(simulator_, *bhp, q, deferred_logger);
+                Scalar* r = ans.data() + c * stride;
+                r[0] = 1;
+                r[1] = *bhp;
+                for (int ph = 0; ph < Sys::NP; ++ph) {
+                    r[2 + ph] = pos[ph] >= 0 ? std::max(-q[pos[ph]], Scalar{0}) : Scalar{0};
+                }
+            }
+            if (this->comm().size() > 1 && !ans.empty()) {
+                this->comm().sum(ans.data(), ans.size());
+            }
+            const auto before = system;
+            std::vector<int> back;
+            for (std::size_t c = 0; c < zero.size(); ++c) {
+                const Scalar* r = ans.data() + c * stride;
+                if (r[0] < Scalar{0.5}) { continue; }
+                const int w = zero[c];
+                const auto b = system.wells()[w].ipr_b;
+                std::array<Scalar, Sys::NP> a{};
+                for (int ph = 0; ph < Sys::NP; ++ph) { a[ph] = r[2 + ph] - b[ph] * r[1]; }
+                system.setWellIpr(w, a, b);
+                system.reviveWell(w, r[2 + 1]);
+                back.push_back(w);
+            }
+            if (!back.empty()) {
+                this->controller_stats_.revival_tried += static_cast<long>(back.size());
+                auto again = solveRoute(rr.node_pressure, true);
+                const int kept = again.converged
+                    ? static_cast<int>(std::count_if(back.begin(), back.end(),
+                                                     [&again](const int w) { return again.well_rate[w] > Scalar{0}; }))
+                    : 0;
+                if (kept > 0) {
+                    rr = std::move(again);
+                    this->controller_stats_.revival_kept += kept;
+                } else {
+                    system = before;
+                }
+            }
+        }
         // --group-controller-confirm-capacity: a well at or near its thp capacity is where the route's line is
         // furthest from where it was taken (NORNE-NET-GL-01's B-1H, 15-20 % over near its cliff); the well model's
         // own point at the node pressure is taken there, and the route solved again.

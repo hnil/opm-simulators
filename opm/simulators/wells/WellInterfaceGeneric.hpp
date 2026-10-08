@@ -104,7 +104,8 @@ public:
     bool useVfpExplicit () const;
     bool stableThpCrossing() const
     { return stable_thp_crossing_.value_or(param_.well_thp_crossing_ == "stable"); }
-    void setStableThpCrossing(const bool on) { stable_thp_crossing_ = on; }
+    std::optional<bool> stableThpCrossingSetting() const { return stable_thp_crossing_; }
+    void setStableThpCrossing(const std::optional<bool> on) { stable_thp_crossing_ = on; }
     bool thpLimitViolatedButNotSwitched() const;
 
     void initCompletions();
