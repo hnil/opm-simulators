@@ -167,6 +167,11 @@ private:
     Scalar getVfpBhpAdjustment(const Scalar bph_tab, const Scalar thp_limit) const;
 
     //! \brief Find limits using bisection.
+    std::optional<Scalar>
+    stableBhpAtThpLimit(const std::function<std::vector<Scalar>(const Scalar)>& frates,
+                        const std::function<Scalar(const std::vector<Scalar>)>& fbhp,
+                        const std::array<Scalar, 2>& range) const;
+
     bool bisectBracket(const std::function<Scalar(const Scalar)>& eq,
                        const std::array<Scalar, 2>& range,
                        Scalar& low, Scalar& high,

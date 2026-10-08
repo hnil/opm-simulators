@@ -157,6 +157,10 @@ BlackoilModelParameters<Scalar>::BlackoilModelParameters()
     group_controller_gas_lift_reanchor_ = Parameters::Get<Parameters::GroupControllerGasLiftReanchor>();
     group_controller_gas_lift_revive_ = Parameters::Get<Parameters::GroupControllerGasLiftRevive>();
     group_controller_confirm_capacity_ = Parameters::Get<Parameters::GroupControllerConfirmCapacity>();
+    well_thp_crossing_ = Parameters::Get<Parameters::WellThpCrossing>();
+    if (well_thp_crossing_ != "legacy" && well_thp_crossing_ != "stable") {
+        throw std::invalid_argument("--well-thp-crossing must be legacy or stable, not " + well_thp_crossing_);
+    }
     if (enable_group_controller_) {
         enable_group_tree_balancer_ = true;
     }
@@ -400,6 +404,10 @@ void BlackoilModelParameters<Scalar>::registerParameters()
     Parameters::Register<Parameters::GroupControllerInjection>
         ("Group controller: injection groups are decided by the controller's tree; injection networks, "
          "satellite injection and MULTI injectors stay with the legacy rules");
+    Parameters::Register<Parameters::WellThpCrossing>
+        ("A producer's bhp at its thp limit: legacy (bisection, then a 200-point search; can miss a narrow "
+         "lifting window) or stable (the highest-rate crossing, after locating the inflow's best margin over the "
+         "tubing curve)");
     Parameters::Register<Parameters::GroupControllerConfirmCapacity>
         ("Group controller: wells on thp, tied, or held at 90 % of their thp capacity have their inflow lines moved "
          "through the well model's own point at the node pressure, and the route is solved again");

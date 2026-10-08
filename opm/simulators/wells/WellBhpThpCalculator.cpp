@@ -271,7 +271,78 @@ computeBhpAtThpLimitProd(const std::function<std::vector<Scalar>(const Scalar)>&
         return std::nullopt;
     }
     const std::array<Scalar, 2> range {static_cast<Scalar>(controls.bhp_limit), *bhp_max};
+    if (well_.stableThpCrossing()) {
+        return this->stableBhpAtThpLimit(frates, fbhp, range);
+    }
     return this->computeBhpAtThpLimit(frates, fbhp, range, deferred_logger);
+}
+
+template<typename Scalar, typename IndexTraits>
+std::optional<Scalar>
+WellBhpThpCalculator<Scalar, IndexTraits>::
+stableBhpAtThpLimit(const std::function<std::vector<Scalar>(const Scalar)>& frates,
+                    const std::function<Scalar(const std::vector<Scalar>)>& fbhp,
+                    const std::array<Scalar, 2>& range) const
+{
+    // Positive where the tubing lifts what flows in at that bhp. The stable crossing is the lowest-bhp root,
+    // where the margin rises with bhp; the margin's peak is located first, so that a lifting window narrower
+    // than the sampling is not stepped over (NORNE-NET-01 B-1H: 0.4 bar of drawdown).
+    auto margin = [&frates, &fbhp](const Scalar bhp) { return bhp - fbhp(frates(bhp)); };
+    const Scalar lo = range[0];
+    const Scalar hi = range[1];
+    if (!(hi > lo)) {
+        return std::nullopt;
+    }
+    constexpr int n = 200;
+    const Scalar h = (hi - lo) / n;
+    std::vector<Scalar> m(n + 1);
+    int best = 0;
+    for (int i = 0; i <= n; ++i) {
+        m[i] = margin(lo + i * h);
+        if (m[i] > m[best]) {
+            best = i;
+        }
+    }
+    if (m[0] >= Scalar{0}) {
+        return lo;
+    }
+    // Golden-section refinement of the peak between its neighbours.
+    Scalar a = lo + std::max(best - 1, 0) * h;
+    Scalar b = lo + std::min(best + 1, n) * h;
+    Scalar peak = lo + best * h;
+    Scalar m_peak = m[best];
+    constexpr Scalar g = 0.6180339887498949;
+    Scalar c = b - g * (b - a), d = a + g * (b - a);
+    Scalar mc = margin(c), md = margin(d);
+    if (std::max(mc, md) > m_peak) {
+        m_peak = std::max(mc, md);
+        peak = mc > md ? c : d;
+    }
+    for (int it = 0; it < 40 && m_peak <= Scalar{0}; ++it) {
+        if (mc > md) { b = d; d = c; md = mc; c = b - g * (b - a); mc = margin(c); }
+        else         { a = c; c = d; mc = md; d = a + g * (b - a); md = margin(d); }
+        if (std::max(mc, md) > m_peak) {
+            m_peak = std::max(mc, md);
+            peak = mc > md ? c : d;
+        }
+    }
+    if (!(m_peak > Scalar{0})) {
+        return std::nullopt;
+    }
+    Scalar x0 = lo;
+    Scalar x1 = peak;
+    for (int i = 1; i <= n && lo + i * h < peak; ++i) {
+        if (m[i] >= Scalar{0}) {
+            x1 = lo + i * h;
+            break;
+        }
+        x0 = lo + i * h;
+    }
+    for (int it = 0; it < 60 && x1 - x0 > Scalar{1e-6} * std::abs(x1); ++it) {
+        const Scalar mid = Scalar{0.5} * (x0 + x1);
+        (margin(mid) < Scalar{0} ? x0 : x1) = mid;
+    }
+    return x1;
 }
 
 template<typename Scalar, typename IndexTraits>

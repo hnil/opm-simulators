@@ -102,6 +102,9 @@ public:
     // whether the well is operable
     bool isOperableAndSolvable() const;
     bool useVfpExplicit () const;
+    bool stableThpCrossing() const
+    { return stable_thp_crossing_.value_or(param_.well_thp_crossing_ == "stable"); }
+    void setStableThpCrossing(const bool on) { stable_thp_crossing_ = on; }
     bool thpLimitViolatedButNotSwitched() const;
 
     void initCompletions();
@@ -485,6 +488,7 @@ protected:
     bool network_dead_ = false;
     bool network_held_ = false;
     bool hold_stopped_ = false;
+    std::optional<bool> stable_thp_crossing_;
 
     // recording the multiplier calculate from the keyword WINJMULT during the time step
     mutable std::vector<Scalar> inj_multiplier_;
