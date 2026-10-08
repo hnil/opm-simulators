@@ -200,30 +200,14 @@ size_t set_interiorSize( [[maybe_unused]] size_t N, size_t interiorSize, [[maybe
 template<>
 size_t set_interiorSize(size_t N, size_t interiorSize, const Dune::OwnerOverlapCopyCommunication<int,int>& comm)
 {
-    // Fail with a clear message when a genuinely parallel smoother level (the
-    // communicator still spans more than one rank) has a process with zero rows.
-    //
-    // This is the symptom of an unbalanced partition meeting a limitation in
-    // dune-amg's parallel coarsening: AMG triggers redistribution to fewer ranks
-    // on the *global* level size vs coarsenTarget, not on a per-rank minimum, so
-    // a small partition can coarsen to zero rows at the first coarse level while
-    // the global size is still above coarsenTarget. That level is then NOT
-    // redistributed and AMG's presmooth() runs the smoother on the empty rank and
-    // segfaults. Detect it collectively (every rank on this level calls this) and
-    // throw the same error everywhere instead of crashing.
-    //
-    // TODO: the real fix belongs in dune-amg (redistribute/accumulate based on a
-    // per-rank minimum, or make presmooth tolerate an empty local partition);
-    // tracked as separate work. Workarounds: --linear-solver=ilu0 (no CPR/AMG),
-    // a larger coarsenTarget so the first coarse level is redistributed, or fewer
-    // MPI processes.
+    // A process with zero rows on a parallel level means the partition left it
+    // empty, and AMG's presmooth then crashes there. Fail on every rank instead.
     if (comm.communicator().size() > 1 && comm.communicator().min(N) == 0) {
         OPM_THROW(std::runtime_error,
-                  "Empty partition: too unbalanced partition for dune-amg? "
-                  "A process has zero rows on a parallel AMG coarse level that "
-                  "dune-amg did not redistribute to fewer processes. "
-                  "Try --linear-solver=ilu0, a larger coarsenTarget, or fewer MPI "
-                  "processes.");
+                  "A process has zero rows on a parallel AMG level; the partition "
+                  "is too unbalanced or disconnected for this many processes. "
+                  "Try fewer MPI processes, a larger coarsenTarget, or "
+                  "--linear-solver=ilu0.");
     }
 
     if (interiorSize<=N)
@@ -245,11 +229,8 @@ size_t set_interiorSize(size_t N, size_t interiorSize, const Dune::OwnerOverlapC
             }
         }
     }
-    // An owner local index of new_is implies new_is+1 interior rows (owners are
-    // ordered first). But on a partition with no owner cells (e.g. an empty/
-    // zero-row sub-system on this rank, which an LGR distribution can produce)
-    // there are zero interior rows; returning new_is+1 == 1 would exceed N == 0
-    // and trip the interiorSize_ <= A.N() assertion. Guard the empty case.
+    // Owners are ordered first, so the largest owner index gives the interior
+    // size; a process with no owner rows has none.
     if (!anyOwner) {
         return 0;
     }
