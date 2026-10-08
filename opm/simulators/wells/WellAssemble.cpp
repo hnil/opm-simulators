@@ -216,7 +216,7 @@ assembleControlEqInj(const GroupStateHelperType& groupStateHelper,
     }
     case Well::InjectorCMode::RESV: {
         std::vector<Scalar> convert_coeff(well_.numPhases(), 1.0);
-        well_.rateConverter().calcInjCoeff(/*fipreg*/ 0, well_.pvtRegionIdx(), convert_coeff);
+        well_.calcInjResvCoeff(well_state.well(well_.indexOfWell()), convert_coeff);
 
         Scalar coeff;
 

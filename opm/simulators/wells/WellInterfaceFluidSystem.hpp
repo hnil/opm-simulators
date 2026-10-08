@@ -72,6 +72,13 @@ public:
 
     Scalar totalReservoirVoidageRate(const std::vector<Scalar>& surface_rates) const override;
 
+    // Thermal and CO2STORE injectors convert RESV at well BHP and temperature.
+    void setResvAtWellConditions(const bool value) { resv_at_well_conditions_ = value; }
+
+    // Same conditions as calculateReservoirRates(), so control and report agree.
+    void calcInjResvCoeff(const SingleWellState<Scalar, IndexTraits>& ws,
+                          std::vector<Scalar>& coeff) const;
+
 protected:
     WellInterfaceFluidSystem(const Well& well,
                              const ParallelWellInfo<Scalar>& parallel_well_info,
@@ -85,7 +92,7 @@ protected:
                              const std::vector<PerforationData<Scalar>>& perf_data);
 
     // updating the voidage rates in well_state when requested
-    void calculateReservoirRates(const bool use_well_bhp_temperature, SingleWellState<Scalar, IndexTraits>& ws) const;
+    void calculateReservoirRates(SingleWellState<Scalar, IndexTraits>& ws) const;
 
     bool checkIndividualConstraints(SingleWellState<Scalar, IndexTraits>& ws,
                                     const SummaryState& summaryState,
@@ -119,6 +126,9 @@ protected:
 
     // For the conversion between the surface volume rate and reservoir voidage rate
     const RateConverterType& rateConverter_;
+
+private:
+    bool resv_at_well_conditions_ = false;
 };
 
 }

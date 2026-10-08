@@ -1541,7 +1541,7 @@ namespace Opm
             case Well::InjectorCMode::RESV:
             {
                 std::vector<Scalar> convert_coeff(this->number_of_phases_, 1.0);
-                this->rateConverter_.calcCoeff(/*fipreg*/ 0, this->pvtRegionIdx_, convert_coeff);
+                this->calcInjResvCoeff(ws, convert_coeff);
                 const Scalar coeff = convert_coeff[phasePos];
                 ws.surface_rates[phasePos] = controls.reservoir_rate/coeff;
                 break;

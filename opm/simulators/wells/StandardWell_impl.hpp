@@ -777,11 +777,7 @@ namespace Opm
         const auto& summary_state = simulator.vanguard().summaryState();
         updateWellStateFromPrimaryVariables(well_state, summary_state, deferred_logger);
 
-        // For injectors in a co2 storage case or a thermal case
-        // we convert to reservoir rates using the well bhp and temperature
-        const bool isThermal = simulator.vanguard().eclState().getSimulationConfig().isThermal();
-        const bool co2store = simulator.vanguard().eclState().runspec().co2Storage();
-        Base::calculateReservoirRates( (isThermal || co2store), well_state.well(this->index_of_well_));
+        Base::calculateReservoirRates(well_state.well(this->index_of_well_));
     }
 
 

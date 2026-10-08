@@ -1156,16 +1156,20 @@ namespace Opm {
         const auto& parallel_well_info = this->local_parallel_well_info_[wellID].get();
         const auto global_pvtreg = parallel_well_info.broadcastFirstPerforationValue(pvtreg);
 
-        return std::make_unique<WellType>(this->wells_ecl_[wellID],
-                                          parallel_well_info,
-                                          time_step,
-                                          this->param_,
-                                          *this->rateConverter_,
-                                          global_pvtreg,
-                                          this->numConservationQuantities(),
-                                          this->numPhases(),
-                                          wellID,
-                                          perf_data);
+        auto well = std::make_unique<WellType>(this->wells_ecl_[wellID],
+                                               parallel_well_info,
+                                               time_step,
+                                               this->param_,
+                                               *this->rateConverter_,
+                                               global_pvtreg,
+                                               this->numConservationQuantities(),
+                                               this->numPhases(),
+                                               wellID,
+                                               perf_data);
+        const auto& eclState = this->simulator_.vanguard().eclState();
+        well->setResvAtWellConditions(eclState.getSimulationConfig().isThermal() ||
+                                      eclState.runspec().co2Storage());
+        return well;
     }
 
 

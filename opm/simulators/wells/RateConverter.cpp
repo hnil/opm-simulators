@@ -387,6 +387,9 @@ using FS = BlackOilFluidSystem<Scalar, BlackOilDefaultFluidSystemIndices>;
     template void SurfaceToReservoirVoidage<FS<T>,std::vector<int>>::    \
         calcCoeff(const int, const int, std::vector<T>&) const;          \
     template void SurfaceToReservoirVoidage<FS<T>,std::vector<int>>::    \
+        calcCoeff(const int, const T, const T, const T, const T,         \
+                  const T, const T, const T, std::vector<T>&) const;     \
+    template void SurfaceToReservoirVoidage<FS<T>,std::vector<int>>::    \
         calcCoeff(const int,                                             \
                   const int,                                             \
                   const std::vector<T>&,                                 \

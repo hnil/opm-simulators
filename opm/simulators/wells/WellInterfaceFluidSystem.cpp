@@ -67,11 +67,11 @@ WellInterfaceFluidSystem(const Well& well,
 template<typename FluidSystem>
 void
 WellInterfaceFluidSystem<FluidSystem>::
-calculateReservoirRates(const bool use_well_bhp_temperature, SingleWellState<Scalar, IndexTraits>& ws) const
+calculateReservoirRates(SingleWellState<Scalar, IndexTraits>& ws) const
 {
     const int np = this->number_of_phases_;
     // Calculate reservoir rates from average pressure and temperature
-    if ( !(use_well_bhp_temperature) || this->wellEcl().isProducer()) {
+    if (!resv_at_well_conditions_ || this->wellEcl().isProducer()) {
         const int fipreg = 0; // not considering the region for now
         this->rateConverter_
             .calcReservoirVoidageRates(fipreg,
@@ -166,6 +166,22 @@ totalReservoirVoidageRate(const std::vector<Scalar>& surface_rates) const
                                    voidage_rates);
 
     return std::accumulate(voidage_rates.begin(), voidage_rates.end(), Scalar{0.0});
+}
+
+template<typename FluidSystem>
+void
+WellInterfaceFluidSystem<FluidSystem>::
+calcInjResvCoeff(const SingleWellState<Scalar, IndexTraits>& ws,
+                 std::vector<Scalar>& coeff) const
+{
+    if (resv_at_well_conditions_) {
+        // Pure injected phase, as in calculateReservoirRates().
+        this->rateConverter_.calcCoeff(this->pvtRegionIdx_, ws.bhp,
+                                       0.0, 0.0, 0.0, 0.0,
+                                       ws.temperature, 0.0, coeff);
+    } else {
+        this->rateConverter_.calcInjCoeff(/*fipreg*/ 0, this->pvtRegionIdx_, coeff);
+    }
 }
 
 template<typename FluidSystem>
