@@ -32,6 +32,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace Opm {
@@ -199,6 +200,33 @@ facilityCheck_(DeferredLogger& deferred_logger)
         }
     }
 
+    // The route's answer against what each well then did; exact hand-over gives zero.
+    std::pair<Scalar, std::string> off_assigned{Scalar{0}, ""};
+    for (const auto& [name, a] : this->controller_assigned_rates_) {
+        if (!this->wellState().has(name)) {
+            continue;
+        }
+        const auto& q = this->wellState().well(name).surface_rates;
+        for (const auto& [c, tag, floor] : {std::tuple{IndexTraits::oilPhaseIdx, "oil", 1.0},
+                                            std::tuple{IndexTraits::waterPhaseIdx, "wat", 1.0},
+                                            std::tuple{IndexTraits::gasPhaseIdx, "gas", 1000.0}}) {
+            const Scalar x = std::abs(phase(a, c)), y = std::abs(phase(q, c));
+            if (std::max(x, y) > Scalar(floor / 86400.0)) {
+                worse(off_assigned, std::abs(x - y) / std::max(x, y), name + ":" + tag);
+            }
+        }
+    }
+
+    // Wells the run closed while the schedule has them open: no well object left to probe.
+    std::vector<std::string> closed_by_run;
+    for (const auto& name : schedule.wellNames(step)) {
+        const auto& w = schedule.getWell(name, step);
+        if (w.isProducer() && w.getStatus() == Well::Status::OPEN && w.predictionMode()
+            && this->wellState().has(name) && this->wellState().well(name).status == Well::Status::SHUT) {
+            closed_by_run.push_back(name);
+        }
+    }
+
     // From here the state is written to; everything is put back below.
     const auto saved_active = this->active_wgstate_;
     const auto saved_nupcol = this->nupcol_wgstate_;
@@ -211,7 +239,8 @@ facilityCheck_(DeferredLogger& deferred_logger)
     std::pair<Scalar, std::string> network_off{Scalar{0}, ""};
     std::pair<Scalar, std::string> group_over{Scalar{0}, ""};
     std::pair<Scalar, std::string> target_move{Scalar{0}, ""};
-    std::vector<std::string> idle, group_switches, well_switches, unliftable_switches;
+    std::vector<std::string> idle, group_switches, well_switches, unliftable_switches, liftable, closed_would_flow,
+        kept_would_flow;
     std::string failure;
     {
         auto log_guard = this->groupStateHelper().pushLogger(/*do_mpi_gather*/ false);
@@ -424,6 +453,47 @@ facilityCheck_(DeferredLogger& deferred_logger)
                         .push_back(well->name() + ":" + *to);
                 }
             }
+        })
+        && stage([&] {
+            // Zero rate is a solution only where the well cannot flow at its thp limit: WTEST's physical test
+            // on a well made for it, so the run's own wells are untouched. A well the run closed may have
+            // been closed on an economic limit, so it is listed apart.
+            for (const auto& name : schedule.wellNames(step)) {
+                const auto& w = schedule.getWell(name, step);
+                if (!w.isProducer() || w.getStatus() != Well::Status::OPEN || !w.predictionMode()
+                    || !this->wellState().has(name)) {
+                    continue;
+                }
+                const auto live = std::find_if(well_container_.begin(), well_container_.end(),
+                                               [&name](const auto& wp) { return wp->name() == name; });
+                const bool stopped = live != well_container_.end() && (*live)->wellIsStopped();
+                const bool closed = live == well_container_.end()
+                    && this->wellState().well(name).status == Well::Status::SHUT;
+                if (!stopped && !closed) {
+                    continue;
+                }
+                auto probe = this->createWellForWellTest(name, step, scratch);
+                probe->init(depth_, gravity_, B_avg_, true);
+                probe->setWellEfficiencyFactor(stopped ? (*live)->wellEfficiencyFactor() : Scalar(1));
+                probe->setVFPProperties(this->vfp_properties_.get());
+                probe->setGuideRate(&this->guideRate_);
+                if (probe->isVFPActive(scratch)) {
+                    probe->setPrevSurfaceRates(this->wellState(), this->prevWellState());
+                }
+                this->network_.initializeWell(*probe);
+                const auto q = probe->physicalReopenRates(simulator_, this->groupStateHelper(), this->wellState());
+                if (q.has_value()) {
+                    const Scalar thp = probe->wellHasTHPConstraints(summary_state) ? probe->getTHPConstraint(summary_state)
+                                                                                   : Scalar(0);
+                    // Stopped before this step and no WTEST: the deck keeps it stopped; reported, not counted.
+                    const bool earlier = stopped && this->prevWellState().has(name)
+                        && this->prevWellState().well(name).status != Well::Status::OPEN;
+                    (!stopped ? closed_would_flow : earlier ? kept_would_flow : liftable).push_back(
+                        fmt::format("{}@{:.1f} oil {:.0f} gas {:.0f}", name, thp * 1.0e-5,
+                                    -phase(*q, IndexTraits::oilPhaseIdx) * 86400.0,
+                                    -phase(*q, IndexTraits::gasPhaseIdx) * 86400.0));
+                }
+            }
         });
         log_guard.discard();
     }
@@ -437,7 +507,7 @@ facilityCheck_(DeferredLogger& deferred_logger)
 
     if (this->comm().size() > 1) {
         // Each rank sees its own wells: the check is the worst of them, and the counts are the totals.
-        for (auto* p : {&network_off, &group_over, &target_move, &well_over, &inj_over, &group_inj_over}) {
+        for (auto* p : {&network_off, &group_over, &target_move, &well_over, &inj_over, &group_inj_over, &off_assigned}) {
             p->first = this->comm().max(p->first);
         }
         const int any_failure = this->comm().max(failure.empty() ? 0 : 1);
@@ -448,7 +518,8 @@ facilityCheck_(DeferredLogger& deferred_logger)
             const int n = this->comm().sum(static_cast<int>(v.size()));
             if (n > 0 && v.empty()) { v.emplace_back("(another rank)"); }
         };
-        for (auto* v : {&unsolved, &idle, &group_switches, &well_switches, &unliftable_switches}) {
+        for (auto* v : {&unsolved, &idle, &group_switches, &well_switches, &unliftable_switches, &liftable,
+                        &closed_by_run, &closed_would_flow, &kept_would_flow}) {
             counts(*v);
         }
     }
@@ -475,14 +546,19 @@ facilityCheck_(DeferredLogger& deferred_logger)
         "network off {:.3f} bar ({}) | group over {:+.1f} % ({}) | well over {:+.1f} % ({}) | "
         "injector over {:+.1f} % ({}) | injection group over {:+.1f} % ({}) | "
         "held without a binding limit {} [{}] | legacy would switch groups {} [{}] wells {} [{}], "
-        "move a target {:.1f} % ({}); unliftable, not counted {} [{}]{}",
+        "move a target {:.1f} % ({}); unliftable, not counted {} [{}] | stopped this step but liftable {} [{}], "
+        "kept stopped, would flow {} [{}] | "
+        "closed by the run {} [{}], would flow {} [{}] | off assignment {:.1f} % ({}){}",
         step, iterCtx.iteration(), physics_ok ? "ok" : "NO", legacy_ok ? "ok" : "NO",
         unsolved.size(), join(unsolved), network_off.first * 1.0e-5, network_off.second,
         100.0 * group_over.first, group_over.second, 100.0 * well_over.first, well_over.second,
         100.0 * inj_over.first, inj_over.second, 100.0 * group_inj_over.first, group_inj_over.second,
         idle.size(), join(idle), group_switches.size(), join(group_switches),
         well_switches.size(), join(well_switches), 100.0 * target_move.first, target_move.second,
-        unliftable_switches.size(), join(unliftable_switches),
+        unliftable_switches.size(), join(unliftable_switches), liftable.size(), join(liftable),
+        kept_would_flow.size(), join(kept_would_flow),
+        closed_by_run.size(), join(closed_by_run), closed_would_flow.size(), join(closed_would_flow),
+        100.0 * off_assigned.first, off_assigned.second,
         failure.empty() ? "" : " | probe failed: " + failure));
 }
 
