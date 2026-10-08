@@ -266,21 +266,8 @@ doLoadBalance_(const Dune::EdgeWeightMethod             edgeWeightsMethod,
                         if (n <= 0 || static_cast<std::size_t>(n) > lgrs.size()) {
                             continue;
                         }
-                        // LGR-local (i,j,k) -> father cell, up through nested
-                        // parents to the level-zero Cartesian index the well
-                        // partition graph uses.
-                        const Carfin* box = &lgrs.getLgr(static_cast<std::size_t>(n) - 1);
-                        std::array<int,3> ijk{ conn.getI(), conn.getJ(), conn.getK() };
-                        while (true) {
-                            const int rx = box->NX() / (box->I2() + 1 - box->I1());
-                            const int ry = box->NY() / (box->J2() + 1 - box->J1());
-                            const int rz = box->NZ() / (box->K2() + 1 - box->K1());
-                            ijk = { box->I1() + ijk[0] / rx, box->J1() + ijk[1] / ry, box->K1() + ijk[2] / rz };
-                            if (box->PARENT_NAME() == "GLOBAL" || !lgrs.hasLgr(box->PARENT_NAME())) {
-                                break;
-                            }
-                            box = &lgrs.getLgr(box->PARENT_NAME());
-                        }
+                        const auto ijk = lgrs.levelZeroIJK(static_cast<std::size_t>(n),
+                                                           { conn.getI(), conn.getJ(), conn.getK() });
                         anchors.insert(ijk[0] + cartDims[0] * (ijk[1] + cartDims[1] * ijk[2]));
                     }
                 }
