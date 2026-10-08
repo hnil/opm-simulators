@@ -560,33 +560,14 @@ public:
         if (this->grid_->comm().size() > 1) {
             if (const auto& lgrs = this->eclState().getLgrs(); lgrs.size() > 0) {
                 if (this->refineBeforeRedistribute()) {
-                    // Experimental refine-then-distribute path (opt-in via
-                    // --refine-before-redistribute). Refine the global grid now,
-                    // before load balancing, instead of the default
-                    // rank-interior model (distribute the coarse grid, then
-                    // refine each box on its owning rank in addLgrs()).
-                    //
-                    // WARNING: CpGrid's scatter currently distributes only
-                    // level 0 and discards the refinement (the distributed-
-                    // refinement machinery is stripped from this fork), so this
-                    // only yields a correct result in serial / single-rank runs.
-                    // It is kept as a selectable option for the day refined-grid
-                    // distribution is reinstated; the default remains the
-                    // working rank-interior path below.
+                    // Refine the global grid before load balancing: the partitioner then
+                    // weights each coarse cell by its refined cells and distributes the
+                    // leaf, splitting boxes as needed, so no cell groups here.
                     OpmLog::info("\nRefine-before-redistribute: adding LGRs to "
                                  "the grid before load balancing");
                     this->addLgrsUpdateLeafView(lgrs, lgrs.size(), *this->grid_);
                     this->updateGridView_();
-                    // Keep each box's coarse cells together for the level-zero
-                    // partition, exactly as the rank-interior path does. The
-                    // leaf partition is then derived by propagating the level-
-                    // zero partition to the children (CpGrid::leafPartition-
-                    // FromLevelZero), so the box's refined cells all land on
-                    // one rank.
-                    if (applyLgrPartitionCellGroups_(lgrs, lgrOverlap)) {
-                        overlapLayers = lgrOverlap;
-                        partMethod = Dune::PartitionMethod::zoltanGoG;
-                    }
+                    partMethod = Dune::PartitionMethod::zoltanGoG;
                 } else if (applyLgrPartitionCellGroups_(lgrs, lgrOverlap)) {
                     overlapLayers = lgrOverlap;
                     partMethod = Dune::PartitionMethod::zoltanGoG;
