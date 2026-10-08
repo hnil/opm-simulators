@@ -438,6 +438,11 @@ public:
         report_step_ = report_step;
     }
 
+    void setResvInjAtWellConditions(const bool value)
+    {
+        resv_inj_at_well_conditions_ = value;
+    }
+
     const SummaryState& summaryState() const
     {
         return this->summary_state_;
@@ -690,6 +695,10 @@ private:
         Scalar base_reservoir_rate,
         const std::vector<Scalar>& group_injection_reservoir_rates) const;
 
+    Scalar injectionResvCoeff_(const std::string& group_name,
+                               const int pos,
+                               const Scalar region_coeff) const;
+
     Scalar sumProductionRateForControlMode_(const Group& group, Group::ProductionCMode cmode) const;
 
     int updateGroupControlledWellsRecursive_(const std::string& group_name,
@@ -795,6 +804,7 @@ private:
     const PhaseUsageInfo<IndexTraits>& phase_usage_info_;
     const Parallel::Communication& comm_;
     bool terminal_output_ {false};
+    bool resv_inj_at_well_conditions_ {false};
     int report_step_ {0};
     ReservoirCoupling::Proxy<Scalar> rescoup_{};
 };

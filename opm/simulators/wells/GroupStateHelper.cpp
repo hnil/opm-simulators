@@ -1949,6 +1949,23 @@ GroupStateHelper<Scalar, IndexTraits>::computeAddbackEfficiency_(const std::vect
     return efficiency;
 }
 
+template <typename Scalar, typename IndexTraits>
+Scalar
+GroupStateHelper<Scalar, IndexTraits>::injectionResvCoeff_(const std::string& group_name,
+                                                          const int pos,
+                                                          const Scalar region_coeff) const
+{
+    // Injectors report at well conditions here; the group's own ratio keeps target and GVIR consistent.
+    if (!this->resv_inj_at_well_conditions_ ||
+        !this->groupState().has_injection_reservoir_rates(group_name) ||
+        !this->groupState().has_injection_surface_rates(group_name)) {
+        return region_coeff;
+    }
+    const Scalar resv = this->groupState().injection_reservoir_rates(group_name)[pos];
+    const Scalar surf = this->groupState().injection_surface_rates(group_name)[pos];
+    return (resv > 0.0 && surf > 0.0) ? resv / surf : region_coeff;
+}
+
 // Called from the same public methods as applyReductionsAndFractions_().
 // - Finds the deepest group level with both a guide rate and group-controlled wells.
 // - This is the level where the bottom group's reduction rate must be added back to the target
@@ -2029,10 +2046,11 @@ getInjectionGroupTargetForMode_(
         }
         return injectionControls().surface_max_rate;
     case Group::InjectionCMode::RESV: {
+        const Scalar coeff = this->injectionResvCoeff_(group.name(), pos, resv_coeff[pos]);
         // GPMAINT targets (WINJ/GINJ/OINJ) are already per-phase RESV rates,
         // so no other-phase subtraction is needed.
         if (use_gpmaint)
-            return this->groupState().gpmaint_target(group.name()) / resv_coeff[pos];
+            return this->groupState().gpmaint_target(group.name()) / coeff;
 
         // GCONINJE RESV (Item 5) is a total group reservoir volume target;
         // subtract other phases' reservoir injection to get this phase's share.
@@ -2040,7 +2058,7 @@ getInjectionGroupTargetForMode_(
             this->groupState().injection_reservoir_rates(group.name());
         return this->subtractOtherPhaseResvInjection_(
             injection_phase, injectionControls().resv_max_rate,
-            group_injection_reservoir_rates) / resv_coeff[pos];
+            group_injection_reservoir_rates) / coeff;
     }
     case Group::InjectionCMode::REIN: {
         const auto ctrl = injectionControls();
@@ -2054,7 +2072,8 @@ getInjectionGroupTargetForMode_(
         Scalar voidage_rate = this->groupState().injection_vrep_rate(ctrl.voidage_group)
             * ctrl.target_void_fraction;
         return this->subtractOtherPhaseResvInjection_(
-            injection_phase, voidage_rate, group_injection_reservoir_rates) / resv_coeff[pos];
+            injection_phase, voidage_rate, group_injection_reservoir_rates)
+            / this->injectionResvCoeff_(group.name(), pos, resv_coeff[pos]);
     }
     case Group::InjectionCMode::SALE: {
         assert(pos == this->phaseUsage().canonicalToActivePhaseIdx(IndexTraits::gasPhaseIdx) );

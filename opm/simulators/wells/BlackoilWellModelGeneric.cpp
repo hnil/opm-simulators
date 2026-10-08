@@ -131,6 +131,7 @@ BlackoilWellModelGeneric(Schedule& schedule,
     , genNetwork_(network)
     , enable_state_rollback_(Parameters::Get<Parameters::EnableStateRollback>())
 {
+    group_state_helper_.setResvInjAtWellConditions(this->resvInjAtWellConditions());
 
     const auto numProcs = comm_.size();
     this->not_on_process_ = [this, numProcs](const std::string& well) {
@@ -207,6 +208,13 @@ getWellEcl(const std::string& well_name) const
     assert(well_ecl != wells_ecl_.end());
 
     return *well_ecl;
+}
+
+template<typename Scalar, typename IndexTraits>
+bool BlackoilWellModelGeneric<Scalar, IndexTraits>::
+resvInjAtWellConditions() const
+{
+    return eclState_.getSimulationConfig().isThermal() || eclState_.runspec().co2Storage();
 }
 
 template<typename Scalar, typename IndexTraits>

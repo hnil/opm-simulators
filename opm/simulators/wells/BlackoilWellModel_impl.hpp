@@ -1166,9 +1166,7 @@ namespace Opm {
                                                this->numPhases(),
                                                wellID,
                                                perf_data);
-        const auto& eclState = this->simulator_.vanguard().eclState();
-        well->setResvAtWellConditions(eclState.getSimulationConfig().isThermal() ||
-                                      eclState.runspec().co2Storage());
+        well->setResvAtWellConditions(this->resvInjAtWellConditions());
         return well;
     }
 

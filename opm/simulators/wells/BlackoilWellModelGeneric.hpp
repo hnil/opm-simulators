@@ -267,6 +267,9 @@ public:
 
     const EclipseState& eclipseState() const { return eclState_; }
 
+    // Thermal and CO2STORE injectors convert RESV at well BHP and temperature.
+    bool resvInjAtWellConditions() const;
+
     const SummaryState& summaryState() const { return summaryState_; }
 
     const GuideRate& guideRate() const { return guideRate_; }

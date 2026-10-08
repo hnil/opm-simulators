@@ -72,7 +72,6 @@ public:
 
     Scalar totalReservoirVoidageRate(const std::vector<Scalar>& surface_rates) const override;
 
-    // Thermal and CO2STORE injectors convert RESV at well BHP and temperature.
     void setResvAtWellConditions(const bool value) { resv_at_well_conditions_ = value; }
 
     // Same conditions as calculateReservoirRates(), so control and report agree.
