@@ -30,6 +30,7 @@
 #include <opm/common/ErrorMacros.hpp>
 #include <opm/common/TimingMacros.hpp>
 
+#include <opm/input/eclipse/EclipseState/Grid/LgrConnectionCheck.hpp>
 #include <opm/input/eclipse/Schedule/Well/WellConnections.hpp>
 
 #include <opm/models/common/multiphasebaseproperties.hh>
@@ -38,7 +39,6 @@
 #include <opm/simulators/flow/FlowBaseVanguard.hpp>
 #include <opm/simulators/flow/FlowProblemParameters.hpp>
 #include <opm/simulators/flow/GenericCpGridVanguard.hpp>
-#include <opm/simulators/flow/LgrDeckConnectionCheck.hpp>
 #include <opm/simulators/flow/Transmissibility.hpp>
 
 #include <algorithm>

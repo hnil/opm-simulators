@@ -27,6 +27,7 @@
 
 #include <opm/models/utils/parametersystem.hpp>
 
+#include <opm/input/eclipse/EclipseState/Grid/LgrConnectionCheck.hpp>
 #include <opm/simulators/flow/AdaptiveLgr.hpp>
 #include <opm/simulators/flow/WellZoneLgr.hpp>
 #include <opm/simulators/flow/CpGridVanguard.hpp>
