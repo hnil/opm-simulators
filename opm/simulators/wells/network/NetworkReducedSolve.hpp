@@ -54,6 +54,7 @@ struct ReducedResult
     bool differenced = false; // the elimination step stalled and differences took over
     Scalar residual = 0;
     int off_axis = 0;         // lookups the answer needed off a table axis
+    int solve_id = 0;         // the caller's tag for the solve that produced it
     std::vector<Scalar> node_pressure;
     std::vector<Scalar> well_rate;
     std::string sets;

@@ -858,6 +858,14 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
         bool stein_set = group_set == "stein" && !tree_wells.empty();
         int stein_mode_switches = 0, stein_trims = 0;
         ProdGroupTreeBalancer::Tree<Scalar> stein_last;   // the tree behind the set in force
+        int route_solve_id = 0, stein_last_solve = -1;    // which route solve stein_last came from
+        // A node's rate on a group mode; RESV has no projection here and gives zero.
+        auto treeOnMode = [](const auto& node, const Group::ProductionCMode m) {
+            using GC = Group::ProductionCMode;
+            const auto& r = node.rates;      // oil, water, gas; negative
+            return m == GC::ORAT ? -r[0] : m == GC::WRAT ? -r[1] : m == GC::GRAT ? -r[2]
+                 : m == GC::LRAT ? -r[0] - r[1] : Scalar{0};
+        };
         if (stein_set) {
             system.setLiftTolerance(param_.group_controller_network_tolerance_);
             system.setTreeAllocator([&](const std::vector<Scalar>& oil_capacity,
@@ -1100,6 +1108,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                     deferred_logger.debug(t);
                 }
                 stein_last = std::move(tree);
+                stein_last_solve = route_solve_id;
                 return true;
             });
         }
@@ -1120,8 +1129,11 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
         std::vector<Scalar> last_start;
         auto solveRouteOnce = [&](const std::vector<Scalar>& start, const bool keep_dead) {
             if (dump_failed) { last_input = system; last_start = start; }
+            ++route_solve_id;
             if (!extension) {
-                return NetworkSolve::solveReduced(system, start, params, /*eliminate=*/true, cliff_rule, keep_dead);
+                auto r = NetworkSolve::solveReduced(system, start, params, /*eliminate=*/true, cliff_rule, keep_dead);
+                r.solve_id = route_solve_id;
+                return r;
             }
             const auto rule = param_.group_controller_closing_ == "worst"  ? NetworkSolve::Closing::Sequential
                             : param_.group_controller_closing_ == "tiered" ? NetworkSolve::Closing::Tiered
@@ -1138,6 +1150,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
 
             r.iterations = ex.iterations;
             r.evaluations = ex.evaluations;
+            r.solve_id = route_solve_id;
             return r;
         };
         // Stein's tree can be discontinuous in the node pressures -- a well's share against its own limit,
@@ -1589,9 +1602,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                 [&](const std::vector<Scalar>& start, const bool keep) { return solveRoute(start, keep); },
                 [&](const std::string& name) { const auto it = flips.find(name);
                                                return it != flips.end() && it->second.first > 0 && it->second.second > 0; });
-            // Always: a method that ends on a trial leaves the system's controls and shares at that trial, and
-            // they are what is handed to the wells (NORNE-NET-GL-01: B-TPL 0.86 bar off on every accepted step
-            // with LIFTOPT on, though no B well had lift gas).
+            // Always: a method that ends on a trial leaves the system's controls and shares at that trial.
             rr = solveRoute(rr.node_pressure, true);
             // The lines were taken at the old lift gas: re-anchor each well whose lift gas changed through the well
             // model's own operating point at its node pressure and new lift gas (slopes kept), and solve again, so
@@ -1754,6 +1765,39 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
         st.route_evaluations += rr.evaluations;
         st.set_changes += rr.set_changes;
         st.lookups += system.lookups();
+        // OPM_CONTROLLER_NODE_LOG: each node's pressure and inflow as this answer has it, and its wells.
+        static const bool node_log = std::getenv("OPM_CONTROLLER_NODE_LOG") != nullptr;
+        if (node_log && rr.converged) {
+            const int nn = system.numNodes();
+            std::vector<std::array<Scalar, 4>> inflow(nn + 1, std::array<Scalar, 4>{});   // water, oil, gas, lift
+            std::vector<std::string> rows(nn + 1);
+            for (int w = 0; w < system.numWells(); ++w) {
+                const auto& well = system.wells()[w];
+                const Scalar q = rr.well_rate[w];
+                std::array<Scalar, Sys::NP> ph{};
+                if (q > Scalar{0} && well.ipr_b[1] < Scalar{0}) {
+                    const Scalar bhp = (q - well.ipr_a[1]) / well.ipr_b[1];
+                    for (int k = 0; k < Sys::NP; ++k) { ph[k] = std::max(Sys::ipr(well, k, bhp), Scalar{0}); }
+                }
+                const Scalar lift = q > Scalar{0} ? well.lift_gas : Scalar{0};
+                for (int k = 0; k < Sys::NP; ++k) { inflow[well.node][k] += well.efficiency * ph[k]; }
+                inflow[well.node][3] += well.efficiency * lift;
+                rows[well.node] += fmt::format(" {} {} oil {:.1f} gas {:.0f} wat {:.1f} alq {:.0f};", well.name,
+                                               system.controlLetter(w), ph[1] * 86400.0, ph[2] * 86400.0,
+                                               ph[0] * 86400.0, well.alq * 86400.0);
+            }
+            for (int n = nn; n >= 1; --n) {
+                const int up = system.nodes()[n].parent;
+                if (up >= 1) { for (int k = 0; k < 4; ++k) { inflow[up][k] += system.nodes()[n].efficiency * inflow[n][k]; } }
+            }
+            for (int n = 1; n <= nn; ++n) {
+                deferred_logger.debug(fmt::format("Route node {} step={} it={}: p {:.3f} bar, inflow oil {:.1f} gas {:.0f} wat {:.1f} "
+                                                  "lift {:.0f} |{}", order[n], reportStepIdx,
+                                                  simulator_.problem().iterationContext().iteration(),
+                                                  rr.node_pressure[n] / unit::barsa, inflow[n][1] * 86400.0,
+                                                  inflow[n][2] * 86400.0, inflow[n][0] * 86400.0, inflow[n][3] * 86400.0, rows[n]));
+            }
+        }
         for (std::size_t n = 0; n < order.size(); ++n) {
             new_pressures[order[n]] = rr.node_pressure[n];
         }
@@ -1915,13 +1959,15 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                 ws.group_target->group_name = system.groups()[t.group].name;
                 ws.group_target->target_value = t.value;
                 ws.group_target->production_cmode = cmode;
-                if (stein_set) {
-                    // The tree's own number where it names the same group and mode: those
-                    // sum to the group's limit exactly, the inflow lines' only nearly.
+                if (stein_set && stein_last_solve == rr.solve_id) {
+                    // The tree's own rates on the held mode, from the solve handed over: those sum to the
+                    // group's limit exactly, the inflow lines' only nearly. Not groupTarget.value, which
+                    // keeps the fractions of before the sweeps (NORNE-NET-GL-01: B-TPL 0.86 bar off).
                     const auto node = stein_last.find(well.name);
                     if (node != stein_last.end() && node->second.groupTarget.groupName == ws.group_target->group_name
-                        && node->second.groupTarget.ctrlMode == cmode && node->second.groupTarget.value > Scalar{0}) {
-                        ws.group_target->target_value = node->second.groupTarget.value;
+                        && node->second.groupTarget.ctrlMode == cmode) {
+                        const Scalar v = treeOnMode(node->second, cmode);
+                        if (v > Scalar{0}) { ws.group_target->target_value = v; }
                     }
                 }
                 ws.group_target_fallback = std::nullopt;
@@ -1956,7 +2002,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
             }
             assigned_rates[well.name] = q;
         }
-        if (stein_set && !stein_last.empty()) {
+        if (stein_set && !stein_last.empty() && stein_last_solve == rr.solve_id) {
             // What was written against the tree it came from: control, holding group, mode,
             // target and rate of every well the tree knows.
             int n = 0, off_control = 0, off_group = 0;
@@ -1984,8 +2030,9 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                     const auto& gt = node.groupTarget;
                     off_group += gt.groupName != ws.group_target->group_name
                         || gt.ctrlMode != ws.group_target->production_cmode;
-                    off_target = std::max(off_target, std::abs(gt.value - ws.group_target->target_value)
-                        / std::max({gt.value, ws.group_target->target_value, Scalar{1e-9}}));
+                    const Scalar v = gt.ctrlMode == Group::ProductionCMode::RESV ? gt.value : treeOnMode(node, gt.ctrlMode);
+                    off_target = std::max(off_target, std::abs(v - ws.group_target->target_value)
+                        / std::max({v, ws.group_target->target_value, Scalar{1e-9}}));
                 }
             }
             auto& st = this->controller_stats_;

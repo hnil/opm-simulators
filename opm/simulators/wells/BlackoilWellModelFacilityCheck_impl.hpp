@@ -255,18 +255,43 @@ facilityCheck_(DeferredLogger& deferred_logger)
                     auto ph = [&](const std::vector<Scalar>& r, const int c) {
                         return pu.phaseIsActive(c) ? -r[pu.canonicalToActivePhaseIdx(c)] * 86400.0 : 0.0;
                     };
-                    rows += fmt::format(" | {} cmode {} status {} alq {:.0f}: oil {:.1f} gas {:.0f} wat {:.1f}", wname,
+                    rows += fmt::format(" | {} cmode {} status {} thp {:.2f} bhp {:.2f} alq {:.0f}: oil {:.1f} gas {:.0f} wat {:.1f}", wname,
                                         static_cast<int>(ws.production_cmode), static_cast<int>(ws.status),
-                                        ws.alq_state.get() * 86400.0,
+                                        ws.thp / unit::barsa, ws.bhp / unit::barsa, ws.alq_state.get() * 86400.0,
                                         ph(ws.surface_rates, IndexTraits::oilPhaseIdx), ph(ws.surface_rates, IndexTraits::gasPhaseIdx),
                                         ph(ws.surface_rates, IndexTraits::waterPhaseIdx));
+                    auto tgt = [](const auto& t) {
+                        return t.has_value() ? fmt::format("{} {:.1f}", Group::ProductionCMode2String(t->production_cmode),
+                                                           t->target_value * 86400.0)
+                                             : std::string("none");
+                    };
+                    rows += fmt::format(" target {} fallback {}{}{}", tgt(ws.group_target), tgt(ws.group_target_fallback),
+                                        ws.use_group_target_fallback ? " (using fallback)" : "",
+                                        ws.controller_decided ? " decided" : "");
                     if (it != this->controller_assigned_rates_.end()) {
                         rows += fmt::format(" (assigned oil {:.1f} gas {:.0f} wat {:.1f})", ph(it->second, IndexTraits::oilPhaseIdx),
                                             ph(it->second, IndexTraits::gasPhaseIdx), ph(it->second, IndexTraits::waterPhaseIdx));
                     }
                 }
-                OpmLog::debug(fmt::format("Facility check detail: {} off {:.3f} bar{}", network_off.second,
-                                          network_off.first / unit::barsa, rows));
+                // What the check's network computation is fed for this node: the group's rates, and its lift gas.
+                std::string group_rates;
+                if (this->groupState().has_production_rates(network_off.second)) {
+                    const auto& g = this->groupState().production_rates(network_off.second);
+                    auto at = [&](const int c) { return pu.phaseIsActive(c) ? g[pu.canonicalToActivePhaseIdx(c)] * 86400.0 : 0.0; };
+                    group_rates = fmt::format(" | group rates oil {:.1f} gas {:.0f} wat {:.1f}", at(IndexTraits::oilPhaseIdx),
+                                              at(IndexTraits::gasPhaseIdx), at(IndexTraits::waterPhaseIdx));
+                }
+                double lift = 0.0;
+                for (const auto& wname : schedule.getGroup(network_off.second, step).wells()) {
+                    if (this->wellState().has(wname) && this->wellState().isOpen(wname)) {
+                        lift += this->wellState().well(wname).alq_state.get() * 86400.0;
+                    }
+                }
+                const auto& stored = this->network_.nodePressures();
+                const auto sp = stored.find(network_off.second);
+                OpmLog::debug(fmt::format("Facility check detail: {} off {:.3f} bar, stored {:.3f} bar{} lift {:.0f}{}",
+                                          network_off.second, network_off.first / unit::barsa,
+                                          sp != stored.end() ? sp->second / unit::barsa : -1.0, group_rates, lift, rows));
             }
         })
         && stage([&] {
