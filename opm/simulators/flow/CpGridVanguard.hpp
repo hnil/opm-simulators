@@ -74,7 +74,7 @@ struct HasSetPartitionCellGroups : std::false_type {};
 template <class G>
 struct HasSetPartitionCellGroups<
     G, std::void_t<decltype(std::declval<G&>().setPartitionCellGroups(
-           std::declval<std::vector<std::set<int>>>()))>> : std::true_type {};
+           std::declval<std::vector<std::set<int>>>(), 0))>> : std::true_type {};
 } // namespace detail
 }
 
@@ -463,87 +463,43 @@ public:
     /*!
      * \brief Tell the partitioner to keep each LGR region on one rank.
      *
-     * Builds one cell group per connected set of CARFIN boxes (boxes that
-     * touch or overlap are merged, so their shared refined boundary stays on
-     * one rank) and hands the groups to the grid's partitioner. Returns true
-     * if the grid supports this (the LGR-refinement fork) and groups were set.
+     * One cell group per CARFIN box; the grid grows each by `halo` layers over
+     * its real connections, and groups that then meet stay on one rank together.
+     * Returns true if the grid supports this (the LGR-refinement fork).
      */
     template <class Lgrs>
-    bool applyLgrPartitionCellGroups_([[maybe_unused]] const Lgrs& lgrs)
+    bool applyLgrPartitionCellGroups_([[maybe_unused]] const Lgrs& lgrs,
+                                      [[maybe_unused]] int halo)
     {
         if constexpr (detail::HasSetPartitionCellGroups<Grid>::value) {
             const auto dims = this->grid_->logicalCartesianSize();
-            struct Box { int i0, i1, j0, j1, k0, k1; };
-            std::vector<Box> boxes;
-            boxes.reserve(lgrs.size());
+            std::vector<std::set<int>> cellGroups;
+            cellGroups.reserve(lgrs.size());
             for (std::size_t l = 0; l < lgrs.size(); ++l) {
                 const auto c = lgrs.getLgr(static_cast<int>(l));
-                // A nested LGR (parent != GLOBAL) addresses its parent LGR's own
-                // local Cartesian space, so its I/J/K extents are NOT global cell
-                // indices and must not be turned into a global box (that yields
-                // out-of-range cells and a corrupt partition group). A fully
-                // contained nested LGR lives inside its parent's box and is kept
-                // on the parent's rank by the parent's group, so skip it here.
+                // A nested LGR addresses its parent's local Cartesian space and
+                // lies inside the parent's box, which already keeps it together.
                 if (c.PARENT_NAME() != "GLOBAL") {
                     continue;
                 }
-                boxes.push_back({c.I1(), c.I2() + 1, c.J1(), c.J2() + 1, c.K1(), c.K2() + 1});
-            }
-            // Union-find: merge boxes that meet in every direction (touch or
-            // overlap), i.e. share a face/edge/corner.
-            std::vector<int> parent(boxes.size());
-            std::iota(parent.begin(), parent.end(), 0);
-            std::function<int(int)> find = [&](int x) {
-                while (parent[x] != x) { parent[x] = parent[parent[x]]; x = parent[x]; }
-                return x;
-            };
-            const auto meet = [](int a0, int a1, int b0, int b1) { return a1 >= b0 && b1 >= a0; };
-            for (std::size_t i = 0; i < boxes.size(); ++i) {
-                for (std::size_t j = i + 1; j < boxes.size(); ++j) {
-                    if (meet(boxes[i].i0, boxes[i].i1, boxes[j].i0, boxes[j].i1)
-                        && meet(boxes[i].j0, boxes[i].j1, boxes[j].j0, boxes[j].j1)
-                        && meet(boxes[i].k0, boxes[i].k1, boxes[j].k0, boxes[j].k1)) {
-                        parent[find(static_cast<int>(i))] = find(static_cast<int>(j));
-                    }
-                }
-            }
-            // Each group is the box(es) PLUS a halo of `halo` cells. The halo
-            // keeps the box that far inside its owning rank, so the box cells
-            // never appear in another rank's overlap (which would make the
-            // refinement builder reject the box as touching the overlap). The
-            // halo must be at least the overlap-layer count used below (2).
-            const int halo = 2;
-            std::map<int, std::set<int>> groups;
-            for (std::size_t b = 0; b < boxes.size(); ++b) {
-                auto& cells = groups[find(static_cast<int>(b))];
-                const auto& bx = boxes[b];
-                const int i0 = std::max(0, bx.i0 - halo), i1 = std::min(dims[0], bx.i1 + halo);
-                const int j0 = std::max(0, bx.j0 - halo), j1 = std::min(dims[1], bx.j1 + halo);
-                const int k0 = std::max(0, bx.k0 - halo), k1 = std::min(dims[2], bx.k1 + halo);
-                for (int k = k0; k < k1; ++k) {
-                    for (int j = j0; j < j1; ++j) {
-                        for (int i = i0; i < i1; ++i) {
+                auto& cells = cellGroups.emplace_back();
+                for (int k = c.K1(); k <= c.K2(); ++k) {
+                    for (int j = c.J1(); j <= c.J2(); ++j) {
+                        for (int i = c.I1(); i <= c.I2(); ++i) {
                             cells.insert(i + dims[0] * j + dims[0] * dims[1] * k);
                         }
                     }
                 }
             }
-            std::vector<std::set<int>> cellGroups;
-            cellGroups.reserve(groups.size());
-            for (auto& [root, cells] : groups) {
-                cellGroups.push_back(std::move(cells));
-            }
             const auto numGroups = cellGroups.size();
 
             // The rank-interior model requires each group to live entirely on one
-            // rank. If a single group is so large that confining it to one rank
+            // rank. If a single box is so large that confining it to one rank
             // would leave another rank with no cells, the constraint is
             // unsatisfiable (e.g. an LGR that covers essentially the whole grid).
             // Detect that here and fail with a clear, actionable message rather
-            // than aborting deep in the partitioner (a zero-cells error or, worse,
-            // a non-deterministic assertion while contracting the giant group).
-            // The groups are built identically on every rank from the box extents,
-            // so this Cartesian-based test is collective-safe without communication.
+            // than aborting deep in the partitioner. The groups are built
+            // identically on every rank, so this test is collective-safe.
             const int numRanks = this->grid_->comm().size();
             std::size_t maxGroup = 0;
             for (const auto& g : cellGroups) {
@@ -552,7 +508,7 @@ public:
             const std::size_t totalCart = static_cast<std::size_t>(dims[0]) * dims[1] * dims[2];
             if (numRanks > 1 && maxGroup + static_cast<std::size_t>(numRanks - 1) > totalCart) {
                 OPM_THROW(std::runtime_error,
-                          "An LGR refinement region (with its halo) spans "
+                          "An LGR refinement region spans "
                           + std::to_string(maxGroup) + " of " + std::to_string(totalCart)
                           + " cells, too much to keep on a single rank when running on "
                           + std::to_string(numRanks) + " MPI ranks. The rank-interior "
@@ -562,7 +518,7 @@ public:
                           "reduce the extent of the refinement box(es).");
             }
 
-            this->grid_->setPartitionCellGroups(std::move(cellGroups));
+            this->grid_->setPartitionCellGroups(std::move(cellGroups), halo);
             OpmLog::info("Keeping " + std::to_string(numGroups)
                          + " LGR region(s) (with halo) together for load balancing.");
             return true;
@@ -598,6 +554,8 @@ public:
         // partitioner (zoltanGoG) and, for a contracted interior region,
         // overlap layer 2 (a single layer misses corner/edge neighbours).
         int overlapLayers = this->numOverlap();
+        // Each box is kept as many layers clear of other ranks as the overlap.
+        const int lgrOverlap = std::max(overlapLayers, 2);
         auto partMethod = this->partitionMethod();
         if (this->grid_->comm().size() > 1) {
             if (const auto& lgrs = this->eclState().getLgrs(); lgrs.size() > 0) {
@@ -625,12 +583,12 @@ public:
                     // zero partition to the children (CpGrid::leafPartition-
                     // FromLevelZero), so the box's refined cells all land on
                     // one rank.
-                    if (applyLgrPartitionCellGroups_(lgrs)) {
-                        overlapLayers = std::max(overlapLayers, 2);
+                    if (applyLgrPartitionCellGroups_(lgrs, lgrOverlap)) {
+                        overlapLayers = lgrOverlap;
                         partMethod = Dune::PartitionMethod::zoltanGoG;
                     }
-                } else if (applyLgrPartitionCellGroups_(lgrs)) {
-                    overlapLayers = std::max(overlapLayers, 2);
+                } else if (applyLgrPartitionCellGroups_(lgrs, lgrOverlap)) {
+                    overlapLayers = lgrOverlap;
                     partMethod = Dune::PartitionMethod::zoltanGoG;
                 }
             }
