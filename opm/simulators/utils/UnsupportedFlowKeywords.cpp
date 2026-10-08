@@ -46,7 +46,7 @@ const KeywordValidation::UnsupportedKeywords& unsupportedKeywords()
         {"ALPOLADS", {true, std::nullopt}},
         {"ALSURFAD", {true, std::nullopt}},
         {"ALSURFST", {true, std::nullopt}},
-        {"AMALGAM", {true, "Refinement boxes are independent: they are not amalgamated into one refined region, so a well or a connection cannot span two of them."}},
+        {"AMALGAM", {false, std::string{"Ignored: touching refinement boxes are always connected, as if amalgamated"}}},
         {"AIM", {false, std::string{"Flow only supports the fully implicit method and will use it instead"}}},
         {"APIGROUP", {true, std::nullopt}},
         {"APILIM", {true, std::nullopt}},
