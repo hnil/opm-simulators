@@ -537,42 +537,6 @@ namespace Opm
     }
 
     template<typename TypeTag>
-    std::optional<std::vector<typename WellInterface<TypeTag>::Scalar>>
-    WellInterface<TypeTag>::
-    physicalReopenRates(const Simulator& simulator,
-                        const GroupStateHelperType& groupStateHelper,
-                        const WellStateType& well_state)
-    {
-        if (!this->isProducer()) {
-            return std::nullopt;
-        }
-        // The first half of wellTesting().
-        GroupStateHelperType helper = groupStateHelper;
-        WellStateType copy = well_state;
-        auto guard = helper.pushWellState(copy);
-        if (this->wellUnderZeroRateTarget(helper)) {
-            return std::nullopt;
-        }
-        auto& ws = copy.well(this->indexOfWell());
-        const bool has_thp = this->wellHasTHPConstraints(simulator.vanguard().summaryState());
-        ws.production_cmode = has_thp ? Well::ProducerCMode::THP : Well::ProducerCMode::BHP;
-        ws.open();
-        this->openWell();
-        scaleSegmentRatesAndPressure(copy);
-        calculateExplicitQuantities(simulator, helper);
-        updatePrimaryVariables(helper);
-        if (!solveWellForTesting(simulator, helper, copy)) {
-            return std::nullopt;
-        }
-        updateWellOperability(simulator, copy, helper);
-        const auto& q = copy.well(this->indexOfWell()).surface_rates;
-        if (!this->isOperableAndSolvable() || std::none_of(q.begin(), q.end(), [](const Scalar v) { return v < Scalar{0}; })) {
-            return std::nullopt;
-        }
-        return q;
-    }
-
-    template<typename TypeTag>
     void
     WellInterface<TypeTag>::
     updateWeldrawMaxRate(const Simulator& simulator,

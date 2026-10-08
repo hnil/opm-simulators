@@ -455,8 +455,8 @@ facilityCheck_(DeferredLogger& deferred_logger)
             }
         })
         && stage([&] {
-            // Zero rate is a solution only where the well cannot flow at its thp limit: WTEST's physical test
-            // on a well made for it, so the run's own wells are untouched. A well the run closed may have
+            // Zero rate is a solution only where the well cannot flow at its thp limit: the stable crossing of
+            // its own inflow and tubing, on a well made for it, without a solve. A well the run closed may have
             // been closed on an economic limit, so it is listed apart.
             for (const auto& name : schedule.wellNames(step)) {
                 const auto& w = schedule.getWell(name, step);
@@ -481,10 +481,40 @@ facilityCheck_(DeferredLogger& deferred_logger)
                     probe->setPrevSurfaceRates(this->wellState(), this->prevWellState());
                 }
                 this->network_.initializeWell(*probe);
-                const auto q = probe->physicalReopenRates(simulator_, this->groupStateHelper(), this->wellState());
+                probe->setStableThpCrossing(true);
+                probe->calculateExplicitQuantities(simulator_, this->groupStateHelper());
+                const Scalar alq = probe->getALQ(this->wellState());
+                auto flowsAt = [&](const std::optional<Scalar> thp) -> std::optional<std::vector<Scalar>> {
+                    std::optional<Scalar> bhp;
+                    if (thp.has_value()) {
+                        probe->setDynamicThpLimit(*thp);
+                        bhp = probe->computeBhpAtThpLimitProdWithAlq(simulator_, this->groupStateHelper(), summary_state,
+                                                                     alq, /*iterate_if_no_solution*/ false);
+                    } else {
+                        bhp = WellBhpThpCalculator<Scalar, IndexTraits>(*probe).mostStrictBhpFromBhpLimits(summary_state);
+                    }
+                    if (!bhp.has_value()) {
+                        return std::nullopt;
+                    }
+                    std::vector<Scalar> flux(probe->numConservationQuantities(), Scalar(0));
+                    probe->computeWellRatesWithBhp(simulator_, *bhp, flux, scratch);
+                    std::vector<Scalar> surface(this->numPhases(), Scalar(0));
+                    for (const int c : {IndexTraits::waterPhaseIdx, IndexTraits::oilPhaseIdx, IndexTraits::gasPhaseIdx}) {
+                        if (FluidSystem::phaseIsActive(c)) {
+                            surface[pu.canonicalToActivePhaseIdx(c)]
+                                = flux[FluidSystem::canonicalToActiveCompIdx(FluidSystem::solventComponentIndex(c))];
+                        }
+                    }
+                    if (std::none_of(surface.begin(), surface.end(), [](const Scalar v) { return v < Scalar(0); })) {
+                        return std::nullopt;
+                    }
+                    return surface;
+                };
+                const bool has_thp = probe->wellHasTHPConstraints(summary_state);
+                const auto q = flowsAt(has_thp ? std::optional<Scalar>(probe->getTHPConstraint(summary_state))
+                                               : std::nullopt);
                 if (q.has_value()) {
-                    const Scalar thp = probe->wellHasTHPConstraints(summary_state) ? probe->getTHPConstraint(summary_state)
-                                                                                   : Scalar(0);
+                    const Scalar thp = has_thp ? probe->getTHPConstraint(summary_state) : Scalar(0);
                     // Stopped before this step and no WTEST: the deck keeps it stopped; reported, not counted.
                     const bool earlier = stopped && this->prevWellState().has(name)
                         && this->prevWellState().well(name).status != Well::Status::OPEN;
@@ -492,7 +522,7 @@ facilityCheck_(DeferredLogger& deferred_logger)
                     // state is a solution.
                     std::string at_open;
                     bool cliff = false;
-                    if (stopped && !earlier && probe->wellHasTHPConstraints(summary_state)) {
+                    if (stopped && !earlier && has_thp) {
                         auto& ws = this->wellState().well(name);
                         const auto saved_ws = ws;
                         ws.open();
@@ -502,9 +532,7 @@ facilityCheck_(DeferredLogger& deferred_logger)
                         ws = saved_ws;
                         this->updateAndCommunicateGroupData(step, /*update_wellgrouptarget*/ false);
                         if (const auto it = p_open.find(w.groupName()); it != p_open.end() && it->second > thp) {
-                            probe->setDynamicThpLimit(it->second);
-                            const auto q_open = probe->physicalReopenRates(simulator_, this->groupStateHelper(),
-                                                                           this->wellState());
+                            const auto q_open = flowsAt(it->second);
                             cliff = !q_open.has_value();
                             at_open = fmt::format(" (open {:.1f}: {})", it->second * 1.0e-5,
                                                   cliff ? std::string("dead") : fmt::format("oil {:.0f}",

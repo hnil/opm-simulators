@@ -277,12 +277,6 @@ public:
                                                  WellStateType& well_state,
                                                  const Scalar lift_tol) const;
 
-    /// Facility check, on a well made for it: the surface rates this producer flows at when opened on
-    /// its thp limit (bhp without one), by the physical test WTEST uses, on a copy of the state; none if
-    /// it is not operable there.
-    std::optional<std::vector<Scalar>> physicalReopenRates(const Simulator& simulator,
-                                                           const GroupStateHelperType& groupStateHelper,
-                                                           const WellStateType& well_state);
 
     bool updateWellControl(const Simulator& simulator,
                            const IndividualOrGroup iog,
