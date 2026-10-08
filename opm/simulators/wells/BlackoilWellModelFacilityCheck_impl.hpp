@@ -240,7 +240,7 @@ facilityCheck_(DeferredLogger& deferred_logger)
     std::pair<Scalar, std::string> group_over{Scalar{0}, ""};
     std::pair<Scalar, std::string> target_move{Scalar{0}, ""};
     std::vector<std::string> idle, group_switches, well_switches, unliftable_switches, liftable, closed_would_flow,
-        kept_would_flow;
+        kept_would_flow, cliffs;
     std::string failure;
     {
         auto log_guard = this->groupStateHelper().pushLogger(/*do_mpi_gather*/ false);
@@ -488,10 +488,33 @@ facilityCheck_(DeferredLogger& deferred_logger)
                     // Stopped before this step and no WTEST: the deck keeps it stopped; reported, not counted.
                     const bool earlier = stopped && this->prevWellState().has(name)
                         && this->prevWellState().well(name).status != Well::Status::OPEN;
-                    (!stopped ? closed_would_flow : earlier ? kept_would_flow : liftable).push_back(
-                        fmt::format("{}@{:.1f} oil {:.0f} gas {:.0f}", name, thp * 1.0e-5,
+                    // A cliff when it cannot flow either at the node pressure its own flow gives: neither
+                    // state is a solution.
+                    std::string at_open;
+                    bool cliff = false;
+                    if (stopped && !earlier && probe->wellHasTHPConstraints(summary_state)) {
+                        auto& ws = this->wellState().well(name);
+                        const auto saved_ws = ws;
+                        ws.open();
+                        ws.surface_rates = *q;
+                        this->updateAndCommunicateGroupData(step, /*update_wellgrouptarget*/ false);
+                        const auto p_open = this->network_.pressuresAtGroupRates(step);
+                        ws = saved_ws;
+                        this->updateAndCommunicateGroupData(step, /*update_wellgrouptarget*/ false);
+                        if (const auto it = p_open.find(w.groupName()); it != p_open.end() && it->second > thp) {
+                            probe->setDynamicThpLimit(it->second);
+                            const auto q_open = probe->physicalReopenRates(simulator_, this->groupStateHelper(),
+                                                                           this->wellState());
+                            cliff = !q_open.has_value();
+                            at_open = fmt::format(" (open {:.1f}: {})", it->second * 1.0e-5,
+                                                  cliff ? std::string("dead") : fmt::format("oil {:.0f}",
+                                                      -phase(*q_open, IndexTraits::oilPhaseIdx) * 86400.0));
+                        }
+                    }
+                    (!stopped ? closed_would_flow : earlier ? kept_would_flow : cliff ? cliffs : liftable).push_back(
+                        fmt::format("{}@{:.1f} oil {:.0f} gas {:.0f}{}", name, thp * 1.0e-5,
                                     -phase(*q, IndexTraits::oilPhaseIdx) * 86400.0,
-                                    -phase(*q, IndexTraits::gasPhaseIdx) * 86400.0));
+                                    -phase(*q, IndexTraits::gasPhaseIdx) * 86400.0, at_open));
                 }
             }
         });
@@ -519,7 +542,7 @@ facilityCheck_(DeferredLogger& deferred_logger)
             if (n > 0 && v.empty()) { v.emplace_back("(another rank)"); }
         };
         for (auto* v : {&unsolved, &idle, &group_switches, &well_switches, &unliftable_switches, &liftable,
-                        &closed_by_run, &closed_would_flow, &kept_would_flow}) {
+                        &closed_by_run, &closed_would_flow, &kept_would_flow, &cliffs}) {
             counts(*v);
         }
     }
@@ -547,7 +570,7 @@ facilityCheck_(DeferredLogger& deferred_logger)
         "injector over {:+.1f} % ({}) | injection group over {:+.1f} % ({}) | "
         "held without a binding limit {} [{}] | legacy would switch groups {} [{}] wells {} [{}], "
         "move a target {:.1f} % ({}); unliftable, not counted {} [{}] | stopped this step but liftable {} [{}], "
-        "kept stopped, would flow {} [{}] | "
+        "on a cliff {} [{}], kept stopped, would flow {} [{}] | "
         "closed by the run {} [{}], would flow {} [{}] | off assignment {:.1f} % ({}){}",
         step, iterCtx.iteration(), physics_ok ? "ok" : "NO", legacy_ok ? "ok" : "NO",
         unsolved.size(), join(unsolved), network_off.first * 1.0e-5, network_off.second,
@@ -556,7 +579,7 @@ facilityCheck_(DeferredLogger& deferred_logger)
         idle.size(), join(idle), group_switches.size(), join(group_switches),
         well_switches.size(), join(well_switches), 100.0 * target_move.first, target_move.second,
         unliftable_switches.size(), join(unliftable_switches), liftable.size(), join(liftable),
-        kept_would_flow.size(), join(kept_would_flow),
+        cliffs.size(), join(cliffs), kept_would_flow.size(), join(kept_would_flow),
         closed_by_run.size(), join(closed_by_run), closed_would_flow.size(), join(closed_would_flow),
         100.0 * off_assigned.first, off_assigned.second,
         failure.empty() ? "" : " | probe failed: " + failure));

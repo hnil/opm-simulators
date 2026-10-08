@@ -1141,9 +1141,20 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
             auto ex = NetworkSolve::solveReducedOnExtension(system, start, params, rule, 20, keep_dead,
                                                               param_.group_controller_network_tolerance_);
             if (std::getenv("OPM_CONTROLLER_TRACE")) {
-                deferred_logger.debug(fmt::format("EXTDBG step={} it={} passes={} closed={} of {} wells",
+                std::string closed;
+                for (int w = 0; w < system.numWells(); ++w) {
+                    if (!ex.closed_wells[w]) { continue; }
+                    const auto& well = system.wells()[w];
+                    const Scalar p_end = well.own_thp > Scalar{0} ? well.own_thp
+                                       : ex.last.node_pressure.empty() ? Scalar{0} : ex.last.node_pressure[well.node];
+                    closed += fmt::format(" | {} closed at p {:.3f} gap {:.3f} bhp {:.2f}; at the end p {:.3f}, thp potential {:.1f}",
+                                          well.name, ex.closed_p[w] / unit::barsa, ex.closed_gap[w] / unit::barsa,
+                                          ex.closed_bhp[w] / unit::barsa, p_end / unit::barsa,
+                                          well.vfp_table > 0 && p_end > Scalar{0} ? system.thpPotential(well, p_end) * 86400.0 : -1.0);
+                }
+                deferred_logger.debug(fmt::format("EXTDBG step={} it={} passes={} closed={} of {} wells{}",
                                                   reportStepIdx, simulator_.problem().iterationContext().iteration(),
-                                                  ex.passes, ex.closed, system.numWells()));
+                                                  ex.passes, ex.closed, system.numWells(), closed));
             }
             auto r = std::move(ex.last);
             r.converged = r.converged && ex.converged;

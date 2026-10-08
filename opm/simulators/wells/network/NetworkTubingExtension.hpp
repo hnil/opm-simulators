@@ -42,6 +42,7 @@ struct ExtensionResult
     std::vector<char> closed_wells;
     std::vector<Scalar> closed_gap;   // how far the line missed the curve, where each was closed
     std::vector<Scalar> closed_bhp;   // the bhp of the continuation point it was closed at
+    std::vector<Scalar> closed_p;     // its node pressure when it was closed
 };
 
 /// Which of the wells on the continuation a pass shuts. All: every one at
@@ -85,6 +86,7 @@ solveReducedOnExtension(Sys& system,
     out.closed_wells.assign(system.numWells(), 0);
     out.closed_gap.assign(system.numWells(), Scalar{0});
     out.closed_bhp.assign(system.numWells(), Scalar{0});
+    out.closed_p.assign(system.numWells(), Scalar{0});
     system.setTubingExtension(true);
     auto p = node_pressure_guess;
     struct Candidate { int w; Scalar gap; Scalar res; Scalar bhp; };
@@ -134,6 +136,8 @@ solveReducedOnExtension(Sys& system,
             out.closed_wells[c.w] = 1;
             out.closed_gap[c.w] = c.gap;
             out.closed_bhp[c.w] = c.bhp;
+            const auto& cw = system.wells()[c.w];
+            out.closed_p[c.w] = cw.own_thp > Scalar{0} ? cw.own_thp : cw.node == 0 ? system.terminalPressure() : p[cw.node];
             ++out.closed;
         }
     }

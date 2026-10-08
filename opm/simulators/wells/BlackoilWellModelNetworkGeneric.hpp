@@ -72,6 +72,9 @@ public:
     /// network gives for the group state's current leaf rates, and its node.
     std::pair<Scalar, std::string> pressureImbalance(const int reportStepIdx) const;
 
+    /// The node pressures [Pa] the network gives for the group state's current leaf rates.
+    std::map<std::string, Scalar> pressuresAtGroupRates(const int reportStepIdx) const;
+
     void setFromRestart(const std::optional<std::map<std::string, double>>& restart_pressures);
 
     //! \brief Initialize wells according to network configuration.
