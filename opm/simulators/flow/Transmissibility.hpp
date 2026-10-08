@@ -68,8 +68,7 @@ public:
                      std::function<std::array<double,dimWorld>(int)> centroids,
                      bool enableEnergy,
                      bool enableDiffusivity,
-                     bool enableDispersivity,
-                     bool lgrTransFromHost = false);
+                     bool enableDispersivity);
 
     /*!
      * \brief Return the permeability for an element.
@@ -267,9 +266,9 @@ protected:
     /// Zero-based IJK of a level-zero Cartesian index, for diagnostics.
     std::array<int,3> ijkFromCartesian_(std::size_t cartIdx) const;
 
-    //! \brief Replace refined transmissibilities across a host cell's own faces
-    //!        with the host's, scaled by the refinement factor.
-    void applyHostTransToRefinedFaces_();
+    //! \brief The level-zero hosts' own transmissibilities, for the output's
+    //!        global section and the deck's TRAN* edits.
+    void computeHostLevelTrans_();
 
     //! \brief Render one deck cell as (i,j,k).
     std::string ijkString_(std::size_t cartIdx) const;
@@ -357,7 +356,6 @@ protected:
     bool enableEnergy_;
     bool enableDiffusivity_;
     bool enableDispersivity_;
-    bool lgrTransFromHost_{false};
     std::map<std::pair<int,int>, Scalar> hostLevelTrans_;
     bool warnEditNNC_ = true;
     std::unordered_map<std::uint64_t, Scalar> thermalHalfTrans_; //NB this is based on direction map size is ca 2*trans_ (diffusivity_)

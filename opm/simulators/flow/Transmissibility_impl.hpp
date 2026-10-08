@@ -104,8 +104,7 @@ Transmissibility(const EclipseState& eclState,
                  std::function<std::array<double,dimWorld>(int)> centroids,
                  bool enableEnergy,
                  bool enableDiffusivity,
-                 bool enableDispersivity,
-                 bool lgrTransFromHost)
+                 bool enableDispersivity)
       : eclState_(eclState)
       , gridView_(gridView)
       , cartMapper_(cartMapper)
@@ -114,7 +113,6 @@ Transmissibility(const EclipseState& eclState,
       , enableEnergy_(enableEnergy)
       , enableDiffusivity_(enableDiffusivity)
       , enableDispersivity_(enableDispersivity)
-      , lgrTransFromHost_(lgrTransFromHost)
       , lookUpData_(gridView)
       , lookUpCartesianData_(gridView, cartMapper)
 {
@@ -731,11 +729,8 @@ update(bool global, const TransUpdateQuantities update_quantities,
         halfTransMap.finalize();
     }
 
-    // Before the deck's TRAN* edits, which must act on the inherited value.
-    // MULT* and MULTREGT are reapplied inside, since the main loop's are overwritten.
-    // Always run on CpGrid: it also records the host-level values the output needs.
-    if (std::is_same_v<Grid, Dune::CpGrid> || this->lgrTransFromHost_) {
-        this->applyHostTransToRefinedFaces_();
+    if constexpr (std::is_same_v<Grid, Dune::CpGrid>) {
+        this->computeHostLevelTrans_();
     }
 
     // Potentially overwrite and/or modify transmissibilities based on input from deck
@@ -1553,49 +1548,13 @@ applyNncToGridTrans_(const CartesianToLeaf& cartesianToCompressed)
 }
 
 
-// Take a refined cell's transmissibility from its host -- the level-zero cell it
-// was refined out of, which is what HOSTNUM in the EGRID names.
-//
-// Mapping the reference's refined transmissibilities back through HOSTNUM shows one
-// rule behind all of them: summed over the child faces a host face became, the
-// refined value over the host's is the analytic refinement factor -- 3.0000 for a
-// 3x refinement, and the same for TRANY, TRANZ and the fault NNCs.  The reference
-// distributes the host's; we compute each child's own.  On a near-regular grid the
-// two coincide; on strongly sheared cells they do not, and the two-point
-// calculation is the less trustworthy of the two there.
-//
-// Rather than the deck's refinement counts, which say nothing per cell once a box
-// is graded (N*FIN/H*FIN), scale each host half-transmissibility by the child's own
-// geometry:
-//
-//     half_child = half_host * (A_child / A_host) * (d_host / d_child)
-//
-// with A the face area and d the cell-centre-to-face distance.  For a uniform r_x x
-// r_y x r_z that is exactly half_host * r_d / (r_a * r_b), so the child faces of one
-// host face still sum to r_d times the host's; for a graded box each child gets its
-// own share; and two hosts refined differently each contribute their own side.  The
-// two sides are then harmonic-averaged, as everywhere else.
-//
-// The same rule covers the faces interior to a host cell: those are new faces, but
-// they are new faces *of that host*, so its half-transmissibility is what they
-// inherit.
-//
-// One direction is deliberately left alone: a face whose normal direction the host
-// is not subdivided in (d_child == d_host).  There the child face is the host face
-// and the computed value already is the host's -- and it keeps the level-zero
-// transmissibility computed here, plain geometry with no PINCH or MINPV processing
-// behind it, out of the vertical, where on a pinched-out grid that processing is
-// most of the answer.
+// The level-zero hosts' own connections as the unrefined grid has them: plain
+// geometry, as in the reference's global section, and what TRAN* edits act on.
 template<class Grid, class GridView, class ElementMapper, class CartesianIndexMapper, class Scalar>
 void Transmissibility<Grid,GridView,ElementMapper,CartesianIndexMapper,Scalar>::
-applyHostTransToRefinedFaces_()
+computeHostLevelTrans_()
 {
-    if constexpr (! std::is_same_v<Grid, Dune::CpGrid>) {
-        OPM_THROW(std::invalid_argument,
-                  "Taking a refined transmissibility from its host cell is "
-                  "implemented for CpGrid only.");
-    }
-    else {
+    if constexpr (std::is_same_v<Grid, Dune::CpGrid>) {
         if (grid_.maxLevel() == 0) {
             return;
         }
@@ -1616,22 +1575,18 @@ applyHostTransToRefinedFaces_()
         if (permx.size() < numHost) {
             OPM_THROW(std::invalid_argument,
                       "The level-zero grid has more cells than the field properties "
-                      "describe; a refined transmissibility cannot be taken from its "
-                      "host cell.");
+                      "describe; the host cells' transmissibilities cannot be computed.");
         }
 
-        // Per host cell and face: the half-transmissibility, the face area, and the
-        // centre-to-face distance.  A faulted host face is several intersections, so
-        // accumulate the pieces.
-        struct Face { Scalar half{0}, area{0}, dist{0}; };
-        auto host = std::vector<std::array<Face,6>>(numHost);
+        // Per neighbouring host pair: the half-transmissibility and face area. A
+        // faulted host face is several intersections, so accumulate the pieces.
+        struct Face { Scalar half{0}, area{0}; };
         auto isHost = std::vector<bool>(numHost, false);
         for (const auto& elem : elements(gridView_)) {
             if (elem.level() > 0) {
                 isHost[levelMapper.index(elem.getOrigin())] = true;
             }
         }
-        // The same per neighbouring host: across a fault each takes its own piece.
         auto hostPair = std::map<std::tuple<std::size_t,int,std::size_t>, Face>{};
 
 
@@ -1679,111 +1634,15 @@ applyHostTransToRefinedFaces_()
                     half *= ntgArr[idx];
                 }
 
-                auto& slot = host[idx][f];
-                slot.half += half;
-                slot.area += geom.volume();
-                slot.dist += d.two_norm() * geom.volume();   // area-weighted
-
                 if (is.neighbor() && (isHost[idx] || isHost[levelMapper.index(is.outside())])) {
                     auto& pair = hostPair[{idx, f, levelMapper.index(is.outside())}];
                     pair.half += half;
                     pair.area += geom.volume();
                 }
             }
-
-            for (auto& slot : host[idx]) {
-                if (slot.area > 0.0) {
-                    slot.dist /= slot.area;
-                }
-            }
         }
 
-        const auto elemMapper = ElementMapper { gridView_, Dune::mcmgElementLayout() };
-
-        // The host-to-child distance ratio is the inverse of the child's width
-        // fraction of its host along the face's axis, as the box describes it
-        // (N*FIN/H*FIN included).  Nested boxes fall back to the geometric ratio.
-        auto widths = std::vector<std::array<std::vector<double>,2>>(grid_.maxLevel() + 1);
-        const auto& lgrs = eclState_.getLgrs();
-        for (const auto& [name, level] : grid_.getLgrNameToLevel()) {
-            for (std::size_t n = 0; n < lgrs.size(); ++n) {
-                const auto& lgr = lgrs.getLgr(n);
-                if ((level > 0) && (lgr.NAME() == name) && (lgr.PARENT_NAME() == "GLOBAL")) {
-                    for (std::size_t dim = 0; dim < 2; ++dim) {
-                        const auto columns = lgr.refinedColumns(dim);
-                        for (std::size_t c = 0; c < columns.fracLo.size(); ++c) {
-                            widths[level][dim].push_back(columns.fracHi[c] - columns.fracLo[c]);
-                        }
-                    }
-                }
-            }
-        }
-        auto widthRatio = [&widths](const auto& elem, const int f) -> std::optional<Scalar>
-        {
-            const auto level = static_cast<std::size_t>(elem.level());
-            const auto axis = f / 2;
-            if ((level >= widths.size()) || widths[level][axis].empty()) {
-                return std::nullopt;
-            }
-            const auto nx = widths[level][0].size();
-            const auto cart = static_cast<std::size_t>(elem.getLevelCartesianIdx());
-            const auto column = (axis == 0) ? (cart % nx) : ((cart / nx) % widths[level][1].size());
-            return 1.0 / widths[level][axis][column];
-        };
-
-        // A host pair's transmissibility is shared among the refined faces that
-        // join the two hosts by area -- not those faces' share of the coarse
-        // overlap, which a fault's refined pieces do not reproduce.
-        auto leafPairArea = std::map<std::tuple<std::size_t,int,std::size_t>, Scalar>{};
-        for (const auto& elem : elements(gridView_)) {
-            if (elem.level() == 0) {
-                continue;
-            }
-            const auto h = levelMapper.index(elem.getOrigin());
-            for (const auto& is : intersections(gridView_, elem)) {
-                if (!is.neighbor() || (is.indexInInside() < 0) || (is.indexInInside() > 3)) {
-                    continue;
-                }
-                const auto other = levelMapper.index(is.outside().getOrigin());
-                if (other == h) {
-                    continue;
-                }
-                const auto area = static_cast<Scalar>(is.geometry().volume());
-                leafPairArea[{h, is.indexInInside(), other}] += area;
-                if (is.outside().level() == 0) {
-                    leafPairArea[{other, is.indexInOutside(), h}] += area;
-                }
-            }
-        }
-
-        auto scaled = [&host, &hostPair, &leafPairArea](const std::size_t h, const int f,
-                                                        const std::size_t other,
-                                                        const Scalar area, const Scalar ratio)
-            -> std::optional<Scalar>
-        {
-            if (!(ratio > 0.0)) {
-                return std::nullopt;
-            }
-            const auto pair = hostPair.find({h, f, other});
-            const auto leaf = leafPairArea.find({h, f, other});
-            if ((other != h) && (pair != hostPair.end()) && (leaf != leafPairArea.end())
-                && (leaf->second > 0.0)) {
-                return pair->second.half * (area / leaf->second) * ratio;
-            }
-            const auto& slot = host[h][f];
-            if (slot.area <= 0.0) {
-                return std::nullopt;
-            }
-            return slot.half * (area / slot.area) * ratio;
-        };
-        auto geometricRatio = [&host](const std::size_t h, const int f, const Scalar dist)
-        {
-            const auto& slot = host[h][f];
-            return (dist > 0.0) ? slot.dist / dist : Scalar{0};
-        };
-
-        // The value written below replaces one that carried the deck's face and
-        // region multipliers; apply them again exactly as the main loop does.
+        // The deck's face and region multipliers, applied as the main loop does.
         const auto& transMult = eclState_.getTransMult();
         const auto& nncInput = eclState_.getInputNNC().input();
         auto multiplier = [&](const int c1, const int f1, const int c2, const int f2)
@@ -1842,127 +1701,6 @@ applyHostTransToRefinedFaces_()
                 hostLevelTrans_[{ca, cb}] = t;
             }
         }
-        if (!this->lgrTransFromHost_) {
-            return;
-        }
-
-        // A refined cell with its own PERM or NTG (a CARFIN block's values)
-        // scales the share it takes of its host's half-transmissibility.
-        const auto ntgLeaf = fp.has_double("NTG")
-            ? this->lookUpData_.assignFieldPropsDoubleOnLeaf(fp, "NTG")
-            : std::vector<double>(elemMapper.size(), 1.0);
-        auto ownRatio = [&](const std::size_t leaf, const std::size_t h, const int f)
-        {
-            const auto dir = f / 2;
-            const auto kHost = (dir == 0) ? permx[h] : permy[h];
-            Scalar ratio = (kHost > 0.0) ? permeability_[leaf][dir][dir] / kHost : 1.0;
-            if (ntgArr[h] > 0.0) {
-                ratio *= ntgLeaf[leaf] / ntgArr[h];
-            }
-            return ratio;
-        };
-
-        std::size_t applied = 0, vertical = 0, noHost = 0;
-        std::map<std::tuple<std::size_t,std::size_t,int>, std::vector<decltype(trans_.begin())>> dbgPairs;
-
-        for (const auto& elem : elements(gridView_)) {
-            if (elem.level() == 0) {
-                continue;
-            }
-
-            const auto inIdx = elemMapper.index(elem);
-            const auto inCentre = elem.geometry().center();
-            // The host is the level-zero ancestor: father() of a nested cell
-            // is a level-1 cell, and its index means nothing on level zero.
-            // The scaling is multiplicative, so going straight to the
-            // ancestor equals chaining through the intermediate level.
-            const auto hIn = levelMapper.index(elem.getOrigin());
-
-            for (const auto& is : intersections(gridView_, elem)) {
-                // A box-boundary face takes the coarse side from that cell's own
-                // half-transmissibility.
-                const bool boundary = is.neighbor() && (is.outside().level() == 0);
-                if (!is.neighbor() || (!boundary && (is.outside().level() != elem.level()))) {
-                    continue;
-                }
-
-                const auto fIn = is.indexInInside();
-                const auto fOut = is.indexInOutside();
-                if ((fIn < 0) || (fOut < 0)) {
-                    continue;
-                }
-
-                const auto outIdx = elemMapper.index(is.outside());
-                if (!boundary && (inIdx > outIdx)) {
-                    continue;
-                }
-
-                const auto& geom = is.geometry();
-                const auto area = static_cast<Scalar>(geom.volume());
-                const auto faceCentre = geom.center();
-
-                auto distance = [&faceCentre](const auto& centre) {
-                    DimVector d = faceCentre;
-                    for (unsigned i = 0; i < dimWorld; ++i) {
-                        d[i] -= centre[i];
-                    }
-                    return static_cast<Scalar>(d.two_norm());
-                };
-
-                const auto dIn = distance(inCentre);
-                const auto dOut = distance(is.outside().geometry().center());
-                const auto hOut = levelMapper.index(is.outside().getOrigin());
-
-                // Lateral faces only.  A host's vertical transmissibility on a
-                // corner-point grid is largely PINCH and MINPV processing, and the
-                // level-zero pass above recomputes it from raw geometry, which does
-                // not reproduce that: overriding the vertical took Drogon's TRANZ
-                // from 0.999 of its reference to 0.93.  The computed vertical value
-                // is already right there -- with no subdivision in z it is the
-                // host's own -- so leave it.
-                if (fIn > 3) {
-                    ++vertical;
-                    continue;
-                }
-
-                const auto ratioIn = widthRatio(elem, fIn).value_or(geometricRatio(hIn, fIn, dIn));
-                const auto ratioOut = boundary ? Scalar{1}
-                    : widthRatio(is.outside(), fOut).value_or(geometricRatio(hOut, fOut, dOut));
-                auto halfIn = scaled(hIn, fIn, hOut, area, ratioIn);
-                auto halfOut = scaled(hOut, fOut, hIn, area, ratioOut);
-                if (halfIn.has_value()) {
-                    *halfIn *= ownRatio(inIdx, hIn, fIn);
-                }
-                if (halfOut.has_value()) {
-                    *halfOut *= ownRatio(outIdx, hOut, fOut);
-                }
-                if (!halfIn.has_value() || !halfOut.has_value() ||
-                    (*halfIn <= 0.0) || (*halfOut <= 0.0))
-                {
-                    ++noHost;
-                    continue;
-                }
-
-                auto it = trans_.find(details::isId(inIdx, outIdx));
-                if (it != trans_.end()) {
-                    const int cIn = this->lookUpCartesianData_.
-                        template getFieldPropCartesianIdx<Grid>(inIdx);
-                    const int cOut = this->lookUpCartesianData_.
-                        template getFieldPropCartesianIdx<Grid>(outIdx);
-                    // Same (cartesian, element) order as the main loop.
-                    const auto mult = (std::tie(cIn, inIdx) <= std::tie(cOut, outIdx))
-                        ? multiplier(cIn, fIn, cOut, fOut)
-                        : multiplier(cOut, fOut, cIn, fIn);
-                    it->second = mult / (1.0 / *halfIn + 1.0 / *halfOut);
-                    ++applied;
-                }
-            }
-        }
-
-        OpmLog::info(fmt::format(
-            "Refined transmissibility taken from the host cell on {} lateral faces. "
-            "{} vertical faces and {} faces whose host has no transmissibility there "
-            "keep their computed value.", applied, vertical, noHost));
     }
 }
 

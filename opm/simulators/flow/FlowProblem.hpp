@@ -245,8 +245,7 @@ public:
                               (energyModuleType == EnergyModules::FullyImplicitThermal ||
                                energyModuleType == EnergyModules::SequentialImplicitThermal),
                               enableDiffusion,
-                              enableDispersion,
-                              Parameters::Get<Parameters::LgrTransFromHost>())
+                              enableDispersion)
         , wellModel_(simulator, this->iterationContext())
         , aquiferModel_(simulator)
         , pffDofData_(simulator.gridView(), this->elementMapper())

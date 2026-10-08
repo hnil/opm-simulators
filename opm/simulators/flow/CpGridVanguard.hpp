@@ -958,8 +958,7 @@ protected:
                                                     getPropValue<TypeTag, Properties::EnergyModuleType>() == EnergyModules::FullyImplicitThermal ||
                                                     getPropValue<TypeTag, Properties::EnergyModuleType>() == EnergyModules::SequentialImplicitThermal,
                                                     getPropValue<TypeTag, Properties::EnableDiffusion>(),
-                                                    getPropValue<TypeTag, Properties::EnableDispersion>(),
-                                                    Parameters::Get<Parameters::LgrTransFromHost>()));
+                                                    getPropValue<TypeTag, Properties::EnableDispersion>()));
         globalTrans_->update(false, TransmissibilityType::TransUpdateQuantities::Trans);
 
         // The refined I/O-rank reference grid of a parallel LGR run gets its own
@@ -976,8 +975,7 @@ protected:
                 getPropValue<TypeTag, Properties::EnergyModuleType>() == EnergyModules::FullyImplicitThermal ||
                 getPropValue<TypeTag, Properties::EnergyModuleType>() == EnergyModules::SequentialImplicitThermal,
                 getPropValue<TypeTag, Properties::EnableDiffusion>(),
-                getPropValue<TypeTag, Properties::EnableDispersion>(),
-                Parameters::Get<Parameters::LgrTransFromHost>());
+                getPropValue<TypeTag, Properties::EnableDispersion>());
             outputTrans_->update(false, TransmissibilityType::TransUpdateQuantities::Trans);
         }
     }
