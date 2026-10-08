@@ -254,6 +254,11 @@ public:
                                                    const GroupStateHelperType& groupStateHelper,
                                                    std::vector<Scalar>& well_flux) const = 0;
 
+    /// bhp less the tubing's bhp at the rates of the well's own equations solved at that bhp, at its thp limit.
+    Scalar thpMarginWithIterations(const Simulator& simulator,
+                                   const GroupStateHelperType& groupStateHelper,
+                                   const Scalar bhp) const;
+
     bool wellUnderZeroRateTarget(const GroupStateHelperType& groupStateHelper) const;
 
     bool stoppedOrZeroRateTarget(const GroupStateHelperType& groupStateHelper) const;

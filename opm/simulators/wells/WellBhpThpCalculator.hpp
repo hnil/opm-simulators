@@ -137,6 +137,14 @@ public:
   static bool bruteForceBracketCommonTHP(const std::function<Scalar(const Scalar)>& eq,
                                 Scalar& min_thp, Scalar& max_thp);
 
+    //! \brief bhp less the tubing's bhp at the rates frates gives at that bhp, at the given thp.
+    Scalar thpMargin(const std::function<std::vector<Scalar>(const Scalar)>& frates,
+                     const Scalar bhp,
+                     const SummaryState& summary_state,
+                     const Scalar rho,
+                     const Scalar alq_value,
+                     const Scalar thp) const;
+
 private:
     //! \brief Compute BHP from THP limit for an injector - implementation.
     template<class ErrorPolicy>

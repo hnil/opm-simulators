@@ -240,7 +240,7 @@ facilityCheck_(DeferredLogger& deferred_logger)
     std::pair<Scalar, std::string> group_over{Scalar{0}, ""};
     std::pair<Scalar, std::string> target_move{Scalar{0}, ""};
     std::vector<std::string> idle, group_switches, well_switches, unliftable_switches, liftable, closed_would_flow,
-        kept_would_flow, cliffs;
+        kept_would_flow, cliffs, unconfirmed;
     std::string failure;
     {
         auto log_guard = this->groupStateHelper().pushLogger(/*do_mpi_gather*/ false);
@@ -484,8 +484,8 @@ facilityCheck_(DeferredLogger& deferred_logger)
                 probe->setStableThpCrossing(true);
                 probe->calculateExplicitQuantities(simulator_, this->groupStateHelper());
                 const Scalar alq = probe->getALQ(this->wellState());
+                std::optional<Scalar> bhp;
                 auto flowsAt = [&](const std::optional<Scalar> thp) -> std::optional<std::vector<Scalar>> {
-                    std::optional<Scalar> bhp;
                     if (thp.has_value()) {
                         probe->setDynamicThpLimit(*thp);
                         bhp = probe->computeBhpAtThpLimitProdWithAlq(simulator_, this->groupStateHelper(), summary_state,
@@ -498,13 +498,8 @@ facilityCheck_(DeferredLogger& deferred_logger)
                     }
                     std::vector<Scalar> flux(probe->numConservationQuantities(), Scalar(0));
                     probe->computeWellRatesWithBhp(simulator_, *bhp, flux, scratch);
-                    std::vector<Scalar> surface(this->numPhases(), Scalar(0));
-                    for (const int c : {IndexTraits::waterPhaseIdx, IndexTraits::oilPhaseIdx, IndexTraits::gasPhaseIdx}) {
-                        if (FluidSystem::phaseIsActive(c)) {
-                            surface[pu.canonicalToActivePhaseIdx(c)]
-                                = flux[FluidSystem::canonicalToActiveCompIdx(FluidSystem::solventComponentIndex(c))];
-                        }
-                    }
+                    // In active phase order already.
+                    const auto& surface = flux;
                     if (std::none_of(surface.begin(), surface.end(), [](const Scalar v) { return v < Scalar(0); })) {
                         return std::nullopt;
                     }
@@ -513,11 +508,24 @@ facilityCheck_(DeferredLogger& deferred_logger)
                 const bool has_thp = probe->wellHasTHPConstraints(summary_state);
                 const auto q = flowsAt(has_thp ? std::optional<Scalar>(probe->getTHPConstraint(summary_state))
                                                : std::nullopt);
+                // The crossing is found on the inflow without a solve; the well's own equations at that bhp
+                // must agree, or it is not counted.
+                // Stopped before this step and no WTEST: the deck keeps it stopped; reported, not counted.
+                const bool earlier = stopped && this->prevWellState().has(name)
+                    && this->prevWellState().well(name).status != Well::Status::OPEN;
+                Scalar full_model = 0;
+                if (q.has_value() && has_thp && stopped && !earlier) {
+                    full_model = probe->thpMarginWithIterations(simulator_, this->groupStateHelper(), *bhp);
+                    if (full_model < -tol_pressure) {
+                        unconfirmed.push_back(fmt::format("{}@{:.1f} oil {:.0f}: {:+.2f} bar", name,
+                                                          probe->getTHPConstraint(summary_state) * 1.0e-5,
+                                                          -phase(*q, IndexTraits::oilPhaseIdx) * 86400.0,
+                                                          full_model * 1.0e-5));
+                        continue;
+                    }
+                }
                 if (q.has_value()) {
                     const Scalar thp = has_thp ? probe->getTHPConstraint(summary_state) : Scalar(0);
-                    // Stopped before this step and no WTEST: the deck keeps it stopped; reported, not counted.
-                    const bool earlier = stopped && this->prevWellState().has(name)
-                        && this->prevWellState().well(name).status != Well::Status::OPEN;
                     // A cliff when it cannot flow either at the node pressure its own flow gives: neither
                     // state is a solution.
                     std::string at_open;
@@ -570,7 +578,8 @@ facilityCheck_(DeferredLogger& deferred_logger)
             if (n > 0 && v.empty()) { v.emplace_back("(another rank)"); }
         };
         for (auto* v : {&unsolved, &idle, &group_switches, &well_switches, &unliftable_switches, &liftable,
-                        &closed_by_run, &closed_would_flow, &kept_would_flow, &cliffs}) {
+                        &closed_by_run, &closed_would_flow, &kept_would_flow, &cliffs,
+                        &unconfirmed}) {
             counts(*v);
         }
     }
@@ -598,7 +607,7 @@ facilityCheck_(DeferredLogger& deferred_logger)
         "injector over {:+.1f} % ({}) | injection group over {:+.1f} % ({}) | "
         "held without a binding limit {} [{}] | legacy would switch groups {} [{}] wells {} [{}], "
         "move a target {:.1f} % ({}); unliftable, not counted {} [{}] | stopped this step but liftable {} [{}], "
-        "on a cliff {} [{}], kept stopped, would flow {} [{}] | "
+        "on a cliff {} [{}], kept stopped, would flow {} [{}], not confirmed by the well's equations {} [{}] | "
         "closed by the run {} [{}], would flow {} [{}] | off assignment {:.1f} % ({}){}",
         step, iterCtx.iteration(), physics_ok ? "ok" : "NO", legacy_ok ? "ok" : "NO",
         unsolved.size(), join(unsolved), network_off.first * 1.0e-5, network_off.second,
@@ -607,7 +616,7 @@ facilityCheck_(DeferredLogger& deferred_logger)
         idle.size(), join(idle), group_switches.size(), join(group_switches),
         well_switches.size(), join(well_switches), 100.0 * target_move.first, target_move.second,
         unliftable_switches.size(), join(unliftable_switches), liftable.size(), join(liftable),
-        cliffs.size(), join(cliffs), kept_would_flow.size(), join(kept_would_flow),
+        cliffs.size(), join(cliffs), kept_would_flow.size(), join(kept_would_flow), unconfirmed.size(), join(unconfirmed),
         closed_by_run.size(), join(closed_by_run), closed_would_flow.size(), join(closed_would_flow),
         100.0 * off_assigned.first, off_assigned.second,
         failure.empty() ? "" : " | probe failed: " + failure));

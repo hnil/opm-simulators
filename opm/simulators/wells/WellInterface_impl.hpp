@@ -537,6 +537,25 @@ namespace Opm
     }
 
     template<typename TypeTag>
+    typename WellInterface<TypeTag>::Scalar
+    WellInterface<TypeTag>::
+    thpMarginWithIterations(const Simulator& simulator,
+                            const GroupStateHelperType& groupStateHelper,
+                            const Scalar bhp) const
+    {
+        auto frates = [this, &simulator, &groupStateHelper](const Scalar b) {
+            std::vector<Scalar> rates(3);
+            this->computeWellRatesWithBhpIterations(simulator, b, groupStateHelper, rates);
+            this->adaptRatesForVFP(rates);
+            return rates;
+        };
+        const auto& summary_state = simulator.vanguard().summaryState();
+        return WellBhpThpCalculator(*this).thpMargin(frates, bhp, summary_state, this->getRefDensity(),
+                                                     this->getALQ(groupStateHelper.wellState()),
+                                                     this->getTHPConstraint(summary_state));
+    }
+
+    template<typename TypeTag>
     void
     WellInterface<TypeTag>::
     updateWeldrawMaxRate(const Simulator& simulator,

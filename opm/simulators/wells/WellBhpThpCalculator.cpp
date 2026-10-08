@@ -278,6 +278,30 @@ computeBhpAtThpLimitProd(const std::function<std::vector<Scalar>(const Scalar)>&
 }
 
 template<typename Scalar, typename IndexTraits>
+Scalar
+WellBhpThpCalculator<Scalar, IndexTraits>::
+thpMargin(const std::function<std::vector<Scalar>(const Scalar)>& frates,
+          const Scalar bhp,
+          const SummaryState& summary_state,
+          const Scalar rho,
+          const Scalar alq_value,
+          const Scalar thp) const
+{
+    const auto& controls = well_.wellEcl().productionControls(summary_state);
+    const auto& table = well_.vfpProperties()->getProd()->getTable(controls.vfp_table_number);
+    const Scalar dp = wellhelpers::computeHydrostaticCorrection(well_.refDepth(), table.getDatumDepth(),
+                                                                rho, well_.gravity());
+    const auto rates = frates(bhp);
+    const Scalar tubing = well_.vfpProperties()->getProd()->bhp(
+        controls.vfp_table_number, rates[IndexTraits::waterPhaseIdx], rates[IndexTraits::oilPhaseIdx],
+        rates[IndexTraits::gasPhaseIdx], thp, alq_value,
+        well_.vfpProperties()->getExplicitWFR(controls.vfp_table_number, well_.indexOfWell()),
+        well_.vfpProperties()->getExplicitGFR(controls.vfp_table_number, well_.indexOfWell()),
+        well_.useVfpExplicit());
+    return bhp - (tubing - dp + getVfpBhpAdjustment(tubing, thp));
+}
+
+template<typename Scalar, typename IndexTraits>
 std::optional<Scalar>
 WellBhpThpCalculator<Scalar, IndexTraits>::
 stableBhpAtThpLimit(const std::function<std::vector<Scalar>(const Scalar)>& frates,
