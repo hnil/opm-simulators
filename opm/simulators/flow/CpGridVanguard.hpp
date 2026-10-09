@@ -679,6 +679,197 @@ public:
             // A COMPDAT connection inside a box moves into the innermost LGR covering it
             // by index, with its connection factor rescaled; the same on every rank.
             this->schedule().refineConnectionsIntoLgrs(lgrs);
+            // Trajectory wells are re-intersected against the refined leaf.
+            this->recomputeWellTrajectoriesInLgr_();
+        }
+    }
+
+    /*!
+     * \brief Post-process WELTRAJ/COMPTRAJ wells against the refined leaf grid.
+     *
+     * For each leaf cell we supply its corner geometry and, when it is a refined
+     * (LGR) cell, its LGR-local (i,j,k) and owning LGR name. Schedule then
+     * re-intersects each trajectory against this geometry and tags single-LGR
+     * wells so the existing LGR connection path resolves them to the refined
+     * leaf cells. Only runs when the grid is refined and trajectory wells exist.
+     */
+    //! \param replayOnCoarse also replay when the grid is unrefined, pulling
+    //! wells whose connections were previously re-derived into a (now removed)
+    //! refinement back onto the global grid. Used by the dynamic driver.
+    void recomputeWellTrajectoriesInLgr_(const bool replayOnCoarse = false)
+    {
+        auto& grid = *this->grid_;
+        if (grid.maxLevel() == 0 && !replayOnCoarse) {
+            return; // no refinement -> nothing to do
+        }
+
+        // Cheap pre-check: any trajectory wells at all?
+        bool anyTraj = false;
+        for (const auto& w : this->schedule().getWellsatEnd()) {
+            if (w.getConnections().hasTrajectory()) { anyTraj = true; break; }
+        }
+        if (!anyTraj) {
+            return;
+        }
+
+        const auto& gv = this->gridView();
+        ElementMapper elemMapper(gv, Dune::mcmgElementLayout());
+        const auto& cartMapper = this->cartesianIndexMapper();
+
+        const std::size_t numCells = gv.size(0);
+
+        // leaf cell index -> (level, LGR-local cartesian) for refined cells.
+        const auto leafMappers = grid.mapLocalCartesianIndexSetsToLeafIndexSet();
+        std::unordered_map<std::size_t, std::pair<int, std::size_t>> leafToLevelCart;
+        for (std::size_t lev = 1; lev < leafMappers.size(); ++lev) {
+            for (const auto& [lgrCart, leafIdx] : leafMappers[lev]) {
+                leafToLevelCart[leafIdx] = { static_cast<int>(lev), lgrCart };
+            }
+        }
+        std::unordered_map<int, std::string> levelToLgrName;
+        for (const auto& [name, lev] : grid.getLgrNameToLevel()) {
+            levelToLgrName[lev] = name;
+        }
+
+        // Cell properties for the connection-factor (Peaceman) computation.
+        // Refined cells inherit their parent coarse cell's perm/ntg/satnum; the
+        // field props live on the (coarse) input grid, indexed by parent cell.
+        const auto& fp = this->eclState().fieldProps();
+        const auto& permx = fp.get_double("PERMX");
+        const auto& permy = fp.get_double("PERMY");
+        const auto& permz = fp.get_double("PERMZ");
+        const std::vector<double>* ntgPtr = fp.has_double("NTG") ? &fp.get_double("NTG") : nullptr;
+        const std::vector<int>*    satPtr = fp.has_int("SATNUM") ? &fp.get_int("SATNUM") : nullptr;
+        const auto& inputGrid = this->eclState().getInputGrid();
+
+        std::vector<std::array<std::array<double, 3>, 8>> cellCorners(numCells);
+        std::vector<std::optional<WellConnections::TrajectoryCell>> cellInfo(numCells);
+
+        for (const auto& elem : elements(gv)) {
+            const auto idx = elemMapper.index(elem);
+            const auto geom = elem.geometry();
+
+            double depth = 0.0;
+            for (int c = 0; c < 8; ++c) {
+                const auto corner = geom.corner(c);
+                cellCorners[idx][c] = { corner[0], corner[1], corner[2] };
+                depth += corner[2];
+            }
+            depth /= 8.0;
+
+            WellConnections::TrajectoryCell tc;
+            tc.depth = depth;
+
+            // Perm/ntg/satnum from the parent coarse cell (refined cells inherit
+            // them); dimensions are the actual (smaller) leaf cell extents, so
+            // the Peaceman CTF/Kh are computed for the refined cell.
+            const auto parentCart = static_cast<std::size_t>(cartMapper.cartesianIndex(idx));
+            const auto ai = inputGrid.activeIndex(parentCart);
+            tc.perm = { permx[ai], permy[ai], permz[ai] };
+            tc.ntg = ntgPtr ? (*ntgPtr)[ai] : 1.0;
+            tc.satnum = satPtr ? (*satPtr)[ai] : 1; // 1-based SATNUM region
+            const auto edge = [&cellCorners, idx](int a, int b) {
+                double s = 0.0;
+                for (int d = 0; d < 3; ++d) {
+                    const double q = cellCorners[idx][a][d] - cellCorners[idx][b][d];
+                    s += q * q;
+                }
+                return std::sqrt(s);
+            };
+            // OPM corner order is binary i-fastest: 0=(0,0,0) 1=(1,0,0)
+            // 2=(0,1,0) 4=(0,0,1) -> dx,dy,dz edge lengths.
+            tc.dimensions = { edge(0, 1), edge(0, 2), edge(0, 4) };
+
+            if (const auto it = leafToLevelCart.find(idx); it != leafToLevelCart.end()) {
+                const int level = it->second.first;
+                const std::size_t lgrCart = it->second.second;
+                const auto& dim = grid.currentData()[level]->logicalCartesianSize();
+                const std::size_t nx = dim[0];
+                const std::size_t ny = dim[1];
+                tc.ijk = { static_cast<int>(lgrCart % nx),
+                           static_cast<int>((lgrCart / nx) % ny),
+                           static_cast<int>(lgrCart / (nx * ny)) };
+                const auto nameIt = levelToLgrName.find(level);
+                tc.lgr_name = (nameIt != levelToLgrName.end()) ? nameIt->second : std::string{};
+
+                // Record the connection in the *opm-common* LGR indexing (the
+                // same encoding COMPDATL uses), so the ECL output places the well
+                // in the refined grid and the connection's global index is
+                // validated against the LGR grid (not the coarse grid).
+                const auto& lgrLabels = inputGrid.get_all_lgr_labels();
+                if (! tc.lgr_name.empty()
+                    && std::find(lgrLabels.begin(), lgrLabels.end(),
+                                 tc.lgr_name) != lgrLabels.end())
+                {
+                    // LGR grid number in the ScheduleGrid/COMPDATL convention:
+                    // GLOBAL=0, LGRs=1,2,... get_lgr_cell_index is 0-based over
+                    // the LGRs (GLOBAL excluded), so add one.
+                    tc.lgr_grid = static_cast<int>(inputGrid.get_lgr_cell_index(tc.lgr_name)) + 1;
+                    tc.global_index = inputGrid.getLGRCell(tc.lgr_name)
+                                          .getGlobalIndex(static_cast<std::size_t>(tc.ijk[0]),
+                                                          static_cast<std::size_t>(tc.ijk[1]),
+                                                          static_cast<std::size_t>(tc.ijk[2]));
+                }
+                else if (! tc.lgr_name.empty()) {
+                    // Adaptive (non-deck) LGR: the input EclipseGrid knows
+                    // nothing about it, so there is no COMPDATL grid numbering
+                    // to encode. Keep a non-zero grid number (the refinement
+                    // level) so the connection is recognizably refined, and use
+                    // the LGR-local Cartesian index as its global index. The
+                    // runtime lookup (compressedIndexForInteriorLGR) only needs
+                    // the LGR-local ijk + the CpGrid LGR name, both recorded.
+                    tc.lgr_grid = level;
+                    tc.global_index = lgrCart;
+                }
+                else {
+                    tc.global_index = parentCart;
+                }
+            }
+            else {
+                std::array<int, 3> ijk{};
+                cartMapper.cartesianCoordinate(idx, ijk);
+                tc.ijk = ijk;
+                tc.lgr_name.clear();
+                tc.lgr_grid = 0;
+                tc.global_index = parentCart;
+            }
+
+            cellInfo[idx] = tc;
+        }
+
+        auto cellInfoFn = [&cellInfo](std::size_t i)
+            -> std::optional<WellConnections::TrajectoryCell>
+        {
+            if (i < cellInfo.size()) {
+                return cellInfo[i];
+            }
+            return std::nullopt;
+        };
+
+        OpmLog::info(grid.maxLevel() > 0
+                     ? "\nRecomputing well-trajectory connections against the refined grid"
+                     : "\nRecomputing well-trajectory connections against the coarse grid");
+        this->schedule().recomputeTrajectoryConnections(cellCorners, cellInfoFn);
+
+        // Summarize the outcome (last report step) so refined-well placement
+        // is visible in the log.
+        for (const auto& w : this->schedule().getWellsatEnd()) {
+            const auto& cs = w.getConnections();
+            if (! cs.hasTrajectory()) {
+                continue;
+            }
+            std::string msg = "  well " + w.name() + ": "
+                + std::to_string(cs.size()) + " connection(s)";
+            if (w.is_lgr_well()) {
+                msg += " in LGR " + w.get_lgr_well_tag().value();
+            }
+            for (const auto& c : cs) {
+                msg += "\n    (" + std::to_string(c.getI() + 1) + ","
+                    + std::to_string(c.getJ() + 1) + ","
+                    + std::to_string(c.getK() + 1) + ") lgr_grid "
+                    + std::to_string(c.get_lgr_level());
+            }
+            OpmLog::info(msg);
         }
     }
 
