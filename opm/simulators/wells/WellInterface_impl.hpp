@@ -537,6 +537,74 @@ namespace Opm
     }
 
     template<typename TypeTag>
+    std::vector<typename WellInterface<TypeTag>::ThpPoint>
+    WellInterface<TypeTag>::
+    sampleThpCurve(const Simulator& simulator,
+                   const GroupStateHelperType& groupStateHelper,
+                   const Scalar alq,
+                   const std::vector<Scalar>& thps,
+                   int& well_solves) const
+    {
+        auto& deferred_logger = groupStateHelper.deferredLogger();
+        const auto& summary_state = simulator.vanguard().summaryState();
+        const Scalar rho = this->getRefDensity();
+        auto cheap = [&](const Scalar bhp) {
+            std::vector<Scalar> rates(3);
+            this->computeWellRatesWithBhp(simulator, bhp, rates, deferred_logger);
+            this->adaptRatesForVFP(rates);
+            return rates;
+        };
+        auto full = [&](const Scalar bhp) {
+            std::vector<Scalar> rates(3);
+            this->computeWellRatesWithBhpIterations(simulator, bhp, groupStateHelper, rates);
+            this->adaptRatesForVFP(rates);
+            ++well_solves;
+            return rates;
+        };
+        const WellBhpThpCalculator calc(*this);
+        constexpr Scalar tol = 1.0e2;        // Pa: 1 mbar
+        std::vector<ThpPoint> curve;
+        std::optional<Scalar> previous;
+        for (const Scalar thp : thps) {
+            ThpPoint point;
+            point.thp = thp;
+            // Warm: the last point's bhp; cold: the stable crossing on the inflow at fixed bhp.
+            std::optional<Scalar> start = previous;
+            if (!start) {
+                start = calc.computeBhpAtThpLimitProd(cheap, summary_state, this->maxPerfPress(simulator), rho, alq,
+                                                      thp, deferred_logger, /*force_stable*/ true);
+            }
+            if (!start) {
+                curve.push_back(point);
+                continue;
+            }
+            // Secant on bhp - tubing bhp, with the well's own rates at each bhp.
+            Scalar b0 = *start;
+            Scalar m0 = calc.thpMargin(full, b0, summary_state, rho, alq, thp);
+            Scalar b1 = b0 - m0;
+            bool done = std::abs(m0) < tol;
+            Scalar b = b0;
+            for (int it = 0; it < 8 && !done; ++it) {
+                const Scalar m1 = calc.thpMargin(full, b1, summary_state, rho, alq, thp);
+                b = b1;
+                if (std::abs(m1) < tol) { done = true; break; }
+                if (m1 == m0) { break; }
+                const Scalar b2 = b1 - m1 * (b1 - b0) / (m1 - m0);
+                b0 = b1; m0 = m1; b1 = b2;
+            }
+            if (done) {
+                point.rates = full(b);
+                point.bhp = b;
+                point.lifts = std::any_of(point.rates.begin(), point.rates.end(),
+                                          [](const Scalar v) { return v < Scalar{0}; });
+            }
+            previous = point.lifts ? std::optional<Scalar>(b) : std::nullopt;
+            curve.push_back(point);
+        }
+        return curve;
+    }
+
+    template<typename TypeTag>
     typename WellInterface<TypeTag>::Scalar
     WellInterface<TypeTag>::
     thpMarginWithIterations(const Simulator& simulator,

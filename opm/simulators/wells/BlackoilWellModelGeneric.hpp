@@ -636,6 +636,10 @@ protected:
         long revival_tried = 0;            // wells at zero rate the well model finds flowing at the node pressure
         long revival_kept = 0;             // of those, flowing in the route's answer solved again
         long restarts_flowing = 0;         // revived wells started from the route's flowing point
+        long curve_wells = 0;              // wells whose line was put through their sampled thp curve (the fallback)
+        long curve_points = 0;             // curve points sampled
+        long curve_solves = 0;             // well solves at fixed bhp they took
+        long well_decisions = 0;           // wells decided by the route, all decisions
         long stein_decisions = 0, stein_inconsistent = 0;
         double worst_deviation = 0;
     } controller_stats_;

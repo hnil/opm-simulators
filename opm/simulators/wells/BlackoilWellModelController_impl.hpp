@@ -1215,6 +1215,68 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
             }
             return r;
         };
+        // --group-controller-curve-fallback: a thp well its own solve put off the route's last assignment by more than
+        // the rate tolerance is where the line is wrong; its line goes through two points of its thp curve from the
+        // well model, one bar either side of the expected node pressure. Elsewhere the line stays as it is.
+        if (param_.group_controller_curve_fallback_) {
+            constexpr int stride = 1 + 2 * (1 + Sys::NP);
+            std::vector<Scalar> ans(system.numWells() * stride, Scalar{0});
+            for (int w = 0; w < system.numWells(); ++w) {
+                const auto& well = system.wells()[w];
+                if (well.shut || well.pinned || well.vfp_table <= 0 || !this->wellState().has(well.name)) { continue; }
+                const auto widx = this->wellState().index(well.name);
+                if (!widx.has_value() || !this->wellState().wellIsOwned(*widx, well.name)) { continue; }
+                const auto& ws = this->wellState().well(well.name);
+                const auto assigned = this->controller_assigned_rates_.find(well.name);
+                if (ws.production_cmode != Well::ProducerCMode::THP || assigned == this->controller_assigned_rates_.end()) {
+                    continue;
+                }
+                const Scalar q_now = std::max(-ws.surface_rates[pos[1]], Scalar{0});
+                const Scalar q_asked = std::max(-assigned->second[pos[1]], Scalar{0});
+                if (!(std::abs(q_now - q_asked) > param_.group_controller_rate_tolerance_ * std::max(q_now, q_asked))) {
+                    continue;
+                }
+                const auto wit = std::find_if(well_container_.begin(), well_container_.end(),
+                                              [&](const auto& x) { return x->name() == well.name; });
+                if (wit == well_container_.end()) { continue; }
+                const Scalar p_w = well.own_thp > Scalar{0} ? well.own_thp
+                                 : well.node == 0 ? terminal : guess[well.node];
+                const Scalar dp = Scalar{1.0e5};
+                int solves = 0;
+                const auto curve = (*wit)->sampleThpCurve(simulator_, this->groupStateHelper(), well.alq,
+                                                          {std::max(p_w - dp, Scalar{1.0e5}), p_w + dp}, solves);
+                this->controller_stats_.curve_points += static_cast<long>(curve.size());
+                this->controller_stats_.curve_solves += solves;
+                if (curve.size() != 2 || !curve[0].lifts || !curve[1].lifts
+                    || !(std::abs(curve[0].bhp - curve[1].bhp) > Scalar{1.0})) { continue; }
+                Scalar* r = ans.data() + w * stride;
+                r[0] = 1;
+                for (int k = 0; k < 2; ++k) {
+                    r[1 + k * (1 + Sys::NP)] = curve[k].bhp;
+                    for (int ph = 0; ph < Sys::NP; ++ph) {
+                        r[2 + k * (1 + Sys::NP) + ph] = std::max(-curve[k].rates[ph], Scalar{0});
+                    }
+                }
+            }
+            if (this->comm().size() > 1) {
+                this->comm().sum(ans.data(), ans.size());
+            }
+            for (int w = 0; w < system.numWells(); ++w) {
+                const Scalar* r = ans.data() + w * stride;
+                if (r[0] < Scalar{0.5}) { continue; }
+                const Scalar b1 = r[1], b2 = r[2 + Sys::NP];
+                std::array<Scalar, Sys::NP> a{}, b{};
+                for (int ph = 0; ph < Sys::NP; ++ph) {
+                    const Scalar q1 = r[2 + ph], q2 = r[3 + Sys::NP + ph];
+                    b[ph] = (q1 - q2) / (b1 - b2);
+                    a[ph] = q1 - b[ph] * b1;
+                }
+                if (!(b[1] < Scalar{0})) { continue; }
+                system.setWellIpr(w, a, b);
+                ++this->controller_stats_.curve_wells;
+            }
+        }
+        this->controller_stats_.well_decisions += system.numWells();
         auto rr = solveRoute(guess, false);
         // A shut decided on the inflow line alone is confirmed with the well model: a line taken far
         // from the operating point (a well throttled by its group) can miss the tubing where the well

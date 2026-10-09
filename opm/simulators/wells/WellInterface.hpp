@@ -254,6 +254,24 @@ public:
                                                    const GroupStateHelperType& groupStateHelper,
                                                    std::vector<Scalar>& well_flux) const = 0;
 
+    /// A point of a producer's thp curve: at this thp, its bhp and surface rates (water, oil, gas; production
+    /// negative) by its own equations, or lifts false where it has no stable crossing.
+    struct ThpPoint
+    {
+        Scalar thp{0};
+        Scalar bhp{0};
+        std::vector<Scalar> rates;
+        bool lifts{false};
+    };
+
+    /// The producer's thp curve at the given thps, in that order, each point started from the last: the stable
+    /// crossing on its inflow at fixed bhp, corrected with its equations solved at fixed bhp. well_solves counts them.
+    std::vector<ThpPoint> sampleThpCurve(const Simulator& simulator,
+                                         const GroupStateHelperType& groupStateHelper,
+                                         const Scalar alq,
+                                         const std::vector<Scalar>& thps,
+                                         int& well_solves) const;
+
     /// bhp less the tubing's bhp at the rates of the well's own equations solved at that bhp, at its thp limit.
     Scalar thpMarginWithIterations(const Simulator& simulator,
                                    const GroupStateHelperType& groupStateHelper,

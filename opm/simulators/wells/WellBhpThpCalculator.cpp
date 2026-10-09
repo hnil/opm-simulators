@@ -200,7 +200,8 @@ computeBhpAtThpLimitProd(const std::function<std::vector<Scalar>(const Scalar)>&
                          const Scalar rho,
                          const Scalar alq_value,
                          const Scalar thp_limit,
-                         DeferredLogger& deferred_logger) const
+                         DeferredLogger& deferred_logger,
+                         const bool force_stable) const
 {
     // Given a VFP function returning bhp as a function of phase
     // rates and thp:
@@ -271,7 +272,7 @@ computeBhpAtThpLimitProd(const std::function<std::vector<Scalar>(const Scalar)>&
         return std::nullopt;
     }
     const std::array<Scalar, 2> range {static_cast<Scalar>(controls.bhp_limit), *bhp_max};
-    if (well_.stableThpCrossing()) {
+    if (force_stable || well_.stableThpCrossing()) {
         return this->stableBhpAtThpLimit(frates, fbhp, range);
     }
     return this->computeBhpAtThpLimit(frates, fbhp, range, deferred_logger);

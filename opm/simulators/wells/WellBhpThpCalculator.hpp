@@ -68,7 +68,8 @@ public:
                              const Scalar rho,
                              const Scalar alq_value,
                              const Scalar thp_limit,
-                             DeferredLogger& deferred_logger) const;
+                             DeferredLogger& deferred_logger,
+                             const bool force_stable = false) const;
 
     //! \brief Compute BHP from THP limit for an injector.
     std::optional<Scalar>
