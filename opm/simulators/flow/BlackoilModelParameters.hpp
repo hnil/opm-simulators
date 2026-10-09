@@ -137,7 +137,7 @@ struct GroupControllerConfirmCapacity { static constexpr bool value = false; };
 struct GroupControllerConfirmRevival { static constexpr bool value = false; };
 struct GroupControllerRestart { static constexpr auto value = "dead"; };
 struct GroupControllerCurveFallback { static constexpr bool value = false; };
-struct GroupControllerTransitionCurve { static constexpr bool value = false; };
+struct GroupControllerTransitionCurve { static constexpr bool value = true; };
 struct WellThpCrossing { static constexpr auto value = "legacy"; };
 template<class Scalar>
 struct GroupTreeBalancerTolerance { static constexpr Scalar value = 1e-5; };
