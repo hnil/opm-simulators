@@ -139,6 +139,8 @@ public:
 
     void stopWell() { this->wellStatus_ = Well::Status::STOP; }
     void openWell() { this->wellStatus_ = Well::Status::OPEN; }
+    /// Reopened on the controller's word: not inoperable until its own checks say so again.
+    void reopenOperable() { this->openWell(); this->operability_status_.resetOperability(); }
     Well::Status wellStatus() { return this->wellStatus_;}
 
     bool wellIsStopped() const { return this->wellStatus_ == Well::Status::STOP; }

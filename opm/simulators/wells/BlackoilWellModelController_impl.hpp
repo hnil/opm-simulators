@@ -431,6 +431,9 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
     std::map<std::string, std::vector<Scalar>> assigned_rates;
     std::map<std::string, Scalar> assigned_alq;          // lift gas decided for wells under LIFTOPT
     std::map<std::string, bool> dead_now;
+    // --group-controller-restart=flowing: a revived well's point in the route's answer, bhp and node pressure.
+    std::map<std::string, std::pair<Scalar, Scalar>> restart_point;
+    std::set<std::string> revived_now;
     // A well at zero rate given a rate again more often than the budget stays shut for the
     // rest of the step, as legacy's max_well_status_switch: a well on its lift cliff otherwise
     // flips every Newton iteration and the step never converges.
@@ -2046,6 +2049,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                                                           well.name, rr.well_rate[w] * 86400.0, system.controlLetter(w)));
                     }
                     ++this->controller_revivals_[well.name];
+                    revived_now.insert(well.name);
                 }
                 if ((t.control == Ctrl::Tree || t.control == Ctrl::Grup) && t.group >= 0) {
                     using GC = Group::ProductionCMode;
@@ -2119,6 +2123,13 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                 }
             }
             assigned_rates[well.name] = q;
+            if (revived_now.count(well.name) > 0 && q_oil > Scalar{0} && well.ipr_b[1] < Scalar{0}) {
+                const Scalar p_w = well.own_thp > Scalar{0} ? well.own_thp
+                                 : well.node == 0 ? terminal : rr.node_pressure[well.node];
+                restart_point[well.name] = {(q_oil - well.ipr_a[1]) / well.ipr_b[1], p_w};
+            } else {
+                restart_point.erase(well.name);
+            }
         }
         if (stein_set && !stein_last.empty() && stein_last_solve == rr.solve_id) {
             // What was written against the tree it came from: control, holding group, mode,
@@ -2176,6 +2187,26 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
         // model's retries can bring it back (GRPFLD-02/04/05 cost 6-11 % more Newton held).
         wp->setHoldStopped(param_.group_controller_hold_stopped_ && !no_network
                            && (wp->networkDead() || wp->networkHeld()));
+    }
+    // A dead well brought back is started from the route's flowing point, so that its own solve begins on the
+    // flowing branch rather than in the dead state it would otherwise return to.
+    if (param_.group_controller_restart_ == "flowing") {
+        for (const auto& wp : well_container_) {
+            const auto rp = restart_point.find(wp->name());
+            const auto ar = assigned_rates.find(wp->name());
+            if (rp == restart_point.end() || ar == assigned_rates.end() || wp->networkDead()) {
+                continue;
+            }
+            auto& ws = this->wellState().well(wp->indexOfWell());
+            ws.open();
+            wp->reopenOperable();
+            ws.surface_rates = ar->second;
+            ws.bhp = rp->second.first;
+            ws.thp = rp->second.second;
+            wp->scaleSegmentRatesAndPressure(this->wellState());
+            wp->updatePrimaryVariables(this->groupStateHelper());
+            ++this->controller_stats_.restarts_flowing;
+        }
     }
     // The group state's controls say what was decided: the holding groups their mode,
     // the groups under one FLD, the rest NONE. Output and legacy's bookkeeping read them.

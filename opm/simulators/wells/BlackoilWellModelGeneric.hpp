@@ -635,6 +635,7 @@ protected:
         long capacity_confirmed = 0;       // wells near their thp capacity re-anchored at the well model's point
         long revival_tried = 0;            // wells at zero rate the well model finds flowing at the node pressure
         long revival_kept = 0;             // of those, flowing in the route's answer solved again
+        long restarts_flowing = 0;         // revived wells started from the route's flowing point
         long stein_decisions = 0, stein_inconsistent = 0;
         double worst_deviation = 0;
     } controller_stats_;

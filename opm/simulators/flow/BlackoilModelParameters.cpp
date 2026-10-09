@@ -158,6 +158,10 @@ BlackoilModelParameters<Scalar>::BlackoilModelParameters()
     group_controller_gas_lift_revive_ = Parameters::Get<Parameters::GroupControllerGasLiftRevive>();
     group_controller_confirm_capacity_ = Parameters::Get<Parameters::GroupControllerConfirmCapacity>();
     group_controller_confirm_revival_ = Parameters::Get<Parameters::GroupControllerConfirmRevival>();
+    group_controller_restart_ = Parameters::Get<Parameters::GroupControllerRestart>();
+    if (group_controller_restart_ != "dead" && group_controller_restart_ != "flowing") {
+        throw std::invalid_argument("--group-controller-restart must be dead or flowing, not " + group_controller_restart_);
+    }
     well_thp_crossing_ = Parameters::Get<Parameters::WellThpCrossing>();
     if (well_thp_crossing_ != "legacy" && well_thp_crossing_ != "stable") {
         throw std::invalid_argument("--well-thp-crossing must be legacy or stable, not " + well_thp_crossing_);
@@ -409,6 +413,9 @@ void BlackoilModelParameters<Scalar>::registerParameters()
         ("A producer's bhp at its thp limit: legacy (bisection, then a 200-point search; can miss a narrow "
          "lifting window) or stable (the highest-rate crossing, after locating the inflow's best margin over the "
          "tubing curve)");
+    Parameters::Register<Parameters::GroupControllerRestart>
+        ("Group controller: where a well the route brings back from zero rate starts its own solve: dead (from its "
+         "current, dead state) or flowing (from the route's point: its rates, bhp and the node pressure)");
     Parameters::Register<Parameters::GroupControllerConfirmRevival>
         ("Group controller: a well the route leaves at zero rate is asked of the well model (stable crossing at the "
          "node pressure, confirmed by its equations); where it flows, its inflow line is moved through that point "
