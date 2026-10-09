@@ -215,7 +215,10 @@ namespace Opm
                     DeferredLogger& deferred_logger) const
     {
         // Pressure drawdown (also used to determine direction of flow)
-        const Value well_pressure = bhp + this->connections_.pressure_diff(perf);
+        const Value well_pressure = bhp
+            + this->fractureWeightedPressureDiff(perf,
+                                                 this->connections_.pressure_diff(perf),
+                                                 getValue(Tw[0]));
         Value drawdown = pressure - well_pressure;
         if (this->isInjector()) {
             drawdown += skin_pressure;
@@ -872,8 +875,17 @@ namespace Opm
                 b_perf[Indices::contiSolventEqIdx] = int_quantities.solventInverseFormationVolumeFactor().value();
             }
 
+            // the well index associated with the connection
+            Scalar trans_mult(0.0);
+            getTransMult(trans_mult, simulator, cell_idx);
+            const auto& wellstate_nupcol = simulator.problem().wellModel().nupcolWellState().well(this->index_of_well_);
+            std::vector<Scalar> tw_perf(this->num_conservation_quantities_, this->well_index_[perf] * trans_mult);
+            this->getTw(tw_perf, perf, int_quantities, trans_mult, wellstate_nupcol);
+
             // the pressure difference between the connection and BHP
-            const Scalar h_perf = this->connections_.pressure_diff(perf);
+            const Scalar h_perf = this->fractureWeightedPressureDiff(perf,
+                                                                     this->connections_.pressure_diff(perf),
+                                                                     tw_perf[0]);
             const Scalar pressure_diff = p_r - h_perf;
 
             // Let us add a check, since the pressure is calculated based on zero value BHP
@@ -886,13 +898,6 @@ namespace Opm
                 // we ignore these connections for now
                 continue;
             }
-
-            // the well index associated with the connection
-            Scalar trans_mult(0.0);
-            getTransMult(trans_mult, simulator, cell_idx);
-            const auto& wellstate_nupcol = simulator.problem().wellModel().nupcolWellState().well(this->index_of_well_);
-            std::vector<Scalar> tw_perf(this->num_conservation_quantities_, this->well_index_[perf] * trans_mult);
-            this->getTw(tw_perf, perf, int_quantities, trans_mult, wellstate_nupcol);
             std::vector<Scalar> ipr_a_perf(this->ipr_a_.size());
             std::vector<Scalar> ipr_b_perf(this->ipr_b_.size());
             for (int comp_idx = 0; comp_idx < this->num_conservation_quantities_; ++comp_idx) {

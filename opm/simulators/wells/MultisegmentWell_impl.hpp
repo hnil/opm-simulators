@@ -940,6 +940,7 @@ namespace Opm
                     const std::vector<Value>& b_perfcells,
                     const std::vector<Value>& mob_perfcells,
                     const std::vector<Value>& Tw,
+                    const int seg,
                     const int perf,
                     const Value& segment_pressure,
                     const Value& segment_density,
@@ -968,7 +969,12 @@ namespace Opm
         const Value cell_press_at_perf = pressure_cell - cell_perf_press_diff;
 
         // Pressure drawdown (also used to determine direction of flow)
-        const Value drawdown = cell_press_at_perf - perf_press;
+        const Value drawdown = cell_press_at_perf
+            - (segment_pressure
+               + this->fractureWeightedPressureDiff(local_perf_index,
+                                                    perf_seg_press_diff,
+                                                    getValue(Tw[0]),
+                                                    this->segmentSet()[seg].segmentNumber()));
 
         // producing perforations
         if (drawdown > 0.0) {
@@ -1137,6 +1143,7 @@ namespace Opm
                               b_perfcells,
                               mob_perfcells,
                               Tw,
+                              seg,
                               perf,
                               segment_pressure,
                               obtainN(this->segments_.density(seg)),

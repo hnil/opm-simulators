@@ -31,6 +31,7 @@
 #include <opm/simulators/wells/RuntimePerforation.hpp>
 #include <opm/simulators/wells/WellIndexFracture.hpp>
 
+#include <algorithm>
 #include <ctime>
 #include <map>
 #include <memory>
@@ -280,6 +281,30 @@ public:
     /// addFracturePerforations() has been called.
     const std::vector<WellIndexFracture>& wellIndexFracture() const
     { return well_index_fracture_; }
+
+    /// Well-side pressure at a connection relative to its anchor (BHP, or the
+    /// segment pressure for multi-segment wells).  The fracture share of the
+    /// connection transmissibility \p total_tw is driven by the fracture's own
+    /// pressure, so the summed matrix + fracture connection flux is exact.
+    template <class Value>
+    Value fractureWeightedPressureDiff(const int local_perf,
+                                       const Value& wellbore_diff,
+                                       const Scalar total_tw,
+                                       const std::optional<int> segment_number = std::nullopt) const
+    {
+        if (well_index_fracture_.empty()) {
+            return wellbore_diff;
+        }
+        const auto& frac = well_index_fracture_[local_perf];
+        if (!frac.pressure_offset.has_value() || !(frac.ctf > 0.0) || !(total_tw > 0.0)) {
+            return wellbore_diff;
+        }
+        if (segment_number.has_value() && *segment_number != frac.segment) {
+            return wellbore_diff;
+        }
+        const Scalar w = std::min(static_cast<Scalar>(frac.ctf) / total_tw, Scalar{1});
+        return wellbore_diff * (Scalar{1} - w) + w * static_cast<Scalar>(*frac.pressure_offset);
+    }
 
     /// Statistics for the separate (standalone) well solves, i.e. the local
     /// nonlinear solves of the single well equations done outside the global

@@ -805,6 +805,8 @@ addFracturePerforations(const std::vector<RuntimePerforation>& perfs)
             auto& frac = this->well_index_fracture_[ind];
             frac.ctf = perf.ctf;
             frac.pressure = perf.pressure;
+            frac.pressure_offset = perf.fracture_pressure_offset;
+            frac.segment = perf.segment;
         }
         else {
             // The fracture reached a cell that is not perforated by this
