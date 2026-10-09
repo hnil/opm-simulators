@@ -417,6 +417,46 @@ namespace Opm
 
 
     template<typename TypeTag>
+    bool
+    MultisegmentWell<TypeTag>::
+    computeWellRatesWithThpIterations(const Simulator& simulator,
+                                      const Scalar thp,
+                                      const Scalar alq,
+                                      const GroupStateHelperType& groupStateHelper,
+                                      std::vector<Scalar>& well_flux,
+                                      Scalar& bhp) const
+    {
+        // A copy of the well and of its state: neither the run's well nor its state is touched.
+        MultisegmentWell<TypeTag> well_copy(*this);
+        well_copy.resetDampening();
+        well_copy.openWell();
+        well_copy.setDynamicThpLimit(thp);
+        GroupStateHelperType groupStateHelper_copy = groupStateHelper;
+        WellStateType well_state_copy = groupStateHelper_copy.wellState();
+        auto guard = groupStateHelper_copy.pushWellState(well_state_copy);
+        auto& ws = well_state_copy.well(this->index_of_well_);
+        ws.open();
+        const auto& summary_state = simulator.vanguard().summaryState();
+        const auto inj_controls = Well::InjectionControls(0);
+        auto prod_controls = well_copy.well_ecl_.productionControls(summary_state);
+        prod_controls.addControl(Well::ProducerCMode::THP);
+        prod_controls.cmode = Well::ProducerCMode::THP;
+        prod_controls.thp_limit = thp;
+        prod_controls.alq_value = alq;
+        ws.production_cmode = Well::ProducerCMode::THP;
+        ws.thp = thp;
+        ws.alq_state.set(alq);
+        well_copy.scaleSegmentRatesWithWellRates(this->segments_.inlets(), this->segments_.perforations(),
+                                                 well_state_copy);
+        well_copy.calculateExplicitQuantities(simulator, groupStateHelper_copy);
+        const bool converged = well_copy.iterateWellEqWithControl(simulator, simulator.timeStepSize(), inj_controls,
+                                                                  prod_controls, groupStateHelper_copy, well_state_copy);
+        well_flux.assign(ws.surface_rates.begin(), ws.surface_rates.end());
+        bhp = ws.bhp;
+        return converged;
+    }
+
+    template<typename TypeTag>
     void
     MultisegmentWell<TypeTag>::
     computeWellRatesWithBhpIterations(const Simulator& simulator,

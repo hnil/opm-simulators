@@ -652,6 +652,7 @@ protected:
         long transition_cliffs = 0;        // reversed, and back again after the re-solve: a cliff
         long transition_points = 0;        // curve points and well solves they took
         long transition_solves = 0;
+        long thp_solves = 0;               // the well model's thp-controlled solves the controller asked for
         long curve_points = 0;             // curve points sampled
         long curve_solves = 0;             // well solves at fixed bhp they took
         long well_decisions = 0;           // wells decided by the route, all decisions

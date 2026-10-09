@@ -321,6 +321,13 @@ namespace Opm {
                                      std::vector<Scalar>& well_flux,
                                      DeferredLogger& deferred_logger) const;
 
+        bool computeWellRatesWithThpIterations(const Simulator& simulator,
+                                               const Scalar thp,
+                                               const Scalar alq,
+                                               const GroupStateHelperType& groupStateHelper,
+                                               std::vector<Scalar>& well_flux,
+                                               Scalar& bhp) const override;
+
         void computeWellRatesWithBhpIterations(const Simulator& simulator,
                                                const Scalar& bhp,
                                                const GroupStateHelperType& groupStateHelper,

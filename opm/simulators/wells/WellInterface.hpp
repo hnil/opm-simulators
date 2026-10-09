@@ -249,6 +249,16 @@ public:
 
     virtual void scaleSegmentRatesAndPressure(WellStateType& well_state) const;
 
+    /// The well's own equations solved on a copy under thp control at the given thp and lift gas, started from
+    /// the state groupStateHelper's well state holds for it. Surface rates (active phase order) and bhp out;
+    /// true if the solve converged. Consistent with the well's own tubing (multisegment included).
+    virtual bool computeWellRatesWithThpIterations(const Simulator& simulator,
+                                                   const Scalar thp,
+                                                   const Scalar alq,
+                                                   const GroupStateHelperType& groupStateHelper,
+                                                   std::vector<Scalar>& well_flux,
+                                                   Scalar& bhp) const = 0;
+
     virtual void computeWellRatesWithBhpIterations(const Simulator& simulator,
                                                    const Scalar& bhp,
                                                    const GroupStateHelperType& groupStateHelper,

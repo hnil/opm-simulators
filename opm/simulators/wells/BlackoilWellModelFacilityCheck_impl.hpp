@@ -481,49 +481,37 @@ facilityCheck_(DeferredLogger& deferred_logger)
                     probe->setPrevSurfaceRates(this->wellState(), this->prevWellState());
                 }
                 this->network_.initializeWell(*probe);
-                probe->setStableThpCrossing(true);
                 probe->calculateExplicitQuantities(simulator_, this->groupStateHelper());
                 const Scalar alq = probe->getALQ(this->wellState());
-                std::optional<Scalar> bhp;
+                // The well's own equations under thp control (sampleThpCurve), as the controller asks it; a
+                // solve that does not settle is undetermined and not counted.
                 auto flowsAt = [&](const std::optional<Scalar> thp) -> std::optional<std::vector<Scalar>> {
-                    if (thp.has_value()) {
-                        probe->setDynamicThpLimit(*thp);
-                        bhp = probe->computeBhpAtThpLimitProdWithAlq(simulator_, this->groupStateHelper(), summary_state,
-                                                                     alq, /*iterate_if_no_solution*/ false);
-                    } else {
-                        bhp = WellBhpThpCalculator<Scalar, IndexTraits>(*probe).mostStrictBhpFromBhpLimits(summary_state);
+                    if (!thp.has_value()) {
+                        const Scalar bhp = WellBhpThpCalculator<Scalar, IndexTraits>(*probe).mostStrictBhpFromBhpLimits(summary_state);
+                        std::vector<Scalar> flux(probe->numConservationQuantities(), Scalar(0));
+                        probe->computeWellRatesWithBhp(simulator_, bhp, flux, scratch);
+                        if (std::none_of(flux.begin(), flux.end(), [](const Scalar v) { return v < Scalar(0); })) {
+                            return std::nullopt;
+                        }
+                        return flux;
                     }
-                    if (!bhp.has_value()) {
+                    int solves = 0;
+                    const auto curve = probe->sampleThpCurve(simulator_, this->groupStateHelper(), alq, {*thp}, solves);
+                    if (curve.empty() || !curve.front().determined) {
+                        unconfirmed.push_back(fmt::format("{}@{:.1f}: undetermined", name, *thp * 1.0e-5));
                         return std::nullopt;
                     }
-                    std::vector<Scalar> flux(probe->numConservationQuantities(), Scalar(0));
-                    probe->computeWellRatesWithBhp(simulator_, *bhp, flux, scratch);
-                    // In active phase order already.
-                    const auto& surface = flux;
-                    if (std::none_of(surface.begin(), surface.end(), [](const Scalar v) { return v < Scalar(0); })) {
+                    if (!curve.front().lifts) {
                         return std::nullopt;
                     }
-                    return surface;
+                    return curve.front().flux;
                 };
                 const bool has_thp = probe->wellHasTHPConstraints(summary_state);
                 const auto q = flowsAt(has_thp ? std::optional<Scalar>(probe->getTHPConstraint(summary_state))
                                                : std::nullopt);
-                // The crossing is found on the inflow without a solve; the well's own equations at that bhp
-                // must agree, or it is not counted.
                 // Stopped before this step and no WTEST: the deck keeps it stopped; reported, not counted.
                 const bool earlier = stopped && this->prevWellState().has(name)
                     && this->prevWellState().well(name).status != Well::Status::OPEN;
-                Scalar full_model = 0;
-                if (q.has_value() && has_thp && stopped && !earlier) {
-                    full_model = probe->thpMarginWithIterations(simulator_, this->groupStateHelper(), *bhp);
-                    if (full_model < -tol_pressure) {
-                        unconfirmed.push_back(fmt::format("{}@{:.1f} oil {:.0f}: {:+.2f} bar", name,
-                                                          probe->getTHPConstraint(summary_state) * 1.0e-5,
-                                                          -phase(*q, IndexTraits::oilPhaseIdx) * 86400.0,
-                                                          full_model * 1.0e-5));
-                        continue;
-                    }
-                }
                 if (q.has_value()) {
                     const Scalar thp = has_thp ? probe->getTHPConstraint(summary_state) : Scalar(0);
                     // A cliff when it cannot flow either at the node pressure its own flow gives: neither
@@ -607,7 +595,7 @@ facilityCheck_(DeferredLogger& deferred_logger)
         "injector over {:+.1f} % ({}) | injection group over {:+.1f} % ({}) | "
         "held without a binding limit {} [{}] | legacy would switch groups {} [{}] wells {} [{}], "
         "move a target {:.1f} % ({}); unliftable, not counted {} [{}] | stopped this step but liftable {} [{}], "
-        "on a cliff {} [{}], kept stopped, would flow {} [{}], not confirmed by the well's equations {} [{}] | "
+        "on a cliff {} [{}], kept stopped, would flow {} [{}], undetermined {} [{}] | "
         "closed by the run {} [{}], would flow {} [{}] | off assignment {:.1f} % ({}){}",
         step, iterCtx.iteration(), physics_ok ? "ok" : "NO", legacy_ok ? "ok" : "NO",
         unsolved.size(), join(unsolved), network_off.first * 1.0e-5, network_off.second,

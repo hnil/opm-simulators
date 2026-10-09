@@ -273,7 +273,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
         return giveUp("the network needs all three phases");
     }
     controllerRefreshIpr_(deferred_logger);
-    if (param_.group_controller_transition_curve_) {
+    {
         for (const auto& wp : well_container_) {
             if (!wp->isProducer() || wp->wellIsStopped()) { continue; }
             const auto& ws = this->wellState().well(wp->indexOfWell());
@@ -282,6 +282,23 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                                                           ws.surface_rates[2]};
         }
     }
+    // The well model's answer at node pressure p and lift gas alq: its own equations under thp control on a copy,
+    // started from its last flowing point. No bhp-from-thp.
+    auto wellAtThp = [&](const auto& wi, const Scalar p, const Scalar alq) {
+        std::optional<typename WellInterface<TypeTag>::ThpPoint> start;
+        if (const auto fp = this->controller_flowing_point_.find(wi->name()); fp != this->controller_flowing_point_.end()) {
+            start.emplace();
+            start->thp = fp->second[0];
+            start->bhp = fp->second[1];
+            start->flux.assign(fp->second.begin() + 2, fp->second.end());
+            start->lifts = true;
+        }
+        int solves = 0;
+        const auto curve = wi->sampleThpCurve(simulator_, this->groupStateHelper(), alq, {p}, solves,
+                                              start ? &*start : nullptr);
+        this->controller_stats_.thp_solves += solves;
+        return curve.empty() ? typename WellInterface<TypeTag>::ThpPoint{} : curve.front();
+    };
     // What the route reads about a well, gathered: every rank builds the same system.
     struct RouteWell {
         bool open{false};
@@ -1353,14 +1370,10 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                 auto& wi = *wit;
                 const Scalar p_w = well.own_thp > Scalar{0} ? well.own_thp
                                  : well.node == 0 ? terminal : rr.node_pressure[well.node];
-                const auto saved = wi->getDynamicThpLimit();
-                wi->setDynamicThpLimit(p_w);
-                const auto bhp = wi->computeBhpAtThpLimitProdWithAlq(simulator_, this->groupStateHelper(),
-                                                                     summary_state, well.alq, false);
-                wi->setDynamicThpLimit(saved);
-                if (!bhp) { continue; }
-                std::vector<Scalar> q(pu.numActivePhases(), Scalar{0});
-                wi->computeWellRatesWithBhp(simulator_, *bhp, q, deferred_logger);
+                const auto point = wellAtThp(wi, p_w, well.alq);
+                if (!point.lifts) { continue; }
+                const std::optional<Scalar> bhp = point.bhp;
+                const std::vector<Scalar>& q = point.flux;
                 std::array<Scalar, Sys::NP> a = well.ipr_a;
                 bool flows = false;
                 for (int ph = 0; ph < Sys::NP; ++ph) {
@@ -1632,14 +1645,10 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                 auto& wi = *wit;
                 const Scalar p_w = well.own_thp > Scalar{0} ? well.own_thp
                                  : well.node == 0 ? terminal : rr.node_pressure[well.node];
-                const auto saved = wi->getDynamicThpLimit();
-                wi->setDynamicThpLimit(p_w);
-                const auto bhp = wi->computeBhpAtThpLimitProdWithAlq(simulator_, this->groupStateHelper(),
-                                                                     summary_state, well.alq, false);
-                wi->setDynamicThpLimit(saved);
-                if (!bhp) { continue; }
-                std::vector<Scalar> q(pu.numActivePhases(), Scalar{0});
-                wi->computeWellRatesWithBhp(simulator_, *bhp, q, deferred_logger);
+                const auto point = wellAtThp(wi, p_w, well.alq);
+                if (!point.lifts) { continue; }
+                const std::optional<Scalar> bhp = point.bhp;
+                const std::vector<Scalar>& q = point.flux;
                 Scalar* r = ans.data() + c * stride;
                 r[0] = 1;
                 r[1] = *bhp;
@@ -1687,21 +1696,10 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                 auto& wi = *wit;
                 const Scalar p_w = well.own_thp > Scalar{0} ? well.own_thp
                                  : well.node == 0 ? terminal : rr.node_pressure[well.node];
-                const auto saved_thp = wi->getDynamicThpLimit();
-                const auto saved_crossing = wi->stableThpCrossingSetting();
-                wi->setDynamicThpLimit(p_w);
-                wi->setStableThpCrossing(true);
-                auto bhp = wi->computeBhpAtThpLimitProdWithAlq(simulator_, this->groupStateHelper(), summary_state,
-                                                               well.alq, false);
-                if (bhp && wi->thpMarginWithIterations(simulator_, this->groupStateHelper(), *bhp)
-                               < -param_.group_controller_network_tolerance_) {
-                    bhp.reset();
-                }
-                wi->setDynamicThpLimit(saved_thp);
-                wi->setStableThpCrossing(saved_crossing);
-                if (!bhp) { continue; }
-                std::vector<Scalar> q(pu.numActivePhases(), Scalar{0});
-                wi->computeWellRatesWithBhp(simulator_, *bhp, q, deferred_logger);
+                const auto point = wellAtThp(wi, p_w, well.alq);
+                if (!point.lifts) { continue; }
+                const std::optional<Scalar> bhp = point.bhp;
+                const std::vector<Scalar>& q = point.flux;
                 Scalar* r = ans.data() + c * stride;
                 r[0] = 1;
                 r[1] = *bhp;
@@ -2161,27 +2159,20 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                                                   [&](const auto& x) { return x->name() == well.name; });
                     if (wit == well_container_.end()) { continue; }
                     auto& wi = *wit;
-                    const auto saved = wi->getDynamicThpLimit();
-                    const auto saved_crossing = wi->stableThpCrossingSetting();
-                    wi->setStableThpCrossing(true);
-                    wi->setDynamicThpLimit(p);
-                    const auto own = wi->computeBhpAtThpLimitProdWithAlq(simulator_, this->groupStateHelper(),
-                                                                         summary_state, well.alq, false);
+                    // The well model under thp control, as the controller asks it (wellAtThp).
+                    const auto own_point = wellAtThp(wi, p, well.alq);
+                    const std::optional<Scalar> own = own_point.lifts ? std::optional<Scalar>(own_point.bhp) : std::nullopt;
                     // And at the node pressure the previous decision handed over, for a jump.
                     const auto& prev_p = this->network_.nodePressures();
                     const auto pp = prev_p.find(schedule.getWell(well.name, reportStepIdx).groupName());
                     std::optional<Scalar> own_prev;
+                    std::vector<Scalar> pq(pu.numActivePhases(), Scalar{0});
                     const Scalar p_prev = pp != prev_p.end() ? pp->second : Scalar{0};
                     if (p_prev > Scalar{0} && std::abs(p_prev - p) > Scalar{0.1e5}) {
-                        wi->setDynamicThpLimit(p_prev);
-                        own_prev = wi->computeBhpAtThpLimitProdWithAlq(simulator_, this->groupStateHelper(),
-                                                                       summary_state, well.alq, false);
+                        const auto prev_point = wellAtThp(wi, p_prev, well.alq);
+                        if (prev_point.lifts) { own_prev = prev_point.bhp; pq = prev_point.flux; }
                     }
-                    wi->setDynamicThpLimit(saved);
-                    wi->setStableThpCrossing(saved_crossing);
                     if (p_prev > Scalar{0} && std::abs(p_prev - p) > Scalar{0.1e5}) {
-                        std::vector<Scalar> pq(pu.numActivePhases(), Scalar{0});
-                        if (own_prev) { wi->computeWellRatesWithBhp(simulator_, *own_prev, pq, deferred_logger); }
                         deferred_logger.debug(fmt::format(
                             "CTRLTRACE step={} it={} {} well model at the previous node pressure {:.2f}: {}",
                             reportStepIdx, simulator_.problem().iterationContext().iteration(), well.name,
@@ -2191,8 +2182,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                     }
                     std::vector<Scalar> tq(pu.numActivePhases(), Scalar{0});
                     wi->computeWellRatesWithBhp(simulator_, bhp_w, tq, deferred_logger);
-                    std::vector<Scalar> oq(pu.numActivePhases(), Scalar{0});
-                    if (own) { wi->computeWellRatesWithBhp(simulator_, *own, oq, deferred_logger); }
+                    std::vector<Scalar> oq = own ? own_point.flux : std::vector<Scalar>(pu.numActivePhases(), Scalar{0});
                     deferred_logger.debug(fmt::format(
                         "CTRLTRACE step={} it={} {} well model at thp {:.2f}: {}; true inflow at the route's bhp {:.2f}: "
                         "oil {:.1f} gas {:.0f} (route {:.1f} / {:.0f})",

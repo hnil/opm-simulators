@@ -317,6 +317,13 @@ namespace Opm
                              PerforationRates<Scalar>& perf_rates,
                              DeferredLogger& deferred_logger) const;
 
+        bool computeWellRatesWithThpIterations(const Simulator& simulator,
+                                               const Scalar thp,
+                                               const Scalar alq,
+                                               const GroupStateHelperType& groupStateHelper,
+                                               std::vector<Scalar>& well_flux,
+                                               Scalar& bhp) const override;
+
         void computeWellRatesWithBhpIterations(const Simulator& ebosSimulator,
                                                const Scalar& bhp,
                                                const GroupStateHelperType& groupStateHelper,
