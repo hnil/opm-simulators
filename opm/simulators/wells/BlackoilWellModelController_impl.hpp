@@ -441,6 +441,9 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
     if (step_key != this->controller_revival_step_) {
         this->controller_revival_step_ = step_key;
         this->controller_revivals_.clear();
+        this->controller_curve_cache_.clear();
+        this->controller_curve_misses_.clear();
+        this->controller_transitioned_.clear();
         this->controller_shut_streak_.clear();
         this->controller_glift_flips_.clear();
         this->controller_step_start_oil_.clear();
@@ -1233,8 +1236,22 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                 }
                 const Scalar q_now = std::max(-ws.surface_rates[pos[1]], Scalar{0});
                 const Scalar q_asked = std::max(-assigned->second[pos[1]], Scalar{0});
-                if (!(std::abs(q_now - q_asked) > param_.group_controller_rate_tolerance_ * std::max(q_now, q_asked))) {
+                // The line's slope is wrong where, the node pressure having moved, the well's own rate change and
+                // the one the route predicted part by more than a quarter of the move. A miss with the pressure
+                // still is the iterate moving, which the line's re-anchoring follows anyway.
+                const auto last = this->controller_curve_last_.find(well.name);
+                this->controller_curve_last_[well.name] = {q_now, ws.thp};
+                if (last == this->controller_curve_last_.end()) { continue; }
+                const Scalar dq_well = q_now - last->second.first;
+                const Scalar miss = std::abs(q_now - q_asked);
+                const bool moved = std::abs(ws.thp - last->second.second) > Scalar{0.05e5};
+                if (!(moved && miss > param_.group_controller_rate_tolerance_ * std::max(q_now, q_asked)
+                      && miss > Scalar{0.25} * std::abs(dq_well))) {
                     continue;
+                }
+                ++this->controller_stats_.curve_flagged;
+                if (this->controller_transitioned_.count(well.name) > 0) {
+                    ++this->controller_stats_.curve_flagged_at_transition;
                 }
                 const auto wit = std::find_if(well_container_.begin(), well_container_.end(),
                                               [&](const auto& x) { return x->name() == well.name; });
@@ -1243,8 +1260,28 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                                  : well.node == 0 ? terminal : guess[well.node];
                 const Scalar dp = Scalar{1.0e5};
                 int solves = 0;
+                const Scalar p_lo = std::max(p_w - dp, Scalar{1.0e5});
+                // Started from this step's last curve of the well, its point nearest the first thp.
+                auto& cached = this->controller_curve_cache_[well.name];
+                const auto near = std::min_element(cached.begin(), cached.end(), [&](const auto& x, const auto& y) {
+                    return std::abs(x[0] - p_lo) < std::abs(y[0] - p_lo);
+                });
+                std::optional<typename WellInterface<TypeTag>::ThpPoint> start;
+                if (near != cached.end()) {
+                    start.emplace();
+                    start->thp = (*near)[0];
+                    start->bhp = (*near)[1];
+                    start->flux.assign(near->begin() + 2, near->end());
+                    start->lifts = true;
+                }
                 const auto curve = (*wit)->sampleThpCurve(simulator_, this->groupStateHelper(), well.alq,
-                                                          {std::max(p_w - dp, Scalar{1.0e5}), p_w + dp}, solves);
+                                                          {p_lo, p_w + dp}, solves, start ? &*start : nullptr);
+                cached.clear();
+                for (const auto& c : curve) {
+                    if (c.lifts && c.flux.size() == 3) {
+                        cached.push_back({c.thp, c.bhp, c.flux[0], c.flux[1], c.flux[2]});
+                    }
+                }
                 this->controller_stats_.curve_points += static_cast<long>(curve.size());
                 this->controller_stats_.curve_solves += solves;
                 if (curve.size() != 2 || !curve[0].lifts || !curve[1].lifts
@@ -2104,6 +2141,10 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                 const bool hold_open = wants_shut && well.q_start > Scalar{0}
                     && streak < param_.group_controller_shut_persistence_;
                 dead_now[well.name] = wants_shut && !hold_open;
+                if ((well.q_start > Scalar{0}) != (rr.well_rate[w] > Scalar{0})) {
+                    ++this->controller_stats_.transitions;
+                    this->controller_transitioned_.insert(well.name);
+                }
                 if (!(well.q_start > Scalar{0}) && rr.well_rate[w] > Scalar{0}) {
                     if (std::getenv("OPM_CONTROLLER_TRACE")) {
                         deferred_logger.debug(fmt::format("CTRLTRACE step={} it={} {} revival counted: q {:.6g} sm3/d control {}",

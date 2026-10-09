@@ -613,6 +613,12 @@ protected:
     std::map<std::string, std::pair<int, int>> controller_glift_flips_;   // per well, ups and downs this time step
     int controller_glift_dumps_ = 0;
     std::map<std::string, int> controller_revivals_{};
+    // --group-controller-curve-fallback, per well within a time step: the last curve sampled (thp, bhp) to start
+    // the next from, and how many decisions in a row its own solve missed the route's assignment.
+    std::map<std::string, std::vector<std::array<Scalar, 5>>> controller_curve_cache_{};   // thp, bhp, flux w/o/g
+    std::map<std::string, int> controller_curve_misses_{};
+    std::map<std::string, std::pair<Scalar, Scalar>> controller_curve_last_{};   // actual oil rate, node pressure
+    std::set<std::string> controller_transitioned_{};                            // opened or shut by the route this step
     std::map<std::string, Well::ProducerCMode> controller_assigned_cmode_{};
     std::map<std::string, std::vector<Scalar>> controller_assigned_rates_{};
     bool controller_network_owned_{false};
@@ -637,6 +643,9 @@ protected:
         long revival_kept = 0;             // of those, flowing in the route's answer solved again
         long restarts_flowing = 0;         // revived wells started from the route's flowing point
         long curve_wells = 0;              // wells whose line was put through their sampled thp curve (the fallback)
+        long curve_flagged = 0;            // well decisions the slope detector flagged
+        long curve_flagged_at_transition = 0;  // of those, wells the route opened or shut in this step
+        long transitions = 0;              // well decisions where the route's answer opens or shuts a well
         long curve_points = 0;             // curve points sampled
         long curve_solves = 0;             // well solves at fixed bhp they took
         long well_decisions = 0;           // wells decided by the route, all decisions

@@ -261,16 +261,19 @@ public:
         Scalar thp{0};
         Scalar bhp{0};
         std::vector<Scalar> rates;
+        std::vector<Scalar> flux;      // the same rates in active phase order, the next solve's starting state
         bool lifts{false};
     };
 
-    /// The producer's thp curve at the given thps, in that order, each point started from the last: the stable
-    /// crossing on its inflow at fixed bhp, corrected with its equations solved at fixed bhp. well_solves counts them.
+    /// The producer's thp curve at the given thps, in that order: the stable crossing on its inflow at fixed bhp,
+    /// corrected with its equations solved at fixed bhp, each solve started from the nearest solution so far
+    /// (start, then the last). well_solves counts them.
     std::vector<ThpPoint> sampleThpCurve(const Simulator& simulator,
                                          const GroupStateHelperType& groupStateHelper,
                                          const Scalar alq,
                                          const std::vector<Scalar>& thps,
-                                         int& well_solves) const;
+                                         int& well_solves,
+                                         const ThpPoint* start = nullptr) const;
 
     /// bhp less the tubing's bhp at the rates of the well's own equations solved at that bhp, at its thp limit.
     Scalar thpMarginWithIterations(const Simulator& simulator,

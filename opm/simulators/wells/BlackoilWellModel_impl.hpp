@@ -731,7 +731,8 @@ namespace Opm {
                                       "{} unsettled iterations let through, kept flowing {} (tried {}), "
                                       "{} routes solved again on the route's walk, gas lift {} decisions {} trials {} moves, "
                                       "revival confirmed {} of {} tried, restarted flowing {}, "
-                                      "curve fallback {} wells of {} well decisions ({} points, {} well solves)",
+                                      "curve fallback {} wells of {} well decisions ({} points, {} well solves), "
+                                      "flagged {} ({} at an open/shut transition), transitions {}",
                                       simulationTime / 86400.0, st.calls, st.passes, st.decisions, st.route_iterations,
                                       st.route_evaluations, st.set_changes, st.lookups, st.well_solves, st.converged,
                                       st.stalled, st.cap_hits,
@@ -740,7 +741,8 @@ namespace Opm {
                                       st.kept_flowing, st.kept_flowing + st.kept_flowing_failed, st.tree_walk_retries,
                                       st.gaslift_decisions, st.gaslift_trials, st.gaslift_moves, st.revival_kept,
                                       st.revival_tried, st.restarts_flowing,
-                                      st.curve_wells, st.well_decisions, st.curve_points, st.curve_solves));
+                                      st.curve_wells, st.well_decisions, st.curve_points, st.curve_solves,
+                                      st.curve_flagged, st.curve_flagged_at_transition, st.transitions));
         }
 
         // time step is finished and we are not any more at the beginning of an report step

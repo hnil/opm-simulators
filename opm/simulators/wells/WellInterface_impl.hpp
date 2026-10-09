@@ -543,9 +543,15 @@ namespace Opm
                    const GroupStateHelperType& groupStateHelper,
                    const Scalar alq,
                    const std::vector<Scalar>& thps,
-                   int& well_solves) const
+                   int& well_solves,
+                   const ThpPoint* start) const
     {
         auto& deferred_logger = groupStateHelper.deferredLogger();
+        // The solves at fixed bhp start from the well state they are given: a copy carrying the nearest solution.
+        WellStateType seed_state = groupStateHelper.wellState();
+        GroupStateHelperType seed_helper = groupStateHelper;
+        auto guard = seed_helper.pushWellState(seed_state);
+        std::vector<Scalar> last_flux = start != nullptr ? start->flux : std::vector<Scalar>{};
         const auto& summary_state = simulator.vanguard().summaryState();
         const Scalar rho = this->getRefDensity();
         auto cheap = [&](const Scalar bhp) {
@@ -555,50 +561,72 @@ namespace Opm
             return rates;
         };
         auto full = [&](const Scalar bhp) {
+            if (!last_flux.empty()) {
+                auto& ws = seed_state.well(this->index_of_well_);
+                for (std::size_t p = 0; p < last_flux.size() && p < ws.surface_rates.size(); ++p) {
+                    ws.surface_rates[p] = last_flux[p];
+                    ws.well_potentials[p] = -last_flux[p];
+                }
+                ws.bhp = bhp;
+                this->scaleSegmentRatesAndPressure(seed_state);
+            }
             std::vector<Scalar> rates(3);
-            this->computeWellRatesWithBhpIterations(simulator, bhp, groupStateHelper, rates);
+            this->computeWellRatesWithBhpIterations(simulator, bhp, seed_helper, rates);
+            last_flux = rates;
             this->adaptRatesForVFP(rates);
             ++well_solves;
             return rates;
         };
         const WellBhpThpCalculator calc(*this);
-        constexpr Scalar tol = 1.0e2;        // Pa: 1 mbar
+        constexpr Scalar tol = 1.0e3;        // Pa: 10 mbar, a tenth of the network's tolerance
         std::vector<ThpPoint> curve;
-        std::optional<Scalar> previous;
+        std::optional<Scalar> previous = start != nullptr ? std::optional<Scalar>(start->bhp) : std::nullopt;
+        Scalar slope = 1;                    // d(bhp - tubing bhp)/d(bhp), carried from point to point
         for (const Scalar thp : thps) {
             ThpPoint point;
             point.thp = thp;
-            // Warm: the last point's bhp; cold: the stable crossing on the inflow at fixed bhp.
-            std::optional<Scalar> start = previous;
-            if (!start) {
-                start = calc.computeBhpAtThpLimitProd(cheap, summary_state, this->maxPerfPress(simulator), rho, alq,
+            // Warm: the last point's bhp (or the caller's); cold: the stable crossing on the inflow at fixed bhp.
+            std::optional<Scalar> first = previous;
+            if (!first) {
+                first = calc.computeBhpAtThpLimitProd(cheap, summary_state, this->maxPerfPress(simulator), rho, alq,
                                                       thp, deferred_logger, /*force_stable*/ true);
             }
-            if (!start) {
+            if (!first) {
                 curve.push_back(point);
                 continue;
             }
-            // Secant on bhp - tubing bhp, with the well's own rates at each bhp.
-            Scalar b0 = *start;
-            Scalar m0 = calc.thpMargin(full, b0, summary_state, rho, alq, thp);
-            Scalar b1 = b0 - m0;
+            // Secant on bhp - tubing bhp with the rates of the well's equations; each solve's rates are kept,
+            // so the last one is the point's.
+            auto margin = [&](const Scalar bhp, std::vector<Scalar>& rates) {
+                rates = full(bhp);
+                return calc.thpMargin([&rates](const Scalar) { return rates; }, bhp, summary_state, rho, alq, thp);
+            };
+            std::vector<Scalar> r0, r1;
+            Scalar b0 = *first;
+            Scalar m0 = margin(b0, r0);
+            std::vector<Scalar> flux0 = last_flux;
             bool done = std::abs(m0) < tol;
             Scalar b = b0;
+            std::vector<Scalar> rates = r0, flux = flux0;
+            Scalar b1 = b0 - m0 / slope;
             for (int it = 0; it < 8 && !done; ++it) {
-                const Scalar m1 = calc.thpMargin(full, b1, summary_state, rho, alq, thp);
-                b = b1;
+                const Scalar m1 = margin(b1, r1);
+                b = b1; rates = r1; flux = last_flux;
                 if (std::abs(m1) < tol) { done = true; break; }
                 if (m1 == m0) { break; }
-                const Scalar b2 = b1 - m1 * (b1 - b0) / (m1 - m0);
+                slope = (m1 - m0) / (b1 - b0);
+                const Scalar b2 = b1 - m1 / slope;
                 b0 = b1; m0 = m1; b1 = b2;
             }
             if (done) {
-                point.rates = full(b);
+                point.rates = rates;
+                point.flux = flux;
                 point.bhp = b;
                 point.lifts = std::any_of(point.rates.begin(), point.rates.end(),
                                           [](const Scalar v) { return v < Scalar{0}; });
             }
             previous = point.lifts ? std::optional<Scalar>(b) : std::nullopt;
+            if (point.lifts) { last_flux = flux; }
             curve.push_back(point);
         }
         return curve;
