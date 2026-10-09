@@ -590,6 +590,12 @@ namespace Opm
             if (!first) {
                 first = calc.computeBhpAtThpLimitProd(cheap, summary_state, this->maxPerfPress(simulator), rho, alq,
                                                       thp, deferred_logger, /*force_stable*/ true);
+                // Cold, the solves start from the inflow's own rates there -- flowing -- not the well's state,
+                // which for a dead well returns to dead.
+                if (first && last_flux.empty()) {
+                    last_flux.assign(3, Scalar{0});
+                    this->computeWellRatesWithBhp(simulator, *first, last_flux, deferred_logger);
+                }
             }
             if (!first) {
                 curve.push_back(point);

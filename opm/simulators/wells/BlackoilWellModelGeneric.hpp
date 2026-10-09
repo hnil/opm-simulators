@@ -619,6 +619,7 @@ protected:
     std::map<std::string, int> controller_curve_misses_{};
     std::map<std::string, std::pair<Scalar, Scalar>> controller_curve_last_{};   // actual oil rate, node pressure
     std::set<std::string> controller_transitioned_{};                            // opened or shut by the route this step
+    std::map<std::string, std::array<Scalar, 5>> controller_flowing_point_{};   // last flowing thp, bhp, flux w/o/g
     std::map<std::string, Well::ProducerCMode> controller_assigned_cmode_{};
     std::map<std::string, std::vector<Scalar>> controller_assigned_rates_{};
     bool controller_network_owned_{false};
@@ -646,6 +647,11 @@ protected:
         long curve_flagged = 0;            // well decisions the slope detector flagged
         long curve_flagged_at_transition = 0;  // of those, wells the route opened or shut in this step
         long transitions = 0;              // well decisions where the route's answer opens or shuts a well
+        long transition_checks = 0;        // transitions checked on the well's thp curve
+        long transition_reversed = 0;      // of those, decisions the curve reversed
+        long transition_cliffs = 0;        // reversed, and back again after the re-solve: a cliff
+        long transition_points = 0;        // curve points and well solves they took
+        long transition_solves = 0;
         long curve_points = 0;             // curve points sampled
         long curve_solves = 0;             // well solves at fixed bhp they took
         long well_decisions = 0;           // wells decided by the route, all decisions

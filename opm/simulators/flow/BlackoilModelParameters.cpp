@@ -160,6 +160,7 @@ BlackoilModelParameters<Scalar>::BlackoilModelParameters()
     group_controller_confirm_revival_ = Parameters::Get<Parameters::GroupControllerConfirmRevival>();
     group_controller_restart_ = Parameters::Get<Parameters::GroupControllerRestart>();
     group_controller_curve_fallback_ = Parameters::Get<Parameters::GroupControllerCurveFallback>();
+    group_controller_transition_curve_ = Parameters::Get<Parameters::GroupControllerTransitionCurve>();
     if (group_controller_restart_ != "dead" && group_controller_restart_ != "flowing") {
         throw std::invalid_argument("--group-controller-restart must be dead or flowing, not " + group_controller_restart_);
     }
@@ -414,6 +415,10 @@ void BlackoilModelParameters<Scalar>::registerParameters()
         ("A producer's bhp at its thp limit: legacy (bisection, then a 200-point search; can miss a narrow "
          "lifting window) or stable (the highest-rate crossing, after locating the inflow's best margin over the "
          "tubing curve)");
+    Parameters::Register<Parameters::GroupControllerTransitionCurve>
+        ("Group controller: a well the route's answer opens or shuts is checked on its thp curve from the well model "
+         "at the answer's node pressure, started from its last flowing point; where the curve disagrees the decision "
+         "is reversed and the route solved again, once (a well that flips straight back is a cliff and stays)");
     Parameters::Register<Parameters::GroupControllerCurveFallback>
         ("Group controller: a thp well whose rate after its own solve missed the route's assignment by more than the "
          "rate tolerance has its inflow line put through two points of its thp curve, sampled from the well model, "

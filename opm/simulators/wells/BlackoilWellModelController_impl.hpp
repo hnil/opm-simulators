@@ -273,6 +273,15 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
         return giveUp("the network needs all three phases");
     }
     controllerRefreshIpr_(deferred_logger);
+    if (param_.group_controller_transition_curve_) {
+        for (const auto& wp : well_container_) {
+            if (!wp->isProducer() || wp->wellIsStopped()) { continue; }
+            const auto& ws = this->wellState().well(wp->indexOfWell());
+            if (ws.surface_rates.size() != 3 || !(-ws.surface_rates[pos[1]] > Scalar{0})) { continue; }
+            this->controller_flowing_point_[wp->name()] = {ws.thp, ws.bhp, ws.surface_rates[0], ws.surface_rates[1],
+                                                          ws.surface_rates[2]};
+        }
+    }
     // What the route reads about a well, gathered: every rank builds the same system.
     struct RouteWell {
         bool open{false};
@@ -1848,6 +1857,87 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                     if (system.wells()[l.w].alq < before - Scalar{1e-12}) { ++f.second; }
                 }
                 assigned_alq[well.name] = system.wells()[l.w].alq;
+            }
+        }
+        // --group-controller-transition-curve: the open/shut transitions of this answer, checked on each well's thp
+        // curve at the answer's node pressure (its own equations, started from its last flowing point).
+        if (param_.group_controller_transition_curve_ && rr.converged) {
+            constexpr int stride = 3 + Sys::NP;     // checked, lifts, bhp, rates
+            std::vector<int> cand;
+            for (int w = 0; w < system.numWells(); ++w) {
+                const auto& well = system.wells()[w];
+                if (well.shut || well.pinned || well.vfp_table <= 0) { continue; }
+                if ((well.q_start > Scalar{0}) != (rr.well_rate[w] > Scalar{0})) { cand.push_back(w); }
+            }
+            std::vector<Scalar> ans(cand.size() * stride, Scalar{0});
+            for (std::size_t c = 0; c < cand.size(); ++c) {
+                const auto& well = system.wells()[cand[c]];
+                const auto widx = this->wellState().index(well.name);
+                if (!widx.has_value() || !this->wellState().wellIsOwned(*widx, well.name)) { continue; }
+                const auto wit = std::find_if(well_container_.begin(), well_container_.end(),
+                                              [&](const auto& x) { return x->name() == well.name; });
+                if (wit == well_container_.end()) { continue; }
+                const Scalar p_w = well.own_thp > Scalar{0} ? well.own_thp
+                                 : well.node == 0 ? terminal : rr.node_pressure[well.node];
+                std::optional<typename WellInterface<TypeTag>::ThpPoint> start;
+                if (const auto fp = this->controller_flowing_point_.find(well.name); fp != this->controller_flowing_point_.end()) {
+                    start.emplace();
+                    start->thp = fp->second[0];
+                    start->bhp = fp->second[1];
+                    start->flux.assign(fp->second.begin() + 2, fp->second.end());
+                    start->lifts = true;
+                }
+                int solves = 0;
+                const auto curve = (*wit)->sampleThpCurve(simulator_, this->groupStateHelper(), well.alq, {p_w}, solves,
+                                                          start ? &*start : nullptr);
+                this->controller_stats_.transition_points += static_cast<long>(curve.size());
+                this->controller_stats_.transition_solves += solves;
+                Scalar* r = ans.data() + c * stride;
+                r[0] = 1;
+                if (curve.size() == 1 && curve[0].lifts) {
+                    r[1] = 1;
+                    r[2] = curve[0].bhp;
+                    for (int ph = 0; ph < Sys::NP; ++ph) { r[3 + ph] = std::max(-curve[0].rates[ph], Scalar{0}); }
+                }
+            }
+            if (this->comm().size() > 1 && !ans.empty()) {
+                this->comm().sum(ans.data(), ans.size());
+            }
+            std::vector<std::pair<int, bool>> reversed;     // well, now flowing
+            for (std::size_t c = 0; c < cand.size(); ++c) {
+                const Scalar* r = ans.data() + c * stride;
+                if (r[0] < Scalar{0.5}) { continue; }
+                ++this->controller_stats_.transition_checks;
+                const int w = cand[c];
+                const bool route_flows = rr.well_rate[w] > Scalar{0};
+                const bool curve_lifts = r[1] > Scalar{0.5};
+                if (route_flows == curve_lifts) { continue; }
+                if (curve_lifts) {
+                    // Shut by the route, flowing by the well: its line through the curve's point, revived.
+                    const auto b = system.wells()[w].ipr_b;
+                    std::array<Scalar, Sys::NP> a{};
+                    for (int ph = 0; ph < Sys::NP; ++ph) { a[ph] = r[3 + ph] - b[ph] * r[2]; }
+                    system.setWellIpr(w, a, b);
+                    system.reviveWell(w, r[3 + 1]);
+                } else {
+                    system.killWell(w);
+                    system.setWellAlq(w, Scalar{0});
+                    assigned_alq.erase(system.wells()[w].name);
+                }
+                reversed.emplace_back(w, curve_lifts);
+                ++this->controller_stats_.transition_reversed;
+            }
+            if (!reversed.empty()) {
+                const auto before = system;
+                auto again = solveRoute(rr.node_pressure, true);
+                if (again.converged) {
+                    for (const auto& [w, flows] : reversed) {
+                        if ((again.well_rate[w] > Scalar{0}) != flows) { ++this->controller_stats_.transition_cliffs; }
+                    }
+                    rr = std::move(again);
+                } else {
+                    system = before;
+                }
             }
         }
         if (!rr.converged) {
