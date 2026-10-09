@@ -1862,7 +1862,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
         // --group-controller-transition-curve: the open/shut transitions of this answer, checked on each well's thp
         // curve at the answer's node pressure (its own equations, started from its last flowing point).
         if (param_.group_controller_transition_curve_ && rr.converged) {
-            constexpr int stride = 3 + Sys::NP;     // checked, lifts, bhp, rates
+            constexpr int stride = 3 + Sys::NP;     // determined, lifts, bhp, rates
             std::vector<int> cand;
             for (int w = 0; w < system.numWells(); ++w) {
                 const auto& well = system.wells()[w];
@@ -1893,8 +1893,10 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                 this->controller_stats_.transition_points += static_cast<long>(curve.size());
                 this->controller_stats_.transition_solves += solves;
                 Scalar* r = ans.data() + c * stride;
+                // Only a determined answer reverses the route: a solve that did not settle says nothing.
+                if (curve.size() != 1 || !curve[0].determined) { continue; }
                 r[0] = 1;
-                if (curve.size() == 1 && curve[0].lifts) {
+                if (curve[0].lifts) {
                     r[1] = 1;
                     r[2] = curve[0].bhp;
                     for (int ph = 0; ph < Sys::NP; ++ph) { r[3 + ph] = std::max(-curve[0].rates[ph], Scalar{0}); }

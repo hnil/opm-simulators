@@ -263,6 +263,7 @@ public:
         std::vector<Scalar> rates;
         std::vector<Scalar> flux;      // the same rates in active phase order, the next solve's starting state
         bool lifts{false};
+        bool determined{false};        // lifts, or has no stable crossing; false where the solve did not settle
     };
 
     /// The producer's thp curve at the given thps, in that order: the stable crossing on its inflow at fixed bhp,

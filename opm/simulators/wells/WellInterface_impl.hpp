@@ -598,6 +598,7 @@ namespace Opm
                 }
             }
             if (!first) {
+                point.determined = true;     // no stable crossing on the inflow: it does not lift here
                 curve.push_back(point);
                 continue;
             }
@@ -607,22 +608,35 @@ namespace Opm
                 rates = full(bhp);
                 return calc.thpMargin([&rates](const Scalar) { return rates; }, bhp, summary_state, rho, alq, thp);
             };
-            std::vector<Scalar> r0, r1;
-            Scalar b0 = *first;
-            Scalar m0 = margin(b0, r0);
-            std::vector<Scalar> flux0 = last_flux;
-            bool done = std::abs(m0) < tol;
-            Scalar b = b0;
-            std::vector<Scalar> rates = r0, flux = flux0;
-            Scalar b1 = b0 - m0 / slope;
-            for (int it = 0; it < 8 && !done; ++it) {
-                const Scalar m1 = margin(b1, r1);
-                b = b1; rates = r1; flux = last_flux;
-                if (std::abs(m1) < tol) { done = true; break; }
-                if (m1 == m0) { break; }
-                slope = (m1 - m0) / (b1 - b0);
-                const Scalar b2 = b1 - m1 / slope;
-                b0 = b1; m0 = m1; b1 = b2;
+            // Kept between the bhp limit and the highest connection pressure: above it the well's own solve
+            // turns to crossflow and its fractions leave [0, 1] (GRPFLD-05 B-3H, WFrac 4.5).
+            const Scalar b_lo = WellBhpThpCalculator(*this).mostStrictBhpFromBhpLimits(summary_state);
+            const Scalar b_hi = this->maxPerfPress(simulator);
+            auto inside = [&](const Scalar x) { return std::clamp(x, b_lo, b_hi); };
+            std::vector<Scalar> r0, r1, rates, flux;
+            bool done = false;
+            Scalar b = inside(*first);
+            try {
+                Scalar b0 = b;
+                Scalar m0 = margin(b0, r0);
+                done = std::abs(m0) < tol;
+                rates = r0;
+                flux = last_flux;
+                Scalar b1 = inside(b0 - m0 / slope);
+                for (int it = 0; it < 8 && !done; ++it) {
+                    const Scalar m1 = margin(b1, r1);
+                    b = b1; rates = r1; flux = last_flux;
+                    if (std::abs(m1) < tol) { done = true; break; }
+                    if (m1 == m0 || b1 == b0) { break; }
+                    slope = (m1 - m0) / (b1 - b0);
+                    const Scalar b2 = inside(b1 - m1 / slope);
+                    b0 = b1; m0 = m1; b1 = b2;
+                }
+            } catch (const std::exception& e) {
+                // A solve that fails at this bhp: no point here, not a failed run.
+                deferred_logger.debug(fmt::format("sampleThpCurve: well {} at thp {:.2f} bar: {}", this->name(),
+                                                  thp / 1.0e5, e.what()));
+                done = false;
             }
             if (done) {
                 point.rates = rates;
@@ -630,6 +644,7 @@ namespace Opm
                 point.bhp = b;
                 point.lifts = std::any_of(point.rates.begin(), point.rates.end(),
                                           [](const Scalar v) { return v < Scalar{0}; });
+                point.determined = true;
             }
             previous = point.lifts ? std::optional<Scalar>(b) : std::nullopt;
             if (point.lifts) { last_flux = flux; }
