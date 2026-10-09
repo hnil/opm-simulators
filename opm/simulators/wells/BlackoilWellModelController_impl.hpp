@@ -173,7 +173,10 @@ controllerRefreshIpr_(DeferredLogger& deferred_logger)
             for (const auto v : b) { m = std::max(m, std::abs(v)); }
             return m;
         };
-        const bool degenerate = steepest(implicit_b) > Scalar{10} * steepest(ws.implicit_ipr_b);
+        // Flat is as degenerate as too steep: a stopped well's tangent is zero, and as a line it says the
+        // well can never flow, at any pressure or lift gas (GLIFT-03 B-3H: 2078 sm3/d at 18 bar).
+        const bool degenerate = steepest(implicit_b) > Scalar{10} * steepest(ws.implicit_ipr_b)
+            || steepest(implicit_b) < Scalar{1e-3} * steepest(ws.implicit_ipr_b);
         // OPM_CONTROLLER_REVIVAL_IPR=zero-rate keeps the old choice: the tangent at zero rate
         // unless it is degenerate. It can be several times flatter than the flowing well's,
         // and a well the route shut on one Newton iterate then never comes back.
@@ -621,6 +624,13 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                     continue;             // at zero rate on its own control; not part of it
                 }
                 // No inflow: shut in the system, counted so its group keeps its target.
+                if (std::getenv("OPM_CONTROLLER_TRACE")) {
+                    const auto rv = this->controller_revivals_.find(name);
+                    deferred_logger.debug(fmt::format("CTRLTRACE step={} it={} {} enters shut: usable {} held {} revivals {}",
+                                                      reportStepIdx, simulator_.problem().iterationContext().iteration(),
+                                                      name, usable, held,
+                                                      rv != this->controller_revivals_.end() ? rv->second : 0));
+                }
                 w.shut = true;
                 w.guide = deckGuide(name);
                 tree_wells.push_back({static_cast<int>(system.numWells()), name, w.guide});
@@ -1127,12 +1137,20 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
         static const char* dump_failed = std::getenv("OPM_CONTROLLER_DUMP_FAILED");
         std::optional<Sys> last_input;
         std::vector<Scalar> last_start;
+        // A shut well's rate is exactly zero: the solve leaves dust (1e-12 sm3/d) that the hand-over counted
+        // as a revival, spending the well's budget for the step (GLIFT-03 B-3H, C-1H, C-2H held shut).
+        auto zeroShut = [&system](auto& r) {
+            for (int w = 0; w < system.numWells() && w < static_cast<int>(r.well_rate.size()); ++w) {
+                if (system.control(w) == Sys::Control::Shut) { r.well_rate[w] = Scalar{0}; }
+            }
+        };
         auto solveRouteOnce = [&](const std::vector<Scalar>& start, const bool keep_dead) {
             if (dump_failed) { last_input = system; last_start = start; }
             ++route_solve_id;
             if (!extension) {
                 auto r = NetworkSolve::solveReduced(system, start, params, /*eliminate=*/true, cliff_rule, keep_dead);
                 r.solve_id = route_solve_id;
+                zeroShut(r);
                 return r;
             }
             const auto rule = param_.group_controller_closing_ == "worst"  ? NetworkSolve::Closing::Sequential
@@ -1162,6 +1180,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
             r.iterations = ex.iterations;
             r.evaluations = ex.evaluations;
             r.solve_id = route_solve_id;
+            zeroShut(r);
             return r;
         };
         // Stein's tree can be discontinuous in the node pressures -- a well's share against its own limit,
@@ -1419,6 +1438,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                 refreshGuides();
                 rr = NetworkSolve::solveReduced(system, rr.node_pressure, params, /*eliminate=*/true,
                                                 cliff_rule);
+                zeroShut(rr);
                 continue;
             }
             std::map<int, std::array<Scalar, Sys::NP>> produced = satellite_on;
@@ -1469,6 +1489,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
             refreshGuides();
             rr = NetworkSolve::solveReduced(system, rr.node_pressure, params, /*eliminate=*/true,
                                             cliff_rule);
+            zeroShut(rr);
         }
         if (limit_switches > 0) {
             deferred_logger.debug(fmt::format("Controller: {} group limit switches inside the decision under {}",
@@ -1947,6 +1968,8 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                     if (wit == well_container_.end()) { continue; }
                     auto& wi = *wit;
                     const auto saved = wi->getDynamicThpLimit();
+                    const auto saved_crossing = wi->stableThpCrossingSetting();
+                    wi->setStableThpCrossing(true);
                     wi->setDynamicThpLimit(p);
                     const auto own = wi->computeBhpAtThpLimitProdWithAlq(simulator_, this->groupStateHelper(),
                                                                          summary_state, well.alq, false);
@@ -1961,6 +1984,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                                                                        summary_state, well.alq, false);
                     }
                     wi->setDynamicThpLimit(saved);
+                    wi->setStableThpCrossing(saved_crossing);
                     if (p_prev > Scalar{0} && std::abs(p_prev - p) > Scalar{0.1e5}) {
                         std::vector<Scalar> pq(pu.numActivePhases(), Scalar{0});
                         if (own_prev) { wi->computeWellRatesWithBhp(simulator_, *own_prev, pq, deferred_logger); }
@@ -2016,6 +2040,11 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                     && streak < param_.group_controller_shut_persistence_;
                 dead_now[well.name] = wants_shut && !hold_open;
                 if (!(well.q_start > Scalar{0}) && rr.well_rate[w] > Scalar{0}) {
+                    if (std::getenv("OPM_CONTROLLER_TRACE")) {
+                        deferred_logger.debug(fmt::format("CTRLTRACE step={} it={} {} revival counted: q {:.6g} sm3/d control {}",
+                                                          reportStepIdx, simulator_.problem().iterationContext().iteration(),
+                                                          well.name, rr.well_rate[w] * 86400.0, system.controlLetter(w)));
+                    }
                     ++this->controller_revivals_[well.name];
                 }
                 if ((t.control == Ctrl::Tree || t.control == Ctrl::Grup) && t.group >= 0) {
