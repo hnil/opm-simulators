@@ -195,21 +195,25 @@ facilityReference_(DeferredLogger& deferred_logger)
                 probe->calculateExplicitQuantities(simulator_, this->groupStateHelper());
                 probes[c.name] = std::move(probe);
             }
+            // Rates at a fixed bhp: the explicit inflow at the well's connection pressures, as the controller's
+            // lines are taken. (The iterative variant re-solves the well and can return an injecting answer for
+            // a producer held well below its potential.)
+            auto ratesAt = [&](const WellInterface<TypeTag>* wi, const Scalar bhp) {
+                std::vector<Scalar> r(np, Scalar(0));
+                wi->computeWellRatesWithBhp(simulator_, bhp, r, scratch);
+                ++scan_solves;
+                return r;
+            };
             // Where the thp solve does not settle: the margin bhp - tubing(q(bhp)) scanned over bhp with the
-            // well's own equations at fixed bhp (unique, so it converges). Lifts where the margin is positive
-            // somewhere the well produces; the stable crossing is the lower-bhp sign change.
+            // inflow at fixed bhp (unique, so it converges). Lifts where the margin is positive somewhere the
+            // well produces; the stable crossing is the lower-bhp sign change.
             auto liftsByScan = [&](const WellInterface<TypeTag>* wi, const Scalar thp, const Scalar alq) -> ThpPoint {
                 ThpPoint pt;
                 pt.thp = thp;
                 pt.determined = true;
                 WellBhpThpCalculator<Scalar, IndexTraits> calc(*wi);
                 const Scalar b_lo = calc.mostStrictBhpFromBhpLimits(summary_state);
-                auto frates = [&](const Scalar b) {
-                    std::vector<Scalar> r(np, Scalar(0));
-                    wi->computeWellRatesWithBhpIterations(simulator_, b, this->groupStateHelper(), r);
-                    ++scan_solves;
-                    return r;
-                };
+                auto frates = [&](const Scalar b) { return ratesAt(wi, b); };
                 auto produces = [&](const std::vector<Scalar>& r) { return -r[oil] > Scalar(0); };
                 auto margin = [&](const Scalar b, std::vector<Scalar>& r) {
                     r = frates(b);
@@ -272,9 +276,7 @@ facilityReference_(DeferredLogger& deferred_logger)
             // Positive margin just above the crossing's bhp: the crossing is on the stable branch.
             auto stable = [&](const WellInterface<TypeTag>* wi, const ThpPoint& pt, const Scalar alq) {
                 WellBhpThpCalculator<Scalar, IndexTraits> calc(*wi);
-                std::vector<Scalar> r(np, Scalar(0));
-                wi->computeWellRatesWithBhpIterations(simulator_, pt.bhp + 0.5e5, this->groupStateHelper(), r);
-                ++scan_solves;
+                std::vector<Scalar> r = ratesAt(wi, pt.bhp + 0.5e5);
                 if (!(-r[oil] > Scalar(0))) {
                     return false;
                 }
@@ -396,27 +398,27 @@ facilityReference_(DeferredLogger& deferred_logger)
                     WellBhpThpCalculator<Scalar, IndexTraits> calc(*wi);
                     // bhp giving the reduced oil rate: rates fall with bhp, so bisect from the operating bhp upward
                     Scalar a = ws.bhp, b = ws.bhp + 10.0e5;
-                    std::vector<Scalar> r(np, Scalar(0));
+                    std::vector<Scalar> r;
                     for (int k = 0; k < 8; ++k) {
-                        wi->computeWellRatesWithBhpIterations(simulator_, b, this->groupStateHelper(), r);
-                        ++scan_solves;
+                        r = ratesAt(wi, b);
                         if (-r[oil] <= q_oil) { break; }
                         a = b;
                         b += (b - ws.bhp);
                     }
                     for (int k = 0; k < 12 && b - a > 0.01e5; ++k) {
                         const Scalar mid = 0.5 * (a + b);
-                        wi->computeWellRatesWithBhpIterations(simulator_, mid, this->groupStateHelper(), r);
-                        ++scan_solves;
+                        r = ratesAt(wi, mid);
                         if (-r[oil] > q_oil) { a = mid; } else { b = mid; }
                     }
-                    wi->computeWellRatesWithBhpIterations(simulator_, b, this->groupStateHelper(), r);
-                    ++scan_solves;
+                    r = ratesAt(wi, b);
                     std::vector<Scalar> rv = r;
                     wi->adaptRatesForVFP(rv);
                     const Scalar m = calc.thpMargin([&rv](const Scalar) { return rv; }, b, summary_state, wi->refDensity(), alq, nodeP(cb.p, c));
                     if (!(m >= Scalar(0))) {
-                        cb.held_note = fmt::format(" held-infeasible({} at {:.0f} sm3/d: margin {:.2f} bar)", c.name, q_oil * 86400.0, m * 1e-5);
+                        cb.held_note = fmt::format(" held-infeasible({} at {:.0f} sm3/d: margin {:.2f} bar; bhp {:.2f} from {:.2f}, "
+                                                   "rates w/o/g {:.0f}/{:.0f}/{:.0f}, well thp {:.2f}, alq {:.0f})",
+                                                   c.name, q_oil * 86400.0, m * 1e-5, b * 1e-5, ws.bhp * 1e-5,
+                                                   -r[0] * 86400.0, -r[1] * 86400.0, -r[2] * 86400.0, ws.thp * 1e-5, alq * 86400.0);
                         return;
                     }
                     oil_off += -ws.surface_rates[oil] * (Scalar(1) - f);
