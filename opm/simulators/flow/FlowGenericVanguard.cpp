@@ -158,6 +158,7 @@ FlowGenericVanguard::FlowGenericVanguard(SimulationModelParams&& params)
 #if HAVE_MPI
     numOverlap_ = Parameters::Get<Parameters::NumOverlap>();
     addCorners_ = Parameters::Get<Parameters::AddCorners>();
+    addCornersByVertex_ = Parameters::Get<Parameters::AddCornersByVertex>();
 
     const std::string pm = Parameters::Get<Parameters::PartitionMethod>();
     if (pm == "simple") {
@@ -516,6 +517,10 @@ void FlowGenericVanguard::registerParameters_()
 #if HAVE_MPI
     Parameters::Register<Parameters::AddCorners>
         ("Add corners to partition.");
+    Parameters::Register<Parameters::AddCornersByVertex>
+        ("With --add-corners=true: add every cell sharing a vertex with an overlap "
+         "cell, hanging nodes and fault crossings included, as vertex-based "
+         "discretisations need.");
     Parameters::Register<Parameters::NumOverlap>
         ("Numbers of layers overlap in parallel partition");
     Parameters::Register<Parameters::PartitionMethod>
