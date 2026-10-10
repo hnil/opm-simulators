@@ -610,6 +610,7 @@ protected:
     /// Per time step (time, dt): how often the route gave each zero-rate well a rate again.
     std::pair<double, double> controller_revival_step_{-1.0, -1.0};
     double controller_glift_time_ = -1.0;   // when the controller last optimised lift gas
+    std::set<std::string> controller_cliff_wells_;   // single status: on a cliff this time step, not tried again in it
     std::map<std::string, std::pair<int, int>> controller_glift_flips_;   // per well, ups and downs this time step
     int controller_glift_dumps_ = 0;
     std::map<std::string, int> controller_revivals_{};
@@ -653,6 +654,8 @@ protected:
         long transition_points = 0;        // curve points and well solves they took
         long transition_solves = 0;
         long thp_solves = 0;               // the well model's thp-controlled solves the controller asked for
+        long lift_scans = 0;        // lift tests decided by the scan
+        long lift_unstable = 0;     // settled thp solves found on the unstable branch
         long curve_points = 0;             // curve points sampled
         long curve_solves = 0;             // well solves at fixed bhp they took
         long well_decisions = 0;           // wells decided by the route, all decisions

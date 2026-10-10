@@ -724,6 +724,8 @@ namespace Opm {
         }
         if (param_.enable_group_controller_ && this->controller_stats_.calls > 0) {
             const auto& st = this->controller_stats_;
+            OpmLog::debug(fmt::format("Controller lift tests: {} decided by the scan, {} settled crossings on the unstable branch",
+                                      this->controller_stats_.lift_scans, this->controller_stats_.lift_unstable));
             OpmLog::debug(fmt::format("Controller totals at day {:.1f}: {} calls, {} passes, {} decisions by the route "
                                       "({} iterations, {} evaluations, {} set changes, {} lookups), {} well solves, "
                                       "{} converged, {} stalled, {} cap hits, {} judge rejections, worst deviation {:.1f} %, "

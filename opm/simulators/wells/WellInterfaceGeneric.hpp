@@ -130,6 +130,9 @@ public:
     bool networkHeld() const { return network_held_; }
     /// Dead or held by a network route under --group-controller-hold-stopped: not reopened this step.
     void setHoldStopped(const bool hold) { hold_stopped_ = hold; }
+    /// The controller decided this well's open/shut status: its own solve keeps it (no stop, no reopen).
+    void setStatusDecided(const bool decided) { status_decided_ = decided; }
+    bool statusDecided() const { return status_decided_; }
     /// The controller's flowing point (thp, bhp, rates w/o/g) for the operability check to start from; empty: as before.
     void setOperabilityStart(const std::optional<std::array<Scalar, 5>>& point) { operability_start_ = point; }
     static long operabilityFromFlowing() { return operability_from_flowing_; }
@@ -494,6 +497,7 @@ protected:
     bool network_dead_ = false;
     bool network_held_ = false;
     bool hold_stopped_ = false;
+    bool status_decided_ = false;
     std::optional<std::array<Scalar, 5>> operability_start_;
     static inline long operability_from_flowing_ = 0;   // the run's count; wells are rebuilt each report step
     std::optional<bool> stable_thp_crossing_;

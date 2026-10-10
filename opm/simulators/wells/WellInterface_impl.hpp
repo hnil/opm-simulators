@@ -1124,6 +1124,32 @@ namespace Opm
         const auto& summary_state = simulator.vanguard().summaryState();
         bool converged = true;
         auto& ws = well_state.well(this->index_of_well_);
+        // The controller decided the status: a stopped well solves at zero rate, a flowing one solves
+        // its equations with the status fixed, and an unconverged solve is reported, not turned into a stop.
+        if (this->statusDecided()) {
+            const bool shut = this->networkDead() || this->networkHeld();
+            if (shut) {
+                if (!this->wellIsStopped()) {
+                    this->stopWell();
+                }
+                const bool solved = solveWellWithZeroRate(simulator, dt, groupStateHelper, well_state);
+                if (this->networkDead()) {
+                    this->operability_status_.can_obtain_bhp_with_thp_limit = false;
+                    this->operability_status_.obey_thp_limit_under_bhp_limit = false;
+                }
+                return solved;
+            }
+            if (this->wellIsStopped()) {
+                this->openWell();
+                ws.open();
+            }
+            converged = this->iterateWellEqWithSwitching(
+                simulator, dt, inj_controls, prod_controls, groupStateHelper, well_state,
+                /*fixed_control=*/false, /*fixed_status=*/true, /*solving_with_zero_rate=*/false);
+            this->operability_status_.can_obtain_bhp_with_thp_limit = true;
+            this->operability_status_.obey_thp_limit_under_bhp_limit = true;
+            return converged;
+        }
         // The network route decided: no reopening attempt of its own.
         if (this->wellIsStopped() && (this->networkDead() || this->networkHeld())) {
             // Held: stopped for this step only, unless the well model finds no operable bhp

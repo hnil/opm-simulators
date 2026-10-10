@@ -159,6 +159,10 @@ BlackoilModelParameters<Scalar>::BlackoilModelParameters()
     group_controller_confirm_capacity_ = Parameters::Get<Parameters::GroupControllerConfirmCapacity>();
     group_controller_confirm_revival_ = Parameters::Get<Parameters::GroupControllerConfirmRevival>();
     group_controller_restart_ = Parameters::Get<Parameters::GroupControllerRestart>();
+    group_controller_status_ = Parameters::Get<Parameters::GroupControllerStatus>();
+    if (group_controller_status_ != "legacy" && group_controller_status_ != "single") {
+        throw std::invalid_argument("--group-controller-status must be legacy or single, not " + group_controller_status_);
+    }
     group_controller_curve_fallback_ = Parameters::Get<Parameters::GroupControllerCurveFallback>();
     group_controller_transition_curve_ = Parameters::Get<Parameters::GroupControllerTransitionCurve>();
     group_controller_operability_from_flowing_ = Parameters::Get<Parameters::GroupControllerOperabilityFromFlowing>();
@@ -435,6 +439,11 @@ void BlackoilModelParameters<Scalar>::registerParameters()
     Parameters::Register<Parameters::GroupControllerRestart>
         ("Group controller: where a well the route brings back from zero rate starts its own solve: dead (from its "
          "current, dead state) or flowing (from the route's point: its rates, bhp and the node pressure)");
+    Parameters::Register<Parameters::GroupControllerStatus>
+        ("Where a route well's open/shut status is decided: legacy (the route's closing, repairs, "
+         "transition curve and revival budget, then the well model's own operability check) or single "
+         "(one lift test per transition well after the route's solve, one selection rule, and the well "
+         "model keeps the status it is handed)");
     Parameters::Register<Parameters::GroupControllerConfirmRevival>
         ("Group controller: a well the route leaves at zero rate is asked of the well model (stable crossing at the "
          "node pressure, confirmed by its equations); where it flows, its inflow line is moved through that point "

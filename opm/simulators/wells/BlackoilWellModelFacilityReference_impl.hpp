@@ -92,7 +92,7 @@ facilityReference_(DeferredLogger& deferred_logger)
     };
     std::vector<Cand> cands;
     std::vector<Cand> followers;   // flowing on thp, not candidates: re-solved where their node moves
-    int deck_kept = 0;
+    int deck_kept = 0, closed_by_run = 0;
     for (const auto& name : schedule.wellNames(step)) {
         const auto& w = schedule.getWell(name, step);
         if (!w.isProducer() || w.getStatus() != Well::Status::OPEN || !w.predictionMode()
@@ -113,7 +113,10 @@ facilityReference_(DeferredLogger& deferred_logger)
         c.live = live != well_container_.end() ? live->get() : nullptr;
         c.live_stopped = c.live != nullptr && c.live->wellIsStopped();
         c.closed = c.live == nullptr && ws.status == Well::Status::SHUT;
-        if (c.live == nullptr && !c.closed) {
+        if (c.live == nullptr) {
+            // Closed by the run (WTEST, economic limit, "cannot operate" at a step's end): no decider but the
+            // deck can bring it back, so it is not this step's decision.
+            closed_by_run += c.closed;
             continue;
         }
         c.flowing = c.live != nullptr && !c.live_stopped && -ws.surface_rates[oil] > Scalar(0);
@@ -136,8 +139,8 @@ facilityReference_(DeferredLogger& deferred_logger)
         }
     }
     if (cands.empty()) {
-        deferred_logger.debug(fmt::format("Facility reference: step {} iteration {}: no candidates (deck-kept {})",
-                                          step, iterCtx.iteration(), deck_kept));
+        deferred_logger.debug(fmt::format("Facility reference: step {} iteration {}: no candidates (deck-kept {} closed-by-run {})",
+                                          step, iterCtx.iteration(), deck_kept, closed_by_run));
         return;
     }
     std::stable_sort(cands.begin(), cands.end(), [](const Cand& a, const Cand& b) { return a.rank() < b.rank(); });
@@ -177,144 +180,36 @@ facilityReference_(DeferredLogger& deferred_logger)
         auto log_guard = this->groupStateHelper().pushLogger(/*do_mpi_gather*/ false);
         DeferredLogger scratch;
         try {
-            // Stopped or closed candidates are asked on a well made for it, as the facility check does.
+            // Stopped candidates are asked on a probe (the lift test does that itself; the held test here too).
             std::map<std::string, WellInterfacePtr> probes;
             for (const auto& c : cands) {
-                if (!c.live_stopped && !c.closed) {
-                    continue;
+                if (c.live_stopped) {
+                    probes[c.name] = this->makeProbe_(c.name, scratch);
                 }
-                auto probe = this->createWellForWellTest(c.name, step, scratch);
-                probe->init(depth_, gravity_, B_avg_, true);
-                probe->setWellEfficiencyFactor(c.live ? c.live->wellEfficiencyFactor() : Scalar(1));
-                probe->setVFPProperties(this->vfp_properties_.get());
-                probe->setGuideRate(&this->guideRate_);
-                if (probe->isVFPActive(scratch)) {
-                    probe->setPrevSurfaceRates(this->wellState(), this->prevWellState());
-                }
-                this->network_.initializeWell(*probe);
-                probe->calculateExplicitQuantities(simulator_, this->groupStateHelper());
-                probes[c.name] = std::move(probe);
             }
-            // Rates at a fixed bhp: the explicit inflow at the well's connection pressures, as the controller's
-            // lines are taken. (The iterative variant re-solves the well and can return an injecting answer for
-            // a producer held well below its potential.)
-            auto ratesAt = [&](const WellInterface<TypeTag>* wi, const Scalar bhp) {
-                std::vector<Scalar> r(np, Scalar(0));
-                wi->computeWellRatesWithBhp(simulator_, bhp, r, scratch);
-                ++scan_solves;
-                return r;
-            };
-            // Where the thp solve does not settle: the margin bhp - tubing(q(bhp)) scanned over bhp with the
-            // inflow at fixed bhp (unique, so it converges). Lifts where the margin is positive somewhere the
-            // well produces; the stable crossing is the lower-bhp sign change.
-            auto liftsByScan = [&](const WellInterface<TypeTag>* wi, const Scalar thp, const Scalar alq) -> ThpPoint {
-                ThpPoint pt;
-                pt.thp = thp;
-                pt.determined = true;
-                WellBhpThpCalculator<Scalar, IndexTraits> calc(*wi);
-                const Scalar b_lo = calc.mostStrictBhpFromBhpLimits(summary_state);
-                auto frates = [&](const Scalar b) { return ratesAt(wi, b); };
-                auto produces = [&](const std::vector<Scalar>& r) { return -r[oil] > Scalar(0); };
-                auto margin = [&](const Scalar b, std::vector<Scalar>& r) {
-                    r = frates(b);
-                    std::vector<Scalar> rv = r;
-                    wi->adaptRatesForVFP(rv);
-                    return calc.thpMargin([&rv](const Scalar) { return rv; }, b, summary_state, wi->refDensity(), alq, thp);
-                };
-                std::vector<Scalar> r_lo;
-                const Scalar m_lo = margin(b_lo, r_lo);
-                if (!produces(r_lo)) {
-                    pt.lifts = false;
-                    return pt;
-                }
-                if (m_lo > Scalar(0)) {
-                    pt.lifts = true;
-                    pt.bhp = b_lo;
-                    pt.flux = r_lo;
-                    return pt;
-                }
-                Scalar hi = b_lo, step = 10.0e5;
-                std::vector<Scalar> r;
-                for (int k = 0; k < 8; ++k, step *= 2) {
-                    hi += step;
-                    r = frates(hi);
-                    if (!produces(r)) {
-                        break;
-                    }
-                }
-                Scalar best_b = b_lo, best_m = m_lo;
-                constexpr int npts = 12;
-                for (int i = 1; i < npts; ++i) {
-                    const Scalar b = b_lo + (hi - b_lo) * i / npts;
-                    const Scalar m = margin(b, r);
-                    if (produces(r) && m > best_m) {
-                        best_m = m;
-                        best_b = b;
-                    }
-                }
-                if (best_m <= Scalar(0)) {
-                    pt.lifts = false;
-                    return pt;
-                }
-                Scalar a = b_lo, b = best_b;
-                std::vector<Scalar> rb = frates(b);
-                for (int k = 0; k < 14 && b - a > 0.01e5; ++k) {
-                    const Scalar mid = 0.5 * (a + b);
-                    const Scalar m = margin(mid, r);
-                    if (m > Scalar(0)) { b = mid; rb = r; } else { a = mid; }
-                }
-                pt.lifts = true;
-                pt.bhp = b;
-                pt.flux = rb;
-                return pt;
-            };
-            // The well's own equations under thp control, started from its last flowing point (as the controller);
-            // an unsettled solve is decided by the scan, and re-tried from the scan's crossing.
             auto wellOf = [&](const Cand& c) -> const WellInterface<TypeTag>* {
-                return (c.live_stopped || c.closed) ? probes.at(c.name).get() : c.live;
+                return c.live_stopped ? probes.at(c.name).get() : c.live;
             };
-            // Positive margin just above the crossing's bhp: the crossing is on the stable branch.
-            auto stable = [&](const WellInterface<TypeTag>* wi, const ThpPoint& pt, const Scalar alq) {
-                WellBhpThpCalculator<Scalar, IndexTraits> calc(*wi);
-                std::vector<Scalar> r = ratesAt(wi, pt.bhp + 0.5e5);
-                if (!(-r[oil] > Scalar(0))) {
-                    return false;
-                }
-                wi->adaptRatesForVFP(r);
-                return calc.thpMargin([&r](const Scalar) { return r; }, pt.bhp + 0.5e5, summary_state,
-                                      wi->refDensity(), alq, pt.thp) > Scalar(0);
+            auto ratesAt = [&](const WellInterface<TypeTag>* wi, const Scalar bhp) {
+                ++scan_solves;
+                return this->inflowAtBhp_(*wi, bhp, scratch);
             };
+            // The one lift test (liftTest_): the well's equations under thp control on the stable branch, the
+            // scan where they do not settle.
             auto solveAt = [&](const Cand& c, const Scalar thp) -> ThpPoint {
                 const WellInterface<TypeTag>* wi = wellOf(c);
-                const Scalar alq = wi->getALQ(this->wellState());
-                std::optional<ThpPoint> start;
-                if (const auto fp = this->controller_flowing_point_.find(c.name); fp != this->controller_flowing_point_.end()) {
-                    start.emplace();
-                    start->thp = fp->second[0];
-                    start->bhp = fp->second[1];
-                    start->flux.assign(fp->second.begin() + 2, fp->second.end());
-                    start->lifts = true;
-                }
-                int solves = 0;
-                auto curve = wi->sampleThpCurve(simulator_, this->groupStateHelper(), alq, {thp}, solves, start ? &*start : nullptr);
-                solves_total += solves;
-                ThpPoint pt = curve.empty() ? ThpPoint{} : curve.front();
-                if (pt.determined && pt.lifts && !stable(wi, pt, alq)) {
-                    ++unstable_fixed;
-                    return liftsByScan(wi, thp, alq);
-                }
-                if (pt.determined) {
-                    return pt;
-                }
-                ++scans_used;
-                auto sc = liftsByScan(wi, thp, alq);
-                if (!sc.lifts) {
-                    return sc;
-                }
-                sc.lifts = true;
-                curve = wi->sampleThpCurve(simulator_, this->groupStateHelper(), alq, {thp}, solves, &sc);
-                solves_total += solves;
-                return (!curve.empty() && curve.front().determined && curve.front().lifts) ? curve.front() : sc;
+                const auto a = this->liftTest_(*wi, thp, wi->getALQ(this->wellState()), scratch);
+                solves_total += a.solves;
+                scans_used += a.by_scan;
+                unstable_fixed += a.unstable;
+                ThpPoint pt;
+                pt.thp = thp;
+                pt.determined = a.determined;
+                pt.lifts = a.lifts && a.stable;
+                pt.bhp = a.bhp;
+                pt.flux = a.flux;
+                pt.rates = a.rates;
+                return pt;
             };
             auto nodeP = [&](const std::map<std::string, Scalar>& p, const Cand& c) {
                 if (!with_network) { return c.own_thp; }
@@ -395,7 +290,6 @@ facilityReference_(DeferredLogger& deferred_logger)
                     const Scalar alq = wi->getALQ(this->wellState());
                     const auto& ws = this->wellState().well(c.name);
                     const Scalar q_oil = -ws.surface_rates[oil] * f;
-                    WellBhpThpCalculator<Scalar, IndexTraits> calc(*wi);
                     // bhp giving the reduced oil rate: rates fall with bhp, so bisect from the operating bhp upward
                     Scalar a = ws.bhp, b = ws.bhp + 10.0e5;
                     std::vector<Scalar> r;
@@ -410,10 +304,8 @@ facilityReference_(DeferredLogger& deferred_logger)
                         r = ratesAt(wi, mid);
                         if (-r[oil] > q_oil) { a = mid; } else { b = mid; }
                     }
-                    r = ratesAt(wi, b);
-                    std::vector<Scalar> rv = r;
-                    wi->adaptRatesForVFP(rv);
-                    const Scalar m = calc.thpMargin([&rv](const Scalar) { return rv; }, b, summary_state, wi->refDensity(), alq, nodeP(cb.p, c));
+                    const Scalar m = this->thpMarginAt_(*wi, b, nodeP(cb.p, c), alq, r, scratch);
+                    ++scan_solves;
                     if (!(m >= Scalar(0))) {
                         cb.held_note = fmt::format(" held-infeasible({} at {:.0f} sm3/d: margin {:.2f} bar; bhp {:.2f} from {:.2f}, "
                                                    "rates w/o/g {:.0f}/{:.0f}/{:.0f}, well thp {:.2f}, alq {:.0f})",
@@ -611,11 +503,11 @@ facilityReference_(DeferredLogger& deferred_logger)
                            cb->could_flow.empty() ? "" : " could flow: " + fmt::format("{}", fmt::join(cb->could_flow, ",")));
     };
     deferred_logger.debug(fmt::format(
-        "Facility reference: step {} iteration {}: candidates {} [{}]{} followers {} deck-kept {} | combos {} admissible {} strict {} "
+        "Facility reference: step {} iteration {}: candidates {} [{}]{} followers {} deck-kept {} closed-by-run {} | combos {} admissible {} strict {} "
         "| verdict {} | chosen {} | least-change {} | most-oil {} | dead-open {} undetermined-open {} "
         "undetermined-shut {} no-fixed-point {} cascade {} group-over {} | well solves {} scans {} unstable {} ({} solves){}",
         step, iterCtx.iteration(), n, bits(chosen), dropped ? fmt::format(" (+{} dropped)", dropped) : "",
-        followers.size(), deck_kept, combos.size(), n_adm, n_strict, verdict, describe(chosen_cb), describe(least), describe(most),
+        followers.size(), deck_kept, closed_by_run, combos.size(), n_adm, n_strict, verdict, describe(chosen_cb), describe(least), describe(most),
         n_dead_open, n_undet, n_undet_shut, n_nofp, n_cascade, n_group_over, solves_total, scans_used, unstable_fixed, scan_solves,
         failure.empty() ? "" : " | failed: " + failure));
     if (detail) {

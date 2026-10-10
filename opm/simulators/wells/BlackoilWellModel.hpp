@@ -336,6 +336,27 @@ template<class Scalar> class WellContributions;
             /// Diagnostic: every open/shut state of the network's transition wells, by the wells' own
             /// equations and the network, against the one handed over.
             void facilityReference_(DeferredLogger& deferred_logger);
+            /// Whether a producer lifts at a wellhead pressure, by its own equations on the stable branch; always
+            /// determined (BlackoilWellModelLiftTest_impl.hpp). The one test every status decision uses.
+            struct LiftAnswer
+            {
+                Scalar thp{0}, bhp{0};
+                bool determined{false}, lifts{false}, stable{false}, by_scan{false};
+                std::vector<Scalar> flux;    // active phase order, production negative
+                std::vector<Scalar> flux_up; // the inflow one bar above bhp, for a line's slope
+                std::vector<Scalar> rates;   // water, oil, gas as the tubing table wants them
+                int solves{0}, unstable{0};
+            };
+            /// A well made for probing (the well-test recipe): a stopped well's own object has stale inflow.
+            WellInterfacePtr makeProbe_(const std::string& name, DeferredLogger& deferred_logger) const;
+            LiftAnswer liftTest_(const WellInterface<TypeTag>& well, const Scalar thp, const Scalar alq,
+                                 DeferredLogger& deferred_logger) const;
+            LiftAnswer liftByScan_(const WellInterface<TypeTag>& well, const Scalar thp, const Scalar alq,
+                                   DeferredLogger& deferred_logger) const;
+            std::vector<Scalar> inflowAtBhp_(const WellInterface<TypeTag>& well, const Scalar bhp,
+                                             DeferredLogger& deferred_logger) const;
+            Scalar thpMarginAt_(const WellInterface<TypeTag>& well, const Scalar bhp, const Scalar thp, const Scalar alq,
+                                std::vector<Scalar>& rates, DeferredLogger& deferred_logger) const;
             /// LIFTOPT's timing for the controller's gas lift: every Newton iteration or the first of a
             /// time step (item 4), and the least time between optimisations (item 3).
             bool controllerGasLiftDue_();
@@ -890,6 +911,7 @@ template<class Scalar> class WellContributions;
 #include "BlackoilWellModel_impl.hpp"
 #include "BlackoilWellModelController_impl.hpp"
 #include "BlackoilWellModelFacilityCheck_impl.hpp"
+#include "BlackoilWellModelLiftTest_impl.hpp"
 #include "BlackoilWellModelFacilityReference_impl.hpp"
 
 #endif // OPM_BLACKOILWELLMODEL_HEADER_INCLUDED

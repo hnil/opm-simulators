@@ -1257,6 +1257,7 @@ list (APPEND PUBLIC_HEADER_FILES
   opm/simulators/wells/BlackoilWellModelController_impl.hpp
   opm/simulators/wells/BlackoilWellModelFacilityCheck_impl.hpp
   opm/simulators/wells/BlackoilWellModelFacilityReference_impl.hpp
+  opm/simulators/wells/BlackoilWellModelLiftTest_impl.hpp
   opm/simulators/wells/BlackoilWellModelConstraints.hpp
   opm/simulators/wells/BlackoilWellModelGasLift.hpp
   opm/simulators/wells/BlackoilWellModelGasLift_impl.hpp

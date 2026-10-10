@@ -520,6 +520,16 @@ public:
     void killWell(const int w) { reduced_dead_[w] = 1; }
     /// Shut for good in this system: no inflow, not a candidate for revival.
     void shutWell(const int w) { wells_[w].shut = true; reduced_dead_[w] = 1; }
+    /// A well shut for want of an inflow line, given one and opened.
+    void reopenWell(const int w, const std::array<Scalar, NP>& a, const std::array<Scalar, NP>& b, const Scalar q)
+    {
+        wells_[w].ipr_a = a;
+        wells_[w].ipr_b = b;
+        wells_[w].shut = false;
+        wells_[w].dead_above = 0;
+        reduced_dead_[w] = 0;
+        wells_[w].q_start = q;
+    }
     void restoreDead(const std::vector<char>& dead) { reduced_dead_ = dead; }
     /// The other answer to a cliff: instead of dying, the well holds the
     /// rate its crossing had just before the crossing vanished -- a wellhead

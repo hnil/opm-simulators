@@ -244,6 +244,9 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
     this->controller_rejected_ = false;
     OPM_TIMEFUNCTION();
     using Sys = NetworkSolve::ProductionSystem<Scalar>;
+    // --group-controller-status=single: status decided once per answer by the lift test (decideStatus below);
+    // the legacy stack (repairs, keep-flowing, confirm-revival, transition curve, budget, persistence) is off.
+    const bool legacy_status = param_.group_controller_status_ == "legacy";
     using Ctrl = typename Sys::Control;
     using Mode = typename Sys::Mode;
     const int reportStepIdx = simulator_.episodeIndex();
@@ -282,22 +285,23 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                                                           ws.surface_rates[2]};
         }
     }
-    // The well model's answer at node pressure p and lift gas alq: its own equations under thp control on a copy,
-    // started from its last flowing point. No bhp-from-thp.
+    // The well model's answer at node pressure p and lift gas alq: the one lift test (liftTest_), its own
+    // equations on the stable branch, decided by the scan where they do not settle.
+    std::vector<Scalar> last_flux_up;    // the inflow one bar above the last answer's bhp
     auto wellAtThp = [&](const auto& wi, const Scalar p, const Scalar alq) {
-        std::optional<typename WellInterface<TypeTag>::ThpPoint> start;
-        if (const auto fp = this->controller_flowing_point_.find(wi->name()); fp != this->controller_flowing_point_.end()) {
-            start.emplace();
-            start->thp = fp->second[0];
-            start->bhp = fp->second[1];
-            start->flux.assign(fp->second.begin() + 2, fp->second.end());
-            start->lifts = true;
-        }
-        int solves = 0;
-        const auto curve = wi->sampleThpCurve(simulator_, this->groupStateHelper(), alq, {p}, solves,
-                                              start ? &*start : nullptr);
-        this->controller_stats_.thp_solves += solves;
-        return curve.empty() ? typename WellInterface<TypeTag>::ThpPoint{} : curve.front();
+        const auto a = this->liftTest_(*wi, p, alq, deferred_logger);
+        this->controller_stats_.thp_solves += a.solves;
+        this->controller_stats_.lift_scans += a.by_scan;
+        this->controller_stats_.lift_unstable += a.unstable;
+        typename WellInterface<TypeTag>::ThpPoint pt;
+        pt.thp = p;
+        pt.determined = a.determined;
+        pt.lifts = a.lifts && a.stable;
+        pt.bhp = a.bhp;
+        pt.flux = a.flux;
+        pt.rates = a.rates;
+        last_flux_up = a.flux_up;
+        return pt;
     };
     // What the route reads about a well, gathered: every rank builds the same system.
     struct RouteWell {
@@ -472,6 +476,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
         this->controller_transitioned_.clear();
         this->controller_shut_streak_.clear();
         this->controller_glift_flips_.clear();
+        this->controller_cliff_wells_.clear();
         this->controller_step_start_oil_.clear();
         for (const auto& [name, d] : route_data) {
             this->controller_step_start_oil_[name] = d.open ? std::max(-static_cast<double>(d.q[pos[1]]), 0.0) : 0.0;
@@ -479,7 +484,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
     }
     auto held_dead = [&](const std::string& name, const Scalar rate_now) {
         const auto r = this->controller_revivals_.find(name);
-        return !(rate_now > Scalar{0}) && r != this->controller_revivals_.end()
+        return legacy_status && !(rate_now > Scalar{0}) && r != this->controller_revivals_.end()
             && r->second >= param_.group_controller_max_revivals_;
     };
     std::set<std::string> kept_dead;
@@ -1341,6 +1346,109 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
         }
         this->controller_stats_.well_decisions += system.numWells();
         auto rr = solveRoute(guess, false);
+        // single: one pass over the answer's transitions (and every well the route shut): each asked of the lift
+        // test at the answer's pressure; a shut well that lifts is revived through the test's point, a flowing
+        // well that does not is killed, and the route solved again. A well that flips back is a cliff: the
+        // re-solve's answer stands (the test said dead at the open state's pressure).
+        auto decideStatus = [&](const char* when) {
+            constexpr int stride = 3 + 2 * Sys::NP;     // determined, lifts, bhp, rates, inflow slope
+            std::vector<int> cand;
+            for (int w = 0; w < system.numWells(); ++w) {
+                const auto& well = system.wells()[w];
+                if (well.pinned || well.vfp_table <= 0 || this->controller_cliff_wells_.count(well.name)) { continue; }
+                // A well shut for want of a line (stopped at the step's start) is asked too: with a line from the
+                // test it can come back within the step. A well on a cliff this step (lifts shut, dies open) is left.
+                if (well.shut || system.controlLetter(w) == 'S' || (well.q_start > Scalar{0}) != (rr.well_rate[w] > Scalar{0})) {
+                    cand.push_back(w);
+                }
+            }
+            std::vector<Scalar> ans(cand.size() * stride, Scalar{0});
+            for (std::size_t c = 0; c < cand.size(); ++c) {
+                const auto& well = system.wells()[cand[c]];
+                const auto widx = this->wellState().index(well.name);
+                if (!widx.has_value() || !this->wellState().wellIsOwned(*widx, well.name)) { continue; }
+                const auto wit = std::find_if(well_container_.begin(), well_container_.end(),
+                                              [&](const auto& x) { return x->name() == well.name; });
+                if (wit == well_container_.end()) { continue; }
+                const Scalar p_w = well.own_thp > Scalar{0} ? well.own_thp
+                                 : well.node == 0 ? terminal : rr.node_pressure[well.node];
+                const auto point = wellAtThp(*wit, p_w, well.alq);
+                if (std::getenv("OPM_CONTROLLER_TRACE")) {
+                    deferred_logger.debug(fmt::format("CTRLTRACE step={} it={} status {} {}: letter {} q_start {:.1f} route {:.1f} p {:.2f} alq {:.0f} "
+                                                      "stopped {} -> determined {} lifts {} bhp {:.2f} oil {:.1f}",
+                                                      reportStepIdx, simulator_.problem().iterationContext().iteration(), when, well.name,
+                                                      system.controlLetter(cand[c]), well.q_start * 86400.0, rr.well_rate[cand[c]] * 86400.0,
+                                                      p_w / 1e5, well.alq * 86400.0, (*wit)->wellIsStopped() ? 1 : 0, point.determined ? 1 : 0,
+                                                      point.lifts ? 1 : 0, point.bhp / 1e5,
+                                                      point.lifts && pos[1] >= 0 ? -point.flux[pos[1]] * 86400.0 : 0.0));
+                }
+                Scalar* r = ans.data() + c * stride;
+                if (!point.determined) { continue; }
+                r[0] = 1;
+                if (point.lifts) {
+                    r[1] = 1;
+                    r[2] = point.bhp;
+                    for (int ph = 0; ph < Sys::NP; ++ph) { r[3 + ph] = std::max(-point.rates[ph], Scalar{0}); }
+                    if (well.shut && !last_flux_up.empty()) {
+                        // No line yet: its slope from the inflow one bar above the crossing.
+                        const auto& up = last_flux_up;
+                        for (int ph = 0; ph < Sys::NP; ++ph) {
+                            const Scalar q_up = pos[ph] >= 0 ? std::max(-up[pos[ph]], Scalar{0}) : Scalar{0};
+                            r[3 + Sys::NP + ph] = (q_up - r[3 + ph]) / 1.0e5;
+                        }
+                    }
+                }
+            }
+            if (this->comm().size() > 1 && !ans.empty()) {
+                this->comm().sum(ans.data(), ans.size());
+            }
+            std::vector<std::pair<int, bool>> changed;     // well, now flowing
+            for (std::size_t c = 0; c < cand.size(); ++c) {
+                const Scalar* r = ans.data() + c * stride;
+                if (r[0] < Scalar{0.5}) { continue; }
+                ++this->controller_stats_.transition_checks;
+                const int w = cand[c];
+                const bool route_flows = rr.well_rate[w] > Scalar{0};
+                const bool lifts = r[1] > Scalar{0.5};
+                if (route_flows == lifts) { continue; }
+                if (lifts && system.wells()[w].shut) {
+                    std::array<Scalar, Sys::NP> a{}, b{};
+                    for (int ph = 0; ph < Sys::NP; ++ph) {
+                        b[ph] = std::min(r[3 + Sys::NP + ph], Scalar{0});
+                        a[ph] = r[3 + ph] - b[ph] * r[2];
+                    }
+                    if (!(b[1] < Scalar{0})) { continue; }     // no usable slope: left as it is
+                    system.reopenWell(w, a, b, r[3 + 1]);
+                } else if (lifts) {
+                    const auto b = system.wells()[w].ipr_b;
+                    std::array<Scalar, Sys::NP> a{};
+                    for (int ph = 0; ph < Sys::NP; ++ph) { a[ph] = r[3 + ph] - b[ph] * r[2]; }
+                    system.setWellIpr(w, a, b);
+                    system.setWellDeadAbove(w, Scalar{0});
+                    system.reviveWell(w, r[3 + 1]);
+                } else {
+                    system.killWell(w);
+                }
+                changed.emplace_back(w, lifts);
+                ++this->controller_stats_.transition_reversed;
+            }
+            if (changed.empty()) { return; }
+            const auto before = system;
+            auto again = solveRoute(rr.node_pressure, true);
+            std::string names;
+            for (const auto& [w, flows] : changed) {
+                names += fmt::format(" {}{}", system.wells()[w].name, flows ? "+" : "-");
+                if (again.converged && (again.well_rate[w] > Scalar{0}) != flows) {
+                    ++this->controller_stats_.transition_cliffs;
+                    this->controller_cliff_wells_.insert(system.wells()[w].name);
+                    names += "(cliff)";
+                }
+            }
+            deferred_logger.debug(fmt::format("Controller: status {} under {} at report step {}:{}{}", when, root.name(),
+                                              reportStepIdx, names, again.converged ? "" : "; re-solve failed, answer kept"));
+            if (again.converged) { rr = std::move(again); } else { system = before; }
+        };
+        if (!legacy_status && rr.converged) { decideStatus("after the route"); }
         // A shut decided on the inflow line alone is confirmed with the well model: a line taken far
         // from the operating point (a well throttled by its group) can miss the tubing where the well
         // lifts fine. Where the well model finds a crossing at the well-head pressure, the lines are
@@ -1348,7 +1456,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
         // Once per well: at a network cliff the well lifts at the pressure of the shut answer and still
         // has no fixed point flowing; if the re-solve shuts it again, that shut stands.
         std::set<int> confirmed;
-        for (int round = 0; rr.converged && round < param_.group_controller_max_repairs_; ++round) {
+        for (int round = 0; legacy_status && rr.converged && round < param_.group_controller_max_repairs_; ++round) {
             // The candidates are the system's, so every rank has the same list; each well's own
             // rank answers whether it would flow, and one sum hands the answers to everyone.
             std::vector<int> cand;
@@ -1413,7 +1521,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
         }
         // --group-controller-keep-flowing: a well this answer shuts that flowed at the step's start may
         // also have a consistent flowing answer (its flowline has two states); try that one first.
-        if (param_.group_controller_keep_flowing_ && rr.converged && !no_network) {
+        if (legacy_status && param_.group_controller_keep_flowing_ && rr.converged && !no_network) {
             std::vector<int> kept;
             for (int w = 0; w < system.numWells(); ++w) {
                 const auto& well = system.wells()[w];
@@ -1676,7 +1784,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
         // at 54 bar, none on the line). A well the route leaves at zero rate is asked of the well model; where its
         // stable crossing at the node pressure is confirmed by its equations, the line is moved through that point
         // and the route solved again, kept only if the well then flows (otherwise a cliff: shut, as before).
-        if (param_.group_controller_confirm_revival_ && rr.converged) {
+        if (legacy_status && param_.group_controller_confirm_revival_ && rr.converged) {
             std::vector<int> zero;
             for (int w = 0; w < system.numWells(); ++w) {
                 const auto& well = system.wells()[w];
@@ -1859,7 +1967,8 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
         }
         // --group-controller-transition-curve: the open/shut transitions of this answer, checked on each well's thp
         // curve at the answer's node pressure (its own equations, started from its last flowing point).
-        if (param_.group_controller_transition_curve_ && rr.converged) {
+        if (!legacy_status && rr.converged) { decideStatus("after gas lift"); }
+        if (legacy_status && param_.group_controller_transition_curve_ && rr.converged) {
             constexpr int stride = 3 + Sys::NP;     // determined, lifts, bhp, rates
             std::vector<int> cand;
             for (int w = 0; w < system.numWells(); ++w) {
@@ -2220,7 +2329,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                 const bool wants_shut = t.control == Ctrl::Shut && !well.shut;
                 auto& streak = this->controller_shut_streak_[well.name];
                 streak = wants_shut ? streak + 1 : 0;
-                const bool hold_open = wants_shut && well.q_start > Scalar{0}
+                const bool hold_open = legacy_status && wants_shut && well.q_start > Scalar{0}
                     && streak < param_.group_controller_shut_persistence_;
                 dead_now[well.name] = wants_shut && !hold_open;
                 if ((well.q_start > Scalar{0}) != (rr.well_rate[w] > Scalar{0})) {
@@ -2368,6 +2477,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
         const auto it = dead_now.find(wp->name());
         wp->setNetworkDead(it != dead_now.end() && it->second);
         wp->setNetworkHeld(kept_dead.count(wp->name()) > 0);
+        wp->setStatusDecided(!legacy_status && route_wells.count(wp->name()) > 0);
         // Only on a network: on the no-network thp route a well's own limit fixes its pressure, and the well
         // model's retries can bring it back (GRPFLD-02/04/05 cost 6-11 % more Newton held).
         wp->setHoldStopped(param_.group_controller_hold_stopped_
