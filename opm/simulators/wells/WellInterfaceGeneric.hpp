@@ -102,6 +102,9 @@ public:
     // whether the well is operable
     bool isOperableAndSolvable() const;
     bool useVfpExplicit () const;
+    /// The explicit-fractions flag legacy's operability path leaves on a well; a lift test sets it for its duration.
+    bool vfpExplicitFlag() const { return operability_status_.use_vfpexplicit; }
+    void setVfpExplicitFlag(const bool on) { operability_status_.use_vfpexplicit = on; }
     bool stableThpCrossing() const
     { return stable_thp_crossing_.value_or(param_.well_thp_crossing_ == "stable"); }
     std::optional<bool> stableThpCrossingSetting() const { return stable_thp_crossing_; }

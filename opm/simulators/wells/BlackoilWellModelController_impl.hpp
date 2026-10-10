@@ -289,7 +289,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
     // equations on the stable branch, decided by the scan where they do not settle.
     std::vector<Scalar> last_flux_up;    // the inflow one bar above the last answer's bhp
     auto wellAtThp = [&](const auto& wi, const Scalar p, const Scalar alq) {
-        const auto a = this->liftTest_(*wi, p, alq, deferred_logger);
+        const auto a = this->liftTest_(*wi, p, alq, deferred_logger, false, liftFractions_(param_.group_controller_lift_fractions_));
         this->controller_stats_.thp_solves += a.solves;
         this->controller_stats_.lift_scans += a.by_scan;
         this->controller_stats_.lift_unstable += a.unstable;

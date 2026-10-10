@@ -160,6 +160,12 @@ BlackoilModelParameters<Scalar>::BlackoilModelParameters()
     group_controller_confirm_revival_ = Parameters::Get<Parameters::GroupControllerConfirmRevival>();
     group_controller_restart_ = Parameters::Get<Parameters::GroupControllerRestart>();
     group_controller_status_ = Parameters::Get<Parameters::GroupControllerStatus>();
+    group_controller_lift_fractions_ = Parameters::Get<Parameters::GroupControllerLiftFractions>();
+    if (group_controller_lift_fractions_ != "inherited" && group_controller_lift_fractions_ != "explicit"
+        && group_controller_lift_fractions_ != "implicit") {
+        throw std::invalid_argument("--group-controller-lift-fractions must be inherited, explicit or implicit, not "
+                                    + group_controller_lift_fractions_);
+    }
     if (group_controller_status_ != "legacy" && group_controller_status_ != "single") {
         throw std::invalid_argument("--group-controller-status must be legacy or single, not " + group_controller_status_);
     }
@@ -439,6 +445,9 @@ void BlackoilModelParameters<Scalar>::registerParameters()
     Parameters::Register<Parameters::GroupControllerRestart>
         ("Group controller: where a well the route brings back from zero rate starts its own solve: dead (from its "
          "current, dead state) or flowing (from the route's point: its rates, bhp and the node pressure)");
+    Parameters::Register<Parameters::GroupControllerLiftFractions>
+        ("The water/gas fractions the controller's lift test looks the tubing up with: inherited (the well's "
+         "flag as it stands), explicit (the previous step's) or implicit (the inflow's at the trial bhp)");
     Parameters::Register<Parameters::GroupControllerStatus>
         ("Where a route well's open/shut status is decided: legacy (the route's closing, repairs, "
          "transition curve and revival budget, then the well model's own operability check) or single "

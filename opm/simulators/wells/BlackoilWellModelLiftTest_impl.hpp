@@ -144,11 +144,29 @@ liftByScan_(const WellInterface<TypeTag>& well, const Scalar thp, const Scalar a
 }
 
 template<typename TypeTag>
+auto
+BlackoilWellModel<TypeTag>::
+liftFractions_(const std::string& name) -> LiftFractions
+{
+    if (name == "explicit") { return LiftFractions::Explicit; }
+    if (name == "implicit") { return LiftFractions::Implicit; }
+    return LiftFractions::Inherited;
+}
+
+template<typename TypeTag>
 typename BlackoilWellModel<TypeTag>::LiftAnswer
 BlackoilWellModel<TypeTag>::
 liftTest_(const WellInterface<TypeTag>& live, const Scalar thp, const Scalar alq, DeferredLogger& deferred_logger,
-          const bool probe_stopped) const
+          const bool probe_stopped, const LiftFractions fractions) const
 {
+    // The fractions are the well's flag for the test's duration; the well is left as it was.
+    struct FlagGuard {
+        WellInterface<TypeTag>* w; bool was; bool armed;
+        FlagGuard(const WellInterface<TypeTag>& well, const LiftFractions f)
+            : w(const_cast<WellInterface<TypeTag>*>(&well)), was(well.vfpExplicitFlag()), armed(f != LiftFractions::Inherited)
+        { if (armed) { w->setVfpExplicitFlag(f == LiftFractions::Explicit); } }
+        ~FlagGuard() { if (armed) { w->setVfpExplicitFlag(was); } }
+    } flag_guard(live, fractions);
     // The well's own equations under thp control, started from its last flowing point. A settled crossing is kept
     // only on the stable branch (positive margin just above its bhp); an unsettled or unstable answer is decided
     // by the scan and, where it lifts, the equations are asked again from the scan's crossing. A stopped well is
@@ -160,9 +178,9 @@ liftTest_(const WellInterface<TypeTag>& live, const Scalar thp, const Scalar alq
     static thread_local bool comparing = false;    // the two inner calls must not compare again
     if (compare && !comparing && live.wellIsStopped() && !probe_stopped) {
         comparing = true;
-        const auto own = liftTest_(live, thp, alq, deferred_logger, false);
+        const auto own = liftTest_(live, thp, alq, deferred_logger, false, fractions);
         auto probe = makeProbe_(live.name(), deferred_logger);
-        const auto pr = liftTest_(*probe, thp, alq, deferred_logger, false);
+        const auto pr = liftTest_(*probe, thp, alq, deferred_logger, false, fractions);
         comparing = false;
         const int oil = this->phaseUsage().canonicalToActivePhaseIdx(IndexTraits::oilPhaseIdx);
         const Scalar b_cmp = pr.lifts ? pr.bhp : own.lifts ? own.bhp
@@ -184,6 +202,7 @@ liftTest_(const WellInterface<TypeTag>& live, const Scalar thp, const Scalar alq
     WellInterfacePtr probe;
     if (probe_stopped && live.wellIsStopped()) {
         probe = makeProbe_(live.name(), deferred_logger);
+        if (fractions != LiftFractions::Inherited) { probe->setVfpExplicitFlag(fractions == LiftFractions::Explicit); }
     }
     const WellInterface<TypeTag>& well = probe ? *probe : live;
     auto finish = [&](LiftAnswer a) {

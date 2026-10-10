@@ -137,6 +137,7 @@ struct GroupControllerConfirmCapacity { static constexpr bool value = false; };
 struct GroupControllerConfirmRevival { static constexpr bool value = false; };
 struct GroupControllerRestart { static constexpr auto value = "dead"; };
 struct GroupControllerStatus { static constexpr auto value = "legacy"; };
+struct GroupControllerLiftFractions { static constexpr auto value = "inherited"; };
 struct GroupControllerCurveFallback { static constexpr bool value = false; };
 struct GroupControllerTransitionCurve { static constexpr bool value = true; };
 struct GroupControllerOperabilityFromFlowing { static constexpr bool value = false; };
@@ -528,6 +529,7 @@ public:
     bool group_controller_confirm_revival_;
     std::string group_controller_restart_;
     std::string group_controller_status_;
+    std::string group_controller_lift_fractions_;
     bool group_controller_curve_fallback_;
     bool group_controller_transition_curve_;
     bool group_controller_operability_from_flowing_;

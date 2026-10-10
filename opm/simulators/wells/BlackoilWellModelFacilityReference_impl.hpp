@@ -72,6 +72,9 @@ facilityReference_(DeferredLogger& deferred_logger)
     // OPM_FACILITY_REFERENCE_PROBE=1: stopped wells asked on a probe (the facility check's way) instead of their
     // own object; the two can disagree, and the controller's runs are better with the object.
     static const bool use_probe = std::getenv("OPM_FACILITY_REFERENCE_PROBE") != nullptr;
+    // OPM_FACILITY_REFERENCE_FRACTIONS=inherited|explicit|implicit: the lift test's tubing fractions.
+    static const LiftFractions fractions = liftFractions_(std::getenv("OPM_FACILITY_REFERENCE_FRACTIONS")
+                                                          ? std::getenv("OPM_FACILITY_REFERENCE_FRACTIONS") : "inherited");
     if (step < step_range.first || step > step_range.second) {
         return;
     }
@@ -201,7 +204,7 @@ facilityReference_(DeferredLogger& deferred_logger)
             // scan where they do not settle.
             auto solveAt = [&](const Cand& c, const Scalar thp) -> ThpPoint {
                 const WellInterface<TypeTag>* wi = wellOf(c);
-                const auto a = this->liftTest_(*wi, thp, wi->getALQ(this->wellState()), scratch, use_probe);
+                const auto a = this->liftTest_(*wi, thp, wi->getALQ(this->wellState()), scratch, use_probe, fractions);
                 solves_total += a.solves;
                 scans_used += a.by_scan;
                 unstable_fixed += a.unstable;

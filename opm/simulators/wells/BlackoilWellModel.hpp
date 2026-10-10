@@ -349,8 +349,14 @@ template<class Scalar> class WellContributions;
             };
             /// A well made for probing (the well-test recipe): a stopped well's own object has stale inflow.
             WellInterfacePtr makeProbe_(const std::string& name, DeferredLogger& deferred_logger) const;
+            /// Which water/gas fractions the tubing lookup of a lift test uses: the well's flag as it stands
+            /// (legacy's retry leaves it set on a well that died), the previous step's (explicit), or the
+            /// inflow's at the trial bhp (implicit). The deck's WVFPEXP explicit lookup always wins.
+            enum class LiftFractions { Inherited, Explicit, Implicit };
+            static LiftFractions liftFractions_(const std::string& name);
             LiftAnswer liftTest_(const WellInterface<TypeTag>& well, const Scalar thp, const Scalar alq,
-                                 DeferredLogger& deferred_logger, const bool probe_stopped = false) const;
+                                 DeferredLogger& deferred_logger, const bool probe_stopped = false,
+                                 const LiftFractions fractions = LiftFractions::Inherited) const;
             LiftAnswer liftByScan_(const WellInterface<TypeTag>& well, const Scalar thp, const Scalar alq,
                                    DeferredLogger& deferred_logger) const;
             std::vector<Scalar> inflowAtBhp_(const WellInterface<TypeTag>& well, const Scalar bhp,
