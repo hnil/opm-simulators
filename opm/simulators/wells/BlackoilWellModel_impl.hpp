@@ -1305,6 +1305,9 @@ namespace Opm {
         if (std::getenv("OPM_FACILITY_CHECK") != nullptr) {
             facilityCheck_(local_deferredLogger);
         }
+        if (std::getenv("OPM_FACILITY_REFERENCE") != nullptr) {
+            facilityReference_(local_deferredLogger);
+        }
         // Pre-compute cell rates to we don't have to do this for every cell during linearization...
         updateCellRates();
 

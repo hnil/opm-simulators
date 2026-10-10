@@ -333,6 +333,9 @@ template<class Scalar> class WellContributions;
             /// Diagnostic: score the state handed to the linearisation as a facility
             /// solution, by the physics and by what one more legacy pass would change.
             void facilityCheck_(DeferredLogger& deferred_logger);
+            /// Diagnostic: every open/shut state of the network's transition wells, by the wells' own
+            /// equations and the network, against the one handed over.
+            void facilityReference_(DeferredLogger& deferred_logger);
             /// LIFTOPT's timing for the controller's gas lift: every Newton iteration or the first of a
             /// time step (item 4), and the least time between optimisations (item 3).
             bool controllerGasLiftDue_();
@@ -887,5 +890,6 @@ template<class Scalar> class WellContributions;
 #include "BlackoilWellModel_impl.hpp"
 #include "BlackoilWellModelController_impl.hpp"
 #include "BlackoilWellModelFacilityCheck_impl.hpp"
+#include "BlackoilWellModelFacilityReference_impl.hpp"
 
 #endif // OPM_BLACKOILWELLMODEL_HEADER_INCLUDED
