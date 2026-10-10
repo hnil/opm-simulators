@@ -2370,7 +2370,8 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
         wp->setNetworkHeld(kept_dead.count(wp->name()) > 0);
         // Only on a network: on the no-network thp route a well's own limit fixes its pressure, and the well
         // model's retries can bring it back (GRPFLD-02/04/05 cost 6-11 % more Newton held).
-        wp->setHoldStopped(param_.group_controller_hold_stopped_ && !no_network
+        wp->setHoldStopped(param_.group_controller_hold_stopped_
+                           && (!no_network || param_.group_controller_hold_stopped_no_network_)
                            && (wp->networkDead() || wp->networkHeld()));
         // The operability check of a well the controller decided starts where the controller's solve does.
         std::optional<std::array<Scalar, 5>> start;

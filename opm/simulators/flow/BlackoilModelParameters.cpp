@@ -162,6 +162,7 @@ BlackoilModelParameters<Scalar>::BlackoilModelParameters()
     group_controller_curve_fallback_ = Parameters::Get<Parameters::GroupControllerCurveFallback>();
     group_controller_transition_curve_ = Parameters::Get<Parameters::GroupControllerTransitionCurve>();
     group_controller_operability_from_flowing_ = Parameters::Get<Parameters::GroupControllerOperabilityFromFlowing>();
+    group_controller_hold_stopped_no_network_ = Parameters::Get<Parameters::GroupControllerHoldStoppedNoNetwork>();
     if (group_controller_restart_ != "dead" && group_controller_restart_ != "flowing") {
         throw std::invalid_argument("--group-controller-restart must be dead or flowing, not " + group_controller_restart_);
     }
@@ -416,6 +417,9 @@ void BlackoilModelParameters<Scalar>::registerParameters()
         ("A producer's bhp at its thp limit: legacy (bisection, then a 200-point search; can miss a narrow "
          "lifting window) or stable (the highest-rate crossing, after locating the inflow's best margin over the "
          "tubing curve)");
+    Parameters::Register<Parameters::GroupControllerHoldStoppedNoNetwork>
+        ("Group controller: --group-controller-hold-stopped also where there is no network (wells on their own thp "
+         "limits): a well the route holds shut is not reopened by the well model's retry within the step");
     Parameters::Register<Parameters::GroupControllerOperabilityFromFlowing>
         ("Group controller: the well model's operability check of a well the controller decided starts from the "
          "well's last flowing point, by the same thp-controlled solve the controller uses, without the explicit-"

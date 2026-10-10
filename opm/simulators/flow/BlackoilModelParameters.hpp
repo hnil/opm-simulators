@@ -139,6 +139,7 @@ struct GroupControllerRestart { static constexpr auto value = "dead"; };
 struct GroupControllerCurveFallback { static constexpr bool value = false; };
 struct GroupControllerTransitionCurve { static constexpr bool value = true; };
 struct GroupControllerOperabilityFromFlowing { static constexpr bool value = false; };
+struct GroupControllerHoldStoppedNoNetwork { static constexpr bool value = false; };
 struct WellThpCrossing { static constexpr auto value = "legacy"; };
 template<class Scalar>
 struct GroupTreeBalancerTolerance { static constexpr Scalar value = 1e-5; };
@@ -528,6 +529,7 @@ public:
     bool group_controller_curve_fallback_;
     bool group_controller_transition_curve_;
     bool group_controller_operability_from_flowing_;
+    bool group_controller_hold_stopped_no_network_;
 
     /// How a producer's bhp at its thp limit is found: legacy (master's bracket) or stable.
     std::string well_thp_crossing_;
