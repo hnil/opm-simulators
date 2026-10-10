@@ -23,6 +23,10 @@
 // Does a producer lift at a wellhead pressure, and at what rate? One answer for every caller
 // (the controller's status decisions, the facility check, the reference), always determined.
 
+#include <opm/common/OpmLog/OpmLog.hpp>
+
+#include <fmt/format.h>
+
 #include <algorithm>
 #include <cstdlib>
 #include <optional>
@@ -151,6 +155,32 @@ liftTest_(const WellInterface<TypeTag>& live, const Scalar thp, const Scalar alq
     // asked on a probe only where asked for: on Norne the probe's answers revive wells that then die (cliffs
     // 22 against 5, Newton 3217 against 1116). The inflow one bar above the crossing goes with the answer.
     using ThpPoint = typename WellInterface<TypeTag>::ThpPoint;
+    // OPM_LIFTTEST_COMPARE=1: a stopped well is asked both ways and the two answers logged.
+    static const bool compare = std::getenv("OPM_LIFTTEST_COMPARE") != nullptr;
+    static thread_local bool comparing = false;    // the two inner calls must not compare again
+    if (compare && !comparing && live.wellIsStopped() && !probe_stopped) {
+        comparing = true;
+        const auto own = liftTest_(live, thp, alq, deferred_logger, false);
+        auto probe = makeProbe_(live.name(), deferred_logger);
+        const auto pr = liftTest_(*probe, thp, alq, deferred_logger, false);
+        comparing = false;
+        const int oil = this->phaseUsage().canonicalToActivePhaseIdx(IndexTraits::oilPhaseIdx);
+        const Scalar b_cmp = pr.lifts ? pr.bhp : own.lifts ? own.bhp
+                           : WellBhpThpCalculator<Scalar, IndexTraits>(live).mostStrictBhpFromBhpLimits(this->summaryState()) + 20.0e5;
+        const auto q_own = inflowAtBhp_(live, b_cmp, deferred_logger);
+        const auto q_pr = inflowAtBhp_(*probe, b_cmp, deferred_logger);
+        auto say = [&](const LiftAnswer& a) {
+            return fmt::format("det {} lifts {} stable {} scan {} bhp {:.2f} oil {:.1f}", a.determined ? 1 : 0, a.lifts ? 1 : 0,
+                               a.stable ? 1 : 0, a.by_scan ? 1 : 0, a.bhp / 1e5, a.lifts ? -a.flux[oil] * 86400.0 : 0.0);
+        };
+        OpmLog::debug(fmt::format("LIFTCMP step={} {} thp {:.2f} alq {:.0f} | own: {} | probe: {} | inflow at {:.2f} bar: own {:.1f} probe {:.1f} sm3/d"
+                                  " | rho own {:.1f} probe {:.1f} | explicit own {} probe {}",
+                                          simulator_.episodeIndex(), live.name(), thp / 1e5, alq * 86400.0, say(own), say(pr),
+                                          b_cmp / 1e5, -q_own[oil] * 86400.0, -q_pr[oil] * 86400.0,
+                                          live.refDensity(), probe->refDensity(), live.useVfpExplicit() ? 1 : 0,
+                                          probe->useVfpExplicit() ? 1 : 0));
+        return own;
+    }
     WellInterfacePtr probe;
     if (probe_stopped && live.wellIsStopped()) {
         probe = makeProbe_(live.name(), deferred_logger);
