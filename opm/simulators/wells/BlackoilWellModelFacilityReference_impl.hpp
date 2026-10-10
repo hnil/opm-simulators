@@ -69,6 +69,9 @@ facilityReference_(DeferredLogger& deferred_logger)
         return {a, b};
     }();
     static const bool detail = std::getenv("OPM_FACILITY_REFERENCE_DETAIL") != nullptr;
+    // OPM_FACILITY_REFERENCE_PROBE=1: stopped wells asked on a probe (the facility check's way) instead of their
+    // own object; the two can disagree, and the controller's runs are better with the object.
+    static const bool use_probe = std::getenv("OPM_FACILITY_REFERENCE_PROBE") != nullptr;
     if (step < step_range.first || step > step_range.second) {
         return;
     }
@@ -183,12 +186,12 @@ facilityReference_(DeferredLogger& deferred_logger)
             // Stopped candidates are asked on a probe (the lift test does that itself; the held test here too).
             std::map<std::string, WellInterfacePtr> probes;
             for (const auto& c : cands) {
-                if (c.live_stopped) {
+                if (use_probe && c.live_stopped) {
                     probes[c.name] = this->makeProbe_(c.name, scratch);
                 }
             }
             auto wellOf = [&](const Cand& c) -> const WellInterface<TypeTag>* {
-                return c.live_stopped ? probes.at(c.name).get() : c.live;
+                return use_probe && c.live_stopped ? probes.at(c.name).get() : c.live;
             };
             auto ratesAt = [&](const WellInterface<TypeTag>* wi, const Scalar bhp) {
                 ++scan_solves;
@@ -198,7 +201,7 @@ facilityReference_(DeferredLogger& deferred_logger)
             // scan where they do not settle.
             auto solveAt = [&](const Cand& c, const Scalar thp) -> ThpPoint {
                 const WellInterface<TypeTag>* wi = wellOf(c);
-                const auto a = this->liftTest_(*wi, thp, wi->getALQ(this->wellState()), scratch);
+                const auto a = this->liftTest_(*wi, thp, wi->getALQ(this->wellState()), scratch, use_probe);
                 solves_total += a.solves;
                 scans_used += a.by_scan;
                 unstable_fixed += a.unstable;

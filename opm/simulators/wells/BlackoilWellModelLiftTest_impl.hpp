@@ -24,6 +24,7 @@
 // (the controller's status decisions, the facility check, the reference), always determined.
 
 #include <algorithm>
+#include <cstdlib>
 #include <optional>
 #include <vector>
 
@@ -141,15 +142,17 @@ liftByScan_(const WellInterface<TypeTag>& well, const Scalar thp, const Scalar a
 template<typename TypeTag>
 typename BlackoilWellModel<TypeTag>::LiftAnswer
 BlackoilWellModel<TypeTag>::
-liftTest_(const WellInterface<TypeTag>& live, const Scalar thp, const Scalar alq, DeferredLogger& deferred_logger) const
+liftTest_(const WellInterface<TypeTag>& live, const Scalar thp, const Scalar alq, DeferredLogger& deferred_logger,
+          const bool probe_stopped) const
 {
     // The well's own equations under thp control, started from its last flowing point. A settled crossing is kept
     // only on the stable branch (positive margin just above its bhp); an unsettled or unstable answer is decided
     // by the scan and, where it lifts, the equations are asked again from the scan's crossing. A stopped well is
-    // asked on a probe. The inflow one bar above the crossing goes with the answer, for a line's slope.
+    // asked on a probe only where asked for: on Norne the probe's answers revive wells that then die (cliffs
+    // 22 against 5, Newton 3217 against 1116). The inflow one bar above the crossing goes with the answer.
     using ThpPoint = typename WellInterface<TypeTag>::ThpPoint;
     WellInterfacePtr probe;
-    if (live.wellIsStopped()) {
+    if (probe_stopped && live.wellIsStopped()) {
         probe = makeProbe_(live.name(), deferred_logger);
     }
     const WellInterface<TypeTag>& well = probe ? *probe : live;

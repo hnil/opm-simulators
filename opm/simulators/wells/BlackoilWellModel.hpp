@@ -350,7 +350,7 @@ template<class Scalar> class WellContributions;
             /// A well made for probing (the well-test recipe): a stopped well's own object has stale inflow.
             WellInterfacePtr makeProbe_(const std::string& name, DeferredLogger& deferred_logger) const;
             LiftAnswer liftTest_(const WellInterface<TypeTag>& well, const Scalar thp, const Scalar alq,
-                                 DeferredLogger& deferred_logger) const;
+                                 DeferredLogger& deferred_logger, const bool probe_stopped = false) const;
             LiftAnswer liftByScan_(const WellInterface<TypeTag>& well, const Scalar thp, const Scalar alq,
                                    DeferredLogger& deferred_logger) const;
             std::vector<Scalar> inflowAtBhp_(const WellInterface<TypeTag>& well, const Scalar bhp,
