@@ -733,7 +733,8 @@ namespace Opm {
                                       "revival confirmed {} of {} tried, restarted flowing {}, "
                                       "curve fallback {} wells of {} well decisions ({} points, {} well solves), "
                                       "flagged {} ({} at an open/shut transition), transitions {}, "
-                                      "transition curve: checked {} reversed {} cliffs {} ({} points, {} well solves)",
+                                      "transition curve: checked {} reversed {} cliffs {} ({} points, {} well solves), "
+                                      "operability checks from the flowing point {}",
                                       simulationTime / 86400.0, st.calls, st.passes, st.decisions, st.route_iterations,
                                       st.route_evaluations, st.set_changes, st.lookups, st.well_solves, st.converged,
                                       st.stalled, st.cap_hits,
@@ -745,7 +746,8 @@ namespace Opm {
                                       st.curve_wells, st.well_decisions, st.curve_points, st.curve_solves,
                                       st.curve_flagged, st.curve_flagged_at_transition, st.transitions,
                                       st.transition_checks, st.transition_reversed, st.transition_cliffs,
-                                      st.transition_points, st.transition_solves));
+                                      st.transition_points, st.transition_solves,
+                                      WellInterfaceGeneric<Scalar, IndexTraits>::operabilityFromFlowing()));
         }
 
         // time step is finished and we are not any more at the beginning of an report step

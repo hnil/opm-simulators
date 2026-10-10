@@ -2372,6 +2372,14 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
         // model's retries can bring it back (GRPFLD-02/04/05 cost 6-11 % more Newton held).
         wp->setHoldStopped(param_.group_controller_hold_stopped_ && !no_network
                            && (wp->networkDead() || wp->networkHeld()));
+        // The operability check of a well the controller decided starts where the controller's solve does.
+        std::optional<std::array<Scalar, 5>> start;
+        if (param_.group_controller_operability_from_flowing_ && decided.count(wp->name()) > 0) {
+            if (const auto fp = this->controller_flowing_point_.find(wp->name()); fp != this->controller_flowing_point_.end()) {
+                start = fp->second;
+            }
+        }
+        wp->setOperabilityStart(start);
     }
     // A dead well brought back is started from the route's flowing point, so that its own solve begins on the
     // flowing branch rather than in the dead state it would otherwise return to.

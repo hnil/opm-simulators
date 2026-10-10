@@ -130,6 +130,9 @@ public:
     bool networkHeld() const { return network_held_; }
     /// Dead or held by a network route under --group-controller-hold-stopped: not reopened this step.
     void setHoldStopped(const bool hold) { hold_stopped_ = hold; }
+    /// The controller's flowing point (thp, bhp, rates w/o/g) for the operability check to start from; empty: as before.
+    void setOperabilityStart(const std::optional<std::array<Scalar, 5>>& point) { operability_start_ = point; }
+    static long operabilityFromFlowing() { return operability_from_flowing_; }
     bool holdStopped() const { return hold_stopped_; }
     void setDynamicThpLimit(const std::optional<Scalar> thp_limit);
     void updatePerforatedCell(std::vector<bool>& is_cell_perforated);
@@ -491,6 +494,8 @@ protected:
     bool network_dead_ = false;
     bool network_held_ = false;
     bool hold_stopped_ = false;
+    std::optional<std::array<Scalar, 5>> operability_start_;
+    static inline long operability_from_flowing_ = 0;   // the run's count; wells are rebuilt each report step
     std::optional<bool> stable_thp_crossing_;
 
     // recording the multiplier calculate from the keyword WINJMULT during the time step

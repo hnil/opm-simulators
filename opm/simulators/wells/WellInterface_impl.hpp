@@ -1735,6 +1735,29 @@ namespace Opm
             return;
         }
 
+        // Given the controller's flowing point, the same thp-controlled solve the controller uses decides,
+        // without the explicit-fraction retry; undetermined, the check below as before.
+        const auto& summary_state = simulator.vanguard().summaryState();
+        if (this->operability_start_ && this->isProducer() && this->wellHasTHPConstraints(summary_state)) {
+            ThpPoint start;
+            start.thp = (*this->operability_start_)[0];
+            start.bhp = (*this->operability_start_)[1];
+            start.flux.assign(this->operability_start_->begin() + 2, this->operability_start_->end());
+            start.lifts = true;
+            int solves = 0;
+            const auto curve = this->sampleThpCurve(simulator, groupStateHelper, this->getALQ(well_state),
+                                                    {this->getTHPConstraint(summary_state)}, solves, &start);
+            if (!curve.empty() && curve.front().determined) {
+                ++this->operability_from_flowing_;
+                this->operability_status_.resetOperability();
+                if (!curve.front().lifts) {
+                    this->operability_status_.can_obtain_bhp_with_thp_limit = false;
+                    this->operability_status_.obey_thp_limit_under_bhp_limit = false;
+                }
+                return;
+            }
+        }
+
         updateWellOperability(simulator, well_state, groupStateHelper);
         if (!this->operability_status_.isOperableAndSolvable()) {
             this->operability_status_.use_vfpexplicit = true;
