@@ -435,8 +435,11 @@ template<typename Scalar, typename IndexTraits>
 void BlackoilWellModelNetworkGeneric<Scalar, IndexTraits>::
 imposeWellThpLimit(WellInterfaceGeneric<Scalar,IndexTraits>& well, const Scalar limit)
 {
-    well.setDynamicThpLimit(limit);
-    well_model_.wellState().well(well.indexOfWell()).network_thp_limit = limit;
+    // A well the controller holds by a choke keeps its own wellhead pressure above the node's.
+    const auto choke = well_model_.controllerChoke(well.name());
+    const Scalar p = choke ? std::max(limit, *choke) : limit;
+    well.setDynamicThpLimit(p);
+    well_model_.wellState().well(well.indexOfWell()).network_thp_limit = p;
 }
 
 template <typename Scalar, typename IndexTraits>

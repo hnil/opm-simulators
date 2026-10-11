@@ -1448,24 +1448,32 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
             auto holdAtCliff = [&](const int w, const Scalar q_free) -> bool {
                 const auto& well0 = system.wells()[w];
                 if (well0.vfp_table <= 0 || no_network) { return false; }
-                Scalar lo = Scalar{0}, hi = q_free, best = -1;
+                // Feasible rates form a window [q_u, q_fold] that excludes small rates, so a grid finds the
+                // window and a bisection refines its upper edge. Lines and tables only: no well solves.
+                Scalar best = -1, best_bhp = 0;
                 std::vector<Scalar> best_p;
-                Scalar best_bhp = 0;
-                for (int k = 0; k < 8; ++k) {
-                    const Scalar s = Scalar{0.5} * (lo + hi);
+                auto feasible = [&](const Scalar s) {
                     system.setWellPinned(w, true, s);
                     system.reviveWell(w, s);
                     const auto trial = solveRoute(rr.node_pressure, true);
-                    bool ok = trial.converged;
-                    if (ok) {
-                        const auto& well = system.wells()[w];
-                        const Scalar p_s = well.node == 0 ? terminal : trial.node_pressure[well.node];
-                        const Scalar bhp_s = well.ipr_b[1] < Scalar{0} ? (s - well.ipr_a[1]) / well.ipr_b[1] : well.bhp_limit;
-                        const Scalar need = system.tubingBhp(well, p_s, system.ratesAt(well, bhp_s)) - well.vfp_dp;
-                        ok = bhp_s >= well.bhp_limit && bhp_s >= need;
-                        if (ok) { best = s; best_p = trial.node_pressure; best_bhp = bhp_s; }
-                    }
-                    (ok ? lo : hi) = s;
+                    if (!trial.converged) { return false; }
+                    const auto& well = system.wells()[w];
+                    const Scalar p_s = well.node == 0 ? terminal : trial.node_pressure[well.node];
+                    const Scalar bhp_s = well.ipr_b[1] < Scalar{0} ? (s - well.ipr_a[1]) / well.ipr_b[1] : well.bhp_limit;
+                    const Scalar need = system.tubingBhp(well, p_s, system.ratesAt(well, bhp_s)) - well.vfp_dp;
+                    const bool ok = bhp_s >= well.bhp_limit && bhp_s >= need;
+                    if (ok && s > best) { best = s; best_p = trial.node_pressure; best_bhp = bhp_s; }
+                    return ok;
+                };
+                constexpr int grid = 8;
+                Scalar lo = -1, hi = -1;      // the window's upper feasible point and the first infeasible above it
+                for (int i = grid; i >= 1; --i) {
+                    const Scalar s = q_free * i / (grid + 1);
+                    if (feasible(s)) { lo = s; hi = q_free * (i + 1) / (grid + 1); break; }
+                }
+                for (int k = 0; lo > Scalar{0} && k < 5; ++k) {
+                    const Scalar s = Scalar{0.5} * (lo + hi);
+                    (feasible(s) ? lo : hi) = s;
                 }
                 system.setWellPinned(w, false, Scalar{0});
                 if (!(best > Scalar{0})) { return false; }

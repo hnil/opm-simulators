@@ -326,6 +326,13 @@ public:
     const EclipseState& eclState() const
     { return eclState_; }
 
+    /// The wellhead pressure a well is held at by the controller this time step (a choke), if any.
+    std::optional<Scalar> controllerChoke(const std::string& well) const
+    {
+        const auto it = controller_cliff_held_.find(well);
+        return it == controller_cliff_held_.end() ? std::nullopt : std::optional<Scalar>(it->second);
+    }
+
 protected:
     /*
       The dynamic state of the well model is maintained with an instance
