@@ -40,6 +40,7 @@ struct ExtensionResult
     int evaluations = 0;
     ReducedResult<Scalar> last;
     std::vector<char> closed_wells;
+    std::vector<char> on_continuation;    // Closing::None: wells whose converged point is on the continuation
     std::vector<Scalar> closed_gap;   // how far the line missed the curve, where each was closed
     std::vector<Scalar> closed_bhp;   // the bhp of the continuation point it was closed at
     std::vector<Scalar> closed_p;     // its node pressure when it was closed
@@ -52,7 +53,8 @@ struct ExtensionResult
 /// at once, since the table is sure of those, then the marginal ones one at
 /// a time. The decision is kept in one place so that reservoir or global
 /// information can enter it later.
-enum class Closing { All, Sequential, Tiered };
+/// None: nobody is closed here; the wells on the continuation are reported and the status is decided outside.
+enum class Closing { All, Sequential, Tiered, None };
 
 /// The reduced solve on the continued tubing curves (Stein's suggestion),
 /// with the shut decision taken afterwards for every well at once: a well
@@ -87,6 +89,7 @@ solveReducedOnExtension(Sys& system,
     out.closed_gap.assign(system.numWells(), Scalar{0});
     out.closed_bhp.assign(system.numWells(), Scalar{0});
     out.closed_p.assign(system.numWells(), Scalar{0});
+    out.on_continuation.assign(system.numWells(), 0);
     system.setTubingExtension(true);
     auto p = node_pressure_guess;
     struct Candidate { int w; Scalar gap; Scalar res; Scalar bhp; };
@@ -121,6 +124,11 @@ solveReducedOnExtension(Sys& system,
             }
         }
         if (on.empty()) { out.converged = true; break; }
+        if (closing == Closing::None) {
+            for (const auto& c : on) { out.on_continuation[c.w] = 1; }
+            out.converged = true;
+            break;
+        }
         std::sort(on.begin(), on.end(), [](const Candidate& a, const Candidate& b) { return a.gap > b.gap; });
         std::vector<Candidate> chosen;
         switch (closing) {
@@ -130,6 +138,7 @@ solveReducedOnExtension(Sys& system,
             for (const auto& c : on) { if (c.gap > c.res) { chosen.push_back(c); } }
             if (chosen.empty()) { chosen = {on.front()}; }
             break;
+        case Closing::None: break;
         }
         for (const auto& c : chosen) {
             system.killWell(c.w);

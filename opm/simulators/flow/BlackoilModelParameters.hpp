@@ -130,6 +130,7 @@ struct GroupControllerShutPersistence { static constexpr int value = 1; };
 struct GroupControllerKeepFlowing { static constexpr bool value = false; };
 struct GroupControllerHoldStopped { static constexpr bool value = true; };
 struct GroupControllerClosing { static constexpr auto value = "all"; };
+struct GroupControllerCliff { static constexpr auto value = "shut"; };
 struct GroupControllerGasLift { static constexpr auto value = "steps"; };
 struct GroupControllerGasLiftReanchor { static constexpr bool value = true; };
 struct GroupControllerGasLiftRevive { static constexpr auto value = "lift"; };
@@ -529,6 +530,7 @@ public:
     bool group_controller_confirm_revival_;
     std::string group_controller_restart_;
     std::string group_controller_status_;
+    std::string group_controller_cliff_;
     std::string group_controller_lift_fractions_;
     bool group_controller_curve_fallback_;
     bool group_controller_transition_curve_;

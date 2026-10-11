@@ -160,6 +160,10 @@ BlackoilModelParameters<Scalar>::BlackoilModelParameters()
     group_controller_confirm_revival_ = Parameters::Get<Parameters::GroupControllerConfirmRevival>();
     group_controller_restart_ = Parameters::Get<Parameters::GroupControllerRestart>();
     group_controller_status_ = Parameters::Get<Parameters::GroupControllerStatus>();
+    group_controller_cliff_ = Parameters::Get<Parameters::GroupControllerCliff>();
+    if (group_controller_cliff_ != "shut" && group_controller_cliff_ != "held") {
+        throw std::invalid_argument("--group-controller-cliff must be shut or held, not " + group_controller_cliff_);
+    }
     group_controller_lift_fractions_ = Parameters::Get<Parameters::GroupControllerLiftFractions>();
     if (group_controller_lift_fractions_ != "inherited" && group_controller_lift_fractions_ != "explicit"
         && group_controller_lift_fractions_ != "implicit") {
@@ -448,6 +452,9 @@ void BlackoilModelParameters<Scalar>::registerParameters()
     Parameters::Register<Parameters::GroupControllerLiftFractions>
         ("The water/gas fractions the controller's lift test looks the tubing up with: inherited (the well's "
          "flag as it stands), explicit (the previous step's) or implicit (the inflow's at the trial bhp)");
+    Parameters::Register<Parameters::GroupControllerCliff>
+        ("single status: a well that lifts at the shut state's node pressure and dies once opened is shut for the "
+         "time step (shut) or held by a choke at the largest rate its tubing still lifts (held)");
     Parameters::Register<Parameters::GroupControllerStatus>
         ("Where a route well's open/shut status is decided: legacy (the route's closing, repairs, "
          "transition curve and revival budget, then the well model's own operability check) or single "

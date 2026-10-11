@@ -58,6 +58,7 @@ struct ReducedResult
     std::vector<Scalar> node_pressure;
     std::vector<Scalar> well_rate;
     std::string sets;
+    std::vector<char> on_continuation;   // extension with Closing::None: wells left on the continuation
 };
 
 /// The reduced Jacobian by elimination instead of differences. At the state
