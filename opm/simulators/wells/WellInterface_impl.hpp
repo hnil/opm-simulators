@@ -1127,6 +1127,8 @@ namespace Opm
         // The controller decided the status: a stopped well solves at zero rate, a flowing one solves
         // its equations with the status fixed, and an unconverged solve is reported, not turned into a stop.
         if (this->statusDecided()) {
+            // Implicit fractions wherever a solution can be found: legacy's retry flag is not ours.
+            this->operability_status_.use_vfpexplicit = false;
             const bool shut = this->networkDead() || this->networkHeld();
             if (shut) {
                 if (!this->wellIsStopped()) {
@@ -1758,6 +1760,15 @@ namespace Opm
         }
 
         if (this->wellIsStopped() && !changed_to_stopped_this_step_) {
+            return;
+        }
+        // The controller decided the status: operable unless it said dead; no check and no explicit retry.
+        if (this->statusDecided()) {
+            this->operability_status_.resetOperability();
+            if (this->networkDead()) {
+                this->operability_status_.can_obtain_bhp_with_thp_limit = false;
+                this->operability_status_.obey_thp_limit_under_bhp_limit = false;
+            }
             return;
         }
 

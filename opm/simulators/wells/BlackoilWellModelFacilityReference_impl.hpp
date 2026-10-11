@@ -74,7 +74,7 @@ facilityReference_(DeferredLogger& deferred_logger)
     static const bool use_probe = std::getenv("OPM_FACILITY_REFERENCE_PROBE") != nullptr;
     // OPM_FACILITY_REFERENCE_FRACTIONS=inherited|explicit|implicit: the lift test's tubing fractions.
     static const LiftFractions fractions = liftFractions_(std::getenv("OPM_FACILITY_REFERENCE_FRACTIONS")
-                                                          ? std::getenv("OPM_FACILITY_REFERENCE_FRACTIONS") : "inherited");
+                                                          ? std::getenv("OPM_FACILITY_REFERENCE_FRACTIONS") : "implicit");
     if (step < step_range.first || step > step_range.second) {
         return;
     }
