@@ -1788,9 +1788,11 @@ namespace Opm {
                     this->controller_unsettled_run_ = 0;
                 }
                 this->controller_unsettled_run_ = off ? this->controller_unsettled_run_ + 1 : 0;
-                unsettled = off && this->controller_unsettled_run_ <= param_.group_controller_max_unsettled_iterations_;
-                if (off && !unsettled) {
-                    ++this->controller_accepted_unsettled_;
+                // single status: no budget -- an unsettled facility is not a solution, the step chops instead.
+                const bool budget = param_.group_controller_status_ == "legacy";
+                unsettled = off && (!budget || this->controller_unsettled_run_ <= param_.group_controller_max_unsettled_iterations_);
+                if (off && this->controller_unsettled_run_ > param_.group_controller_max_unsettled_iterations_) {
+                    ++this->controller_accepted_unsettled_;     // in single: would have been let through
                 }
             }
             report.setWellGroupTargetsViolated(this->lastReport().well_group_control_changed || unsettled);

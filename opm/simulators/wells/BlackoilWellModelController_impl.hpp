@@ -2224,6 +2224,37 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                                               "{}", root.name(), reportStepIdx, describe(verdict),
                                               !shut.empty() ? "shut" + names + " (" + why + ")"
                                               : !unhold.empty() ? "not holdable" + names : "no repair" + names));
+            // single: a thp well off its real tubing curve is asked the lift test at the answer's pressure -- the
+            // one rule, in its last place: lifts -> line through the well's point, dead -> killed.
+            if (shut.empty() && unhold.empty() && !legacy_status && !verdict.wells_off_curve.empty()) {
+                int moved = 0, killed = 0, undetermined = 0;
+                for (const auto& [w, gap] : verdict.wells_off_curve) {
+                    const auto& well = system.wells()[w];
+                    if (well.pinned || well.vfp_table <= 0) { continue; }
+                    const auto wit = std::find_if(well_container_.begin(), well_container_.end(),
+                                                  [&](const auto& x) { return x->name() == well.name; });
+                    if (wit == well_container_.end()) { continue; }
+                    const Scalar p_w = well.own_thp > Scalar{0} ? well.own_thp
+                                     : well.node == 0 ? terminal : rr.node_pressure[well.node];
+                    const auto point = wellAtThp(*wit, p_w, well.alq);
+                    if (!point.determined) { ++undetermined; continue; }
+                    if (!point.lifts) { system.killWell(w); ++killed; continue; }
+                    std::array<Scalar, Sys::NP> a{};
+                    for (int ph = 0; ph < Sys::NP; ++ph) {
+                        const Scalar q_true = pos[ph] >= 0 ? std::max(-point.flux[pos[ph]], Scalar{0}) : Scalar{0};
+                        a[ph] = q_true - well.ipr_b[ph] * point.bhp;
+                    }
+                    system.setWellIpr(w, a, well.ipr_b);
+                    ++moved;
+                }
+                deferred_logger.debug(fmt::format("Controller: off-curve wells under {} at report step {}: {} lines moved, "
+                                                  "{} killed, {} undetermined", root.name(), reportStepIdx, moved, killed, undetermined));
+                if (moved + killed == 0) { break; }
+                rr = solveRoute(rr.node_pressure, true);
+                if (!rr.converged) { break; }
+                verdict = judge();
+                continue;
+            }
             if (shut.empty() && unhold.empty()) { break; }
             for (const int w : unhold) { system.forceNotHoldable(w); }
             for (const int w : shut) {
