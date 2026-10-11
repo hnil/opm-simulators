@@ -130,6 +130,9 @@ public:
 
     bool operator==(const BlackoilWellModelNetworkGeneric<Scalar,IndexTraits>& rhs) const;
 
+    /// A well held by a choke: its own wellhead pressure above its node's, as its thp limit.
+    void holdWellAtThp(WellInterfaceGeneric<Scalar,IndexTraits>& well, const Scalar p) { imposeWellThpLimit(well, p); }
+
 protected:
     std::pair<std::map<std::string, Scalar>, std::map<std::string, data::BranchData>>
     computePressures(const Network::ExtNetwork& network,

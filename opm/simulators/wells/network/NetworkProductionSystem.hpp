@@ -2375,6 +2375,15 @@ public:
         }
         return -1;
     }
+    /// Pin a well at an oil rate (control OilRate whatever the node pressure), or release it.
+    void setWellPinned(const int w, const bool on, const Scalar q)
+    {
+        wells_[w].pinned = on;
+        if (on) { wells_[w].oil_rate_limit = q; }
+        potential_grid_[w].clear();
+    }
+    /// A well's own wellhead pressure in place of its node's: a cliff well held by a choke.
+    void setWellOwnThp(const int w, const Scalar p) { wells_[w].own_thp = p; potential_grid_[w].clear(); }
     /// Give a well a different lift-gas rate -- a trial the optimiser asks
     /// about. Its tubing sees the new alq; its node sees the gas if it adds it.
     void setWellAlq(const int w, const Scalar alq)

@@ -220,7 +220,10 @@ facilityReference_(DeferredLogger& deferred_logger)
             auto nodeP = [&](const std::map<std::string, Scalar>& p, const Cand& c) {
                 if (!with_network) { return c.own_thp; }
                 const auto it = p.find(c.node);
-                return it != p.end() ? it->second : Scalar(0);
+                const Scalar pn = it != p.end() ? it->second : Scalar(0);
+                // A well held by a choke has its own wellhead pressure above the node's.
+                const Scalar own = c.live ? c.live->getTHPConstraint(summary_state) : Scalar(0);
+                return std::max(pn, own);
             };
 
             // The worst production group over a RATE-action limit at the rates in the well state.

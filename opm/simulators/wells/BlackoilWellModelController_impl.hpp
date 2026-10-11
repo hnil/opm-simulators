@@ -477,6 +477,7 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
         this->controller_shut_streak_.clear();
         this->controller_glift_flips_.clear();
         this->controller_cliff_wells_.clear();
+        this->controller_cliff_held_.clear();
         this->controller_step_start_oil_.clear();
         for (const auto& [name, d] : route_data) {
             this->controller_step_start_oil_[name] = d.open ? std::max(-static_cast<double>(d.q[pos[1]]), 0.0) : 0.0;
@@ -635,6 +636,9 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
                 }
             } else if (no_network) {
                 w.vfp_table = 0;            // no thp limit: the table constrains nothing
+            }
+            if (const auto ch = this->controller_cliff_held_.find(name); ch != this->controller_cliff_held_.end() && w.vfp_table > 0) {
+                w.own_thp = ch->second;      // held by a choke this step: its own wellhead pressure, not the node's
             }
             if (w.vfp_table > 0) {
                 // The table's datum is not the well's reference depth; its owner worked these out.
@@ -1355,7 +1359,8 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
             std::vector<int> cand;
             for (int w = 0; w < system.numWells(); ++w) {
                 const auto& well = system.wells()[w];
-                if (well.pinned || well.vfp_table <= 0 || this->controller_cliff_wells_.count(well.name)) { continue; }
+                if (well.pinned || well.vfp_table <= 0 || this->controller_cliff_wells_.count(well.name)
+                    || this->controller_cliff_held_.count(well.name)) { continue; }
                 // A well shut for want of a line (stopped at the step's start) is asked too: with a line from the
                 // test it can come back within the step. A well on a cliff this step (lifts shut, dies open) is left.
                 if (well.shut || system.controlLetter(w) == 'S' || (well.q_start > Scalar{0}) != (rr.well_rate[w] > Scalar{0})) {
@@ -1435,15 +1440,66 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
             if (changed.empty()) { return; }
             const auto before = system;
             auto again = solveRoute(rr.node_pressure, true);
+            // A revived well that dies in the re-solve is on a cliff: it lifts at the shut state's node pressure
+            // and not at the open state's. Its consistent state is held: the largest rate s at which the tubing
+            // still lifts s at the node pressure that s produces, found by bisection with the route solved at
+            // each trial; handed over on thp at the wellhead pressure that gives s (a choke), its own thp for
+            // the rest of the step. No such s: shut, and not tried again this step.
+            auto holdAtCliff = [&](const int w, const Scalar q_free) -> bool {
+                const auto& well0 = system.wells()[w];
+                if (well0.vfp_table <= 0 || no_network) { return false; }
+                Scalar lo = Scalar{0}, hi = q_free, best = -1;
+                std::vector<Scalar> best_p;
+                Scalar best_bhp = 0;
+                for (int k = 0; k < 8; ++k) {
+                    const Scalar s = Scalar{0.5} * (lo + hi);
+                    system.setWellPinned(w, true, s);
+                    system.reviveWell(w, s);
+                    const auto trial = solveRoute(rr.node_pressure, true);
+                    bool ok = trial.converged;
+                    if (ok) {
+                        const auto& well = system.wells()[w];
+                        const Scalar p_s = well.node == 0 ? terminal : trial.node_pressure[well.node];
+                        const Scalar bhp_s = well.ipr_b[1] < Scalar{0} ? (s - well.ipr_a[1]) / well.ipr_b[1] : well.bhp_limit;
+                        const Scalar need = system.tubingBhp(well, p_s, system.ratesAt(well, bhp_s)) - well.vfp_dp;
+                        ok = bhp_s >= well.bhp_limit && bhp_s >= need;
+                        if (ok) { best = s; best_p = trial.node_pressure; best_bhp = bhp_s; }
+                    }
+                    (ok ? lo : hi) = s;
+                }
+                system.setWellPinned(w, false, Scalar{0});
+                if (!(best > Scalar{0})) { return false; }
+                // The wellhead pressure that gives s at bhp_s: the table inverted by bisection.
+                const auto& well = system.wells()[w];
+                const Scalar p_node = well.node == 0 ? terminal : best_p[well.node];
+                const auto q_s = system.ratesAt(well, best_bhp);
+                Scalar t_lo = p_node, t_hi = p_node + 300.0e5;
+                for (int k = 0; k < 30; ++k) {
+                    const Scalar t = Scalar{0.5} * (t_lo + t_hi);
+                    (system.tubingBhp(well, t, q_s) - well.vfp_dp <= best_bhp ? t_lo : t_hi) = t;
+                }
+                system.setWellOwnThp(w, t_lo);
+                system.reviveWell(w, best);
+                this->controller_cliff_held_[well.name] = t_lo;
+                ++this->controller_stats_.cliff_held;
+                return true;
+            };
             std::string names;
+            bool held_any = false;
             for (const auto& [w, flows] : changed) {
                 names += fmt::format(" {}{}", system.wells()[w].name, flows ? "+" : "-");
                 if (again.converged && (again.well_rate[w] > Scalar{0}) != flows) {
                     ++this->controller_stats_.transition_cliffs;
-                    this->controller_cliff_wells_.insert(system.wells()[w].name);
-                    names += "(cliff)";
+                    if (flows && holdAtCliff(w, system.wells()[w].q_start)) {
+                        held_any = true;
+                        names += fmt::format("(cliff: held at {:.2f} bar)", this->controller_cliff_held_.at(system.wells()[w].name) / 1e5);
+                    } else {
+                        this->controller_cliff_wells_.insert(system.wells()[w].name);
+                        names += "(cliff)";
+                    }
                 }
             }
+            if (held_any) { again = solveRoute(rr.node_pressure, true); }
             deferred_logger.debug(fmt::format("Controller: status {} under {} at report step {}:{}{}", when, root.name(),
                                               reportStepIdx, names, again.converged ? "" : "; re-solve failed, answer kept"));
             if (again.converged) { rr = std::move(again); } else { system = before; }
@@ -2533,6 +2589,11 @@ controllerNetworkDecide_(DeferredLogger& deferred_logger)
     }
     // Emit: node pressures and the thp limits they impose, then the wells.
     this->network_.setOwnedNodePressures(new_pressures);
+    for (const auto& wp : well_container_) {
+        if (const auto ch = this->controller_cliff_held_.find(wp->name()); ch != this->controller_cliff_held_.end()) {
+            this->network_.holdWellAtThp(*wp, ch->second);
+        }
+    }
     this->controller_decided_wells_ = decided;
     this->controller_route_wells_ = route_wells;
     controllerMarkDecided_();
