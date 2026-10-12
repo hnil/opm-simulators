@@ -20,4 +20,5 @@ with boundary conditions taken from a run of the whole model.
 
 The markdown files in this folder are the source. `make sector_docs` in the
 opm-simulators build directory, or `build-docs.sh` here, turns them into a
-single HTML page and a PDF.
+single HTML page and a PDF, and makes a PowerPoint presentation for users
+with `tools/make-slides.py`.

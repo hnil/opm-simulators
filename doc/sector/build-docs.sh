@@ -1,10 +1,12 @@
 #!/bin/bash
-# Build the sector modelling guide as a single HTML page and a PDF.
+# Build the sector modelling guide as a single HTML page and a PDF, and the
+# presentation as a PowerPoint file.
 #
 # Usage: build-docs.sh [output directory]
 #
-# PANDOC and PDF_ENGINE may be set to the executables to use. The PDF is
-# skipped, with a message, when no PDF engine is found.
+# PANDOC and PDF_ENGINE may be set to the executables to use, PYTHON to the
+# interpreter for the presentation. The PDF is skipped, with a message, when
+# no PDF engine is found, and the presentation when python-pptx is missing.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -40,4 +42,11 @@ if command -v "${pdf_engine}" > /dev/null 2>&1; then
     echo "Wrote ${out}/sector-modelling.pdf"
 else
     echo "No PDF engine '${pdf_engine}' found, PDF not built" >&2
+fi
+
+python="${PYTHON:-python3}"
+if "${python}" -c 'import pptx, PIL' > /dev/null 2>&1; then
+    "${python}" tools/make-slides.py "${out}/sector-modelling.pptx"
+else
+    echo "python-pptx or Pillow not found, presentation not built" >&2
 fi
