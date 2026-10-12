@@ -1109,3 +1109,21 @@ include (OpmInit)
 
 # all setup common to the OPM library modules is done here
 include (OpmLibMain)
+
+# The sector modelling guide is built on request only, since it needs pandoc
+# and, for the PDF, a LaTeX engine.
+find_program(PANDOC_EXECUTABLE pandoc)
+find_program(PDF_ENGINE_EXECUTABLE NAMES xelatex lualatex pdflatex)
+if(PANDOC_EXECUTABLE)
+  set(_sector_pdf_engine "${PDF_ENGINE_EXECUTABLE}")
+  if(NOT PDF_ENGINE_EXECUTABLE)
+    set(_sector_pdf_engine "none")
+  endif()
+  add_custom_target(sector_docs
+    COMMAND ${CMAKE_COMMAND} -E env
+            "PANDOC=${PANDOC_EXECUTABLE}" "PDF_ENGINE=${_sector_pdf_engine}"
+            bash ${PROJECT_SOURCE_DIR}/doc/sector/build-docs.sh
+            ${PROJECT_BINARY_DIR}/doc/sector
+    COMMENT "Building the sector modelling guide in ${PROJECT_BINARY_DIR}/doc/sector"
+    VERBATIM)
+endif()
