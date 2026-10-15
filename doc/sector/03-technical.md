@@ -253,28 +253,25 @@ masses, nothing about the fluid outside the sector is needed to impose them.
 
 ### Pressure boundary
 
-In pressure mode, every face the file describes is a free boundary, and the
-flux across it is the two-point flux the parent would have computed:
+In pressure mode, every face the file describes is a free boundary. The
+flux across it is the two-point flux the parent computed between the
+interior and the exterior cell:
 
 $$
 q_\alpha = T\,\lambda_\alpha^{up}\,\big(p_\alpha^{ext} - p_\alpha^{int}
-           + \bar\rho_\alpha g\,(z^{int} - z^{face})\big)
+           + \bar\rho_\alpha g\,(z^{int} - z^{ext})\big),
+\qquad \bar\rho_\alpha = \tfrac12\big(\rho_\alpha^{int} + \rho_\alpha^{ext}\big)
 $$
 
 with these ingredients:
 
-* **Transmissibility.** The parent's transmissibility across the face,
-  `FLUXTRAN`, replaces the default transmissibility of the outer boundary.
+* **Transmissibility.** The parent's transmissibility between the two
+  cells, `FLUXTRAN`.
 * **Exterior state.** `fluxExteriorFluidState_()` builds the fluid state on
   the far side from the record: pressure, saturations, Rs, Rv and
   temperature, the phase pressures from the recorded capillary pressures, and
   densities, formation volume factors and viscosities evaluated with the
   exterior cell's PVT region.
-* **Depth.** The recorded pressure is that of the exterior cell at its
-  centre. It is carried hydrostatically, with the exterior fluid's densities,
-  to the face where the boundary condition is imposed. Without this, a
-  sector in a dipping reservoir sees an error of the hydrostatic head between
-  the two depths.
 * **Upstream mobility.** When fluid flows into the sector, its relative
   permeability is the exterior cell's recorded value,
   `boundaryRelativePermeabilities()`, not this cell's saturation functions
@@ -289,14 +286,97 @@ with these ingredients:
   largest initial potential difference along a region boundary, of which the
   sector only holds part.
 
-### NNC faces
+#### A dynamic boundary, not a fixed rate
 
-A boundary face reached through a non-neighbour connection has no grid face
-in the reduced run, since the exterior cell and the connection are gone. Its
-flux is added as a source term in the interior cell instead: in flux mode the
-recorded masses, in pressure mode the two-point flux above, computed in
-`addFluxNncPressureSource_()` with the recorded transmissibility and the
-cells' centre depths.
+Only the exterior end of the connection is fixed: for the duration of a time
+step it is the recorded state, interpolated in time. The interior end is the
+cell's current state, and the flux is evaluated again at every Newton
+iteration, with derivatives with respect to the interior cell's primary
+variables. The connection is therefore as implicit as an interior face of
+the grid, and responds to whatever happens inside the sector:
+
+* If the interior pressure falls, for instance because a producer is added
+  near the boundary, more fluid flows in.
+* If the potential difference changes sign, the flow reverses relative to
+  the parent. Inflow carries the exterior fluid, with the recorded relative
+  permeability and the exterior cell's viscosity, formation volume factors,
+  Rs and Rv. Outflow carries the interior cell's own fluid and mobility.
+* A threshold pressure holds the connection shut, in either direction, until
+  the potential difference exceeds it.
+
+This holds for the ordinary faces and for the NNC faces alike; the two only
+differ in how the exterior pressure enters the discretisation, as described
+below. In flux mode, by contrast, both kinds of face impose the parent's
+recorded mass rates, which do not respond to changes inside the sector.
+
+#### Ordinary faces
+
+A boundary face between Cartesian neighbours is imposed through the face of
+the reduced grid it sits on, as a boundary condition of the discretisation.
+The linearizer builds its list of boundary conditions from the boundary
+faces of the grid, looked up by cell and direction, and computes the flux of
+each from the interior cell's state and an exterior fluid state given *at
+the face*: it adds the head from the face depth to the interior cell centre,
+with the average density $\bar\rho$. The parent's transmissibility replaces
+the default transmissibility of the outer boundary. The face area appears in
+the flux per unit area and again when the flux is integrated over the face,
+and cancels.
+
+The recorded pressure belongs to the exterior cell's centre, however, so
+`fluxExteriorFluidState_()` first carries it hydrostatically to the face
+depth, with the exterior fluid's densities. Without this, a sector in a
+dipping reservoir sees an error of the full head between the exterior cell
+centre and the face: a few metres, which is a few tenths of a bar.
+
+With the carry, the head between the two cell centres is split at the face:
+the exterior leg uses $\rho^{ext}$, the interior leg $\bar\rho$. The parent
+used $\bar\rho$ for both, and the difference per phase is
+
+$$
+\tfrac12\big(\rho_\alpha^{ext} - \rho_\alpha^{int}\big)\,g\,
+\big(z^{face} - z^{ext}\big),
+$$
+
+typically of the order of $10^{-3}$ bar, about a hundredth of the carry
+itself. It cannot be removed within the boundary condition: $\bar\rho$
+depends on the interior state, which changes from one Newton iteration to the
+next, while the exterior state is a fixed scalar state for the time step.
+Removing it would mean giving the boundary condition the exterior cell's
+centre depth instead of the face depth, which the linearizer does not
+currently provide for.
+
+#### NNC faces
+
+A boundary face reached through a non-neighbour connection has no face in
+the reduced grid, since the exterior cell and the connection are gone, and
+the linearizer only builds boundary conditions for directional faces.
+Instead, `addFluxNncPressureSource_()` computes the flux of each such
+connection and adds it to the interior cell's source term.
+
+That makes it a source term in form only. It is the same dynamic flux as on
+an ordinary face, evaluated afresh at every Newton iteration from the
+interior cell's current state, and the linearizer adds the derivatives of the
+source term to the cell's diagonal block of the Jacobian, as it does for a
+boundary flux. It can grow, shrink or reverse as the sector changes. And
+since there is no face to impose it on, it uses both cells' centre depths
+with the average density, which is exactly the parent's formula above: an
+NNC face needs no depth correction and carries no residual error from one.
+
+The differences from an ordinary face are minor:
+
+* The flow through NNC faces is not reported in the reduced run's FLOWS and
+  FLORES output, which only cover grid connections and boundary faces; it is
+  part of the cell's source term.
+* Only the black-oil components are carried. The ordinary faces also carry
+  enthalpy in thermal runs.
+
+In flux mode, an NNC face adds the recorded component masses to the source
+term, a fixed rate like that of an ordinary face in flux mode.
+
+Routing the NNC faces through the linearizer's boundary conditions instead
+would need the problem to supply boundary connections that are not grid
+faces, with their own places in the boundary flux output and in the GPU
+assembly. It would only change where their flow is reported.
 
 ## Parent coupling in the reduced run
 

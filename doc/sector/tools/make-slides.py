@@ -876,26 +876,26 @@ s = new_slide("Boundary conditions in the reduced run", optional=True)
 _, tf = textbox(s, LEFT, TOP - Inches(0.05), FULL_W, Inches(0.7))
 p = tf.paragraphs[0]
 p.alignment = PP_ALIGN.CENTER
-add_runs(p, "*q*_{α} = *T* · *λ*_{α}^{up} · ( *p*_{α}^{ext} − *p*_{α}^{int} + *ρ̄*_{α} *g* (*z*^{int} − *z*^{face}) )",
+add_runs(p, "*q*_{α} = *T* · *λ*_{α}^{up} · ( *p*_{α}^{ext} − *p*_{α}^{int} + *ρ̄*_{α} *g* (*z*^{int} − *z*^{ext}) )",
          24, NAVY)
 cw, x1, x2 = two_columns()
 bullets(s, [
     "#Pressure boundary",
-    "*T*: the parent's transmissibility across the face",
-    "Exterior fluid state from the record, with the exterior cell's PVT region",
-    "Pressure carried hydrostatically from the exterior cell centre to the face",
-    "Incoming fluid uses the exterior's recorded kr",
+    "The parent's two-point flux: *T* from the parent, exterior state from the record",
+    "**Implicit**: interior end re-evaluated every Newton iteration; flow can grow, shrink or reverse",
+    "Inflow uses the exterior's recorded kr and PVT, outflow the interior cell's",
+    "Faces: pressure carried to the face depth, as the boundary condition needs",
     "Threshold pressure between the equilibration regions, from the parent",
-], x=x1, y=TOP + Inches(0.8), w=cw, h=Inches(4.7), size=19, gap=5)
+], x=x1, y=TOP + Inches(0.8), w=cw, h=Inches(4.7), size=18, gap=5)
 bullets(s, [
     "#Flux boundary",
     "Recorded mass rate per component and face, imposed as is",
     "#NNC faces",
-    "No grid face in the reduced run: the flux becomes a source term in the interior cell",
+    "No grid face: added to the interior cell's source term, with its derivatives",
+    "Same dynamic flux, between the two cell centres: no depth correction",
     "#In time",
     "Record covering the start of each step; states interpolated linearly to the step's end",
-    "Rates are interval averages, not interpolated",
-], x=x2, y=TOP + Inches(0.8), w=cw, h=Inches(4.7), size=19, gap=5)
+], x=x2, y=TOP + Inches(0.8), w=cw, h=Inches(4.7), size=18, gap=5)
 
 s = new_slide("Wells outside the sector", optional=True)
 cw, x1, x2 = two_columns()
