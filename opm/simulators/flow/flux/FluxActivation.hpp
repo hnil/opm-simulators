@@ -20,11 +20,21 @@
 #ifndef OPM_FLUX_ACTIVATION_HPP
 #define OPM_FLUX_ACTIVATION_HPP
 
+#include <string>
+#include <vector>
+
 namespace Opm {
 
 class EclipseState;
 
 bool applyUseFluxActnum(EclipseState& eclipseState);
+
+/// Keep these keywords' values for every Cartesian cell when USEFLUX narrows
+/// ACTNUM, for models that still need the cells outside the sector.
+void retainBeforeUseFlux(const std::vector<std::string>& keywords);
+
+/// A kept keyword by Cartesian index, or nullptr when it was not kept.
+const std::vector<double>* retainedBeforeUseFlux(const std::string& keyword);
 
 } // namespace Opm
 

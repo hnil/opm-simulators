@@ -25,7 +25,36 @@
 #include <opm/input/eclipse/EclipseState/IOConfig/IOConfig.hpp>
 #include <opm/simulators/flow/flux/FluxRegions.hpp>
 
+#include <map>
+
 namespace Opm {
+
+namespace {
+
+std::vector<std::string>& keywordsToRetain()
+{
+    static std::vector<std::string> keywords;
+    return keywords;
+}
+
+std::map<std::string, std::vector<double>>& retained()
+{
+    static std::map<std::string, std::vector<double>> values;
+    return values;
+}
+
+} // anonymous namespace
+
+void retainBeforeUseFlux(const std::vector<std::string>& keywords)
+{
+    keywordsToRetain() = keywords;
+}
+
+const std::vector<double>* retainedBeforeUseFlux(const std::string& keyword)
+{
+    const auto it = retained().find(keyword);
+    return (it == retained().end()) ? nullptr : &it->second;
+}
 
 bool applyUseFluxActnum(EclipseState& eclipseState)
 {
@@ -47,6 +76,12 @@ bool applyUseFluxActnum(EclipseState& eclipseState)
     auto actnum = selectedRegions.empty()
         ? FluxRegions::buildActnum(regionValues, FluxRegions::uniqueSelectedRegion(regionValues))
         : FluxRegions::buildActnum(regionValues, selectedRegions);
+
+    for (const auto& keyword : keywordsToRetain()) {
+        if (fieldProps.has_double(keyword)) {
+            retained()[keyword] = fieldProps.get_global_double(keyword);
+        }
+    }
 
     const auto& currentActnum = eclipseState.globalFieldProps().actnumRaw();
     for (std::size_t index = 0; index < actnum.size(); ++index) {
