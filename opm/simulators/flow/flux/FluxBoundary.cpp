@@ -90,6 +90,7 @@ FluxBoundary FluxBoundary::fromData(const EclIO::FluxFile::Data& data,
             face.exteriorPvtRegion,
             face.exteriorDepth,
             face.exteriorEquilRegion,
+            face.thermalTransmissibility,
         });
     }
 

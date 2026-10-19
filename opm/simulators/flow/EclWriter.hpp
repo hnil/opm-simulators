@@ -2413,6 +2413,7 @@ private:
             std::vector<int> pvtRegion(faces.size(), 0);
             std::vector<double> exteriorDepth(faces.size(), 0.0);
             std::vector<int> exteriorEquilRegion(faces.size(), 0);
+            std::vector<double> thermalTrans(faces.size(), 0.0);
             for (std::size_t i = 0; i < faces.size(); ++i) {
                 const auto& face = faces[i];
                 const auto interior = vanguard.compressedIndex(face.interiorGlobalCell);
@@ -2438,6 +2439,17 @@ private:
 
                 pvtRegion[i] = problem.pvtRegionIndex(static_cast<unsigned>(exterior));
 
+                // A reduced run imposes the exterior cell's temperature at the
+                // face, so it needs both half-cells' conduction, not its own half.
+                const auto& eclTrans = problem.eclTransmissibilities();
+                const double hIn = eclTrans.thermalHalfTransOrZero(static_cast<unsigned>(interior),
+                                                                   static_cast<unsigned>(exterior));
+                const double hOut = eclTrans.thermalHalfTransOrZero(static_cast<unsigned>(exterior),
+                                                                    static_cast<unsigned>(interior));
+                if (hIn > 0.0 && hOut > 0.0) {
+                    thermalTrans[i] = hIn*hOut / (hIn + hOut);
+                }
+
                 // How deep the exterior cell's centre is, which is where the
                 // pressures written per report step are taken. A reduced run
                 // imposes them at the face, so it needs this to carry them
@@ -2457,6 +2469,7 @@ private:
             this->fluxReduceSum_(pvtRegion);
             this->fluxReduceSum_(exteriorDepth);
             this->fluxReduceSum_(exteriorEquilRegion);
+            this->fluxReduceSum_(thermalTrans);
 
             // A face nothing flows through says nothing about the cell beyond
             // it, and on more than one rank that cell may not even be at hand:
@@ -2475,6 +2488,7 @@ private:
             dumper.setBoundaryTransmissibilities(trans);
             dumper.setBoundaryExteriorPvtRegions(pvtRegion);
             dumper.setBoundaryExteriorDepths(exteriorDepth);
+            dumper.setBoundaryThermalTransmissibilities(thermalTrans);
             dumper.setBoundaryExteriorEquilRegions(exteriorEquilRegion);
 
             // The whole region-pair table, not just the entries this boundary
