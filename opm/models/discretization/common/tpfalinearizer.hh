@@ -898,6 +898,9 @@ public:
         if (!enableFlows && !enableFlores && blockFlows.empty()) {
             return;
         }
+        // eraseMatrix() (a new well connection, say) leaves this until the next
+        // linearization, but output may ask for the flows before then.
+        createMatrix_();
         // flowsInfo_/floresInfo_ are per grid element; aux fluxes are reported elsewhere.
         const unsigned int numCells = model_().numGridDof();
 #ifdef _OPENMP
@@ -917,6 +920,10 @@ public:
                     OPM_TIMEBLOCK_LOCAL(fluxCalculationForEachFace, Subsystem::Assembly);
                     const unsigned globJ = nbInfo.neighbor;
                     assert(globJ != globI);
+                    // Auxiliary neighbours come last and have no row entry.
+                    if (globJ >= numCells) {
+                        continue;
+                    }
                     adres = 0.0;
                     darcyFlux = 0.0;
                     const IntensiveQuantities& intQuantsEx = model_().intensiveQuantities(globJ, /*timeIdx*/ 0);
@@ -960,8 +967,10 @@ public:
             adres *= bdyInfo.bcdata.faceArea;
             const unsigned bfIndex = bdyInfo.bfIndex;
             if (enableFlows) {
+                const auto numGridNeighbors = std::ranges::count_if(
+                    nbInfos, [numCells](const auto& nb) { return nb.neighbor < numCells; });
                 for (unsigned eqIdx = 0; eqIdx < numEq; ++eqIdx) {
-                    flowsInfo_[globI][nbInfos.size() + bfIndex].flow[eqIdx] = adres[eqIdx].value();
+                    flowsInfo_[globI][numGridNeighbors + bfIndex].flow[eqIdx] = adres[eqIdx].value();
                 }
             }
             // TODO also store Flores?
