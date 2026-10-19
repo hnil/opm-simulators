@@ -62,6 +62,10 @@ public:
         //!   it, in which case no threshold can be applied.
         int exteriorEquilRegion = -1;
 
+        //! \brief Parent's thermal transmissibility across the face, both
+        //!        half-cells in series; zero if not recorded.
+        double thermalTransmissibility = 0.0;
+
         bool operator==(const Face& other) const = default;
     };
 
@@ -149,6 +153,31 @@ public:
             ++appliedCount;
         }
 
+        return appliedCount;
+    }
+
+    //! \brief Replace the boundary thermal half transmissibility of every
+    //!        recorded face with the parent's, both half-cells in series: the
+    //!        temperature imposed at the face is the exterior cell's.
+    template <class TransmissibilityLike, class BoundaryFaceOrdinal>
+    std::size_t applyThermalTransmissibilityOverrides(TransmissibilityLike& transmissibility,
+                                                      BoundaryFaceOrdinal&& boundaryFaceOrdinal) const
+    {
+        std::size_t appliedCount = 0;
+        for (const auto& face : this->faces_) {
+            if (face.isNnc || face.direction == FaceDir::Unknown || face.interiorActiveCell < 0
+                || !(face.thermalTransmissibility > 0.0)) {
+                continue;
+            }
+            const auto ordinal = boundaryFaceOrdinal(face.interiorActiveCell, face.direction);
+            if (ordinal < 0) {
+                continue;
+            }
+            transmissibility.setThermalHalfTransBoundary(static_cast<unsigned>(face.interiorActiveCell),
+                                                         static_cast<unsigned>(ordinal),
+                                                         face.thermalTransmissibility);
+            ++appliedCount;
+        }
         return appliedCount;
     }
 

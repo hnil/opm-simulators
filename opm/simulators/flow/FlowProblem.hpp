@@ -2753,6 +2753,7 @@ protected:
         };
 
         this->fluxBoundary_->applyTransmissibilityOverrides(transmissibilities_, ordinal);
+        this->fluxBoundary_->applyThermalTransmissibilityOverrides(transmissibilities_, ordinal);
     }
 
     // this method applies the runtime constraints specified via the deck and/or command

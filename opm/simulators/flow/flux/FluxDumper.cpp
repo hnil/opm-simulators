@@ -134,6 +134,18 @@ void FluxDumper::setBoundaryExteriorDepths(const std::vector<double>& exteriorDe
     }
 }
 
+void FluxDumper::setBoundaryThermalTransmissibilities(const std::vector<double>& thermalTransmissibilities)
+{
+    if (thermalTransmissibilities.size() != this->data_.boundaryFaces.size()) {
+        OPM_THROW(std::invalid_argument,
+                  "FluxDumper: thermal transmissibility vector must match boundary face count");
+    }
+
+    for (std::size_t i = 0; i < this->data_.boundaryFaces.size(); ++i) {
+        this->data_.boundaryFaces[i].thermalTransmissibility = thermalTransmissibilities[i];
+    }
+}
+
 void FluxDumper::setBoundaryExteriorEquilRegions(const std::vector<int>& exteriorEquilRegions)
 {
     if (exteriorEquilRegions.size() != this->data_.boundaryFaces.size()) {

@@ -122,6 +122,10 @@ public:
     //!   the depth it cannot carry the one to the other.
     void setBoundaryExteriorDepths(const std::vector<double>& exteriorDepths);
 
+    //! \brief Geometric thermal transmissibility of each boundary face, both
+    //!        half-cells in series.
+    void setBoundaryThermalTransmissibilities(const std::vector<double>& thermalTransmissibilities);
+
     //! \brief Record which equilibration region the cell on the far side of
     //!        each face belongs to.
     void setBoundaryExteriorEquilRegions(const std::vector<int>& exteriorEquilRegions);

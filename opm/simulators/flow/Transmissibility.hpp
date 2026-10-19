@@ -100,6 +100,11 @@ public:
 
     void setTransmissibilityBoundary(unsigned elemIdx, unsigned boundaryFaceIdx, Scalar value);
 
+    //! \brief Thermal half transmissibility, or zero when the pair has none.
+    Scalar thermalHalfTransOrZero(unsigned insideElemIdx, unsigned outsideElemIdx) const;
+
+    void setThermalHalfTransBoundary(unsigned elemIdx, unsigned boundaryFaceIdx, Scalar value);
+
     /*!
      * \brief Return the thermal "half transmissibility" for the intersection between two
      *        elements.
