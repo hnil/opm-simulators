@@ -20,6 +20,9 @@
 #ifndef OPM_HYPRE_SETUP_HPP
 #define OPM_HYPRE_SETUP_HPP
 
+#include <algorithm>
+#include <string>
+
 #include <opm/simulators/linalg/PropertyTree.hpp>
 #include <opm/simulators/linalg/hypreinterface/HypreDataStructures.hpp>
 #include <opm/simulators/linalg/hypreinterface/HypreErrorHandling.hpp>
@@ -148,6 +151,29 @@ setSolverParameters(HYPRE_Solver solver, const PropertyTree& prm, bool use_gpu_b
         HYPRE_SAFE_CALL(HYPRE_BoomerAMGSetCoarsenType(solver, prm.get<int>("coarsen_type", 10)));
         HYPRE_SAFE_CALL(HYPRE_BoomerAMGSetAggNumLevels(solver, prm.get<int>("agg_num_levels", 1)));
         HYPRE_SAFE_CALL(HYPRE_BoomerAMGSetAggInterpType(solver, prm.get<int>("agg_interp_type", 4)));
+    }
+
+    // Systems AMG and smoother options: only set when given, so Hypre's defaults stay otherwise.
+    // num_functions > 1 assumes the unknowns are interleaved per node (dof i is function i % n).
+    const auto keys = prm.get_child_keys();
+    const auto has = [&keys](const std::string& k) { return std::find(keys.begin(), keys.end(), k) != keys.end(); };
+    if (has("num_functions")) {
+        HYPRE_SAFE_CALL(HYPRE_BoomerAMGSetNumFunctions(solver, prm.get<int>("num_functions")));
+    }
+    if (has("nodal")) {
+        HYPRE_SAFE_CALL(HYPRE_BoomerAMGSetNodal(solver, prm.get<int>("nodal")));
+    }
+    if (has("num_sweeps")) {
+        HYPRE_SAFE_CALL(HYPRE_BoomerAMGSetNumSweeps(solver, prm.get<int>("num_sweeps")));
+    }
+    if (has("relax_order")) {
+        HYPRE_SAFE_CALL(HYPRE_BoomerAMGSetRelaxOrder(solver, prm.get<int>("relax_order")));
+    }
+    if (has("max_row_sum")) {
+        HYPRE_SAFE_CALL(HYPRE_BoomerAMGSetMaxRowSum(solver, prm.get<double>("max_row_sum")));
+    }
+    if (has("max_coarse_size")) {
+        HYPRE_SAFE_CALL(HYPRE_BoomerAMGSetMaxCoarseSize(solver, prm.get<int>("max_coarse_size")));
     }
 }
 
