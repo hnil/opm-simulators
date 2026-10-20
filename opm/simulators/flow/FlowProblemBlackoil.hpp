@@ -1639,6 +1639,9 @@ private:
         }
 
         const auto pvtRegionIdx = this->pvtRegionIndex(globalDofIdx);
+        const auto& intQuants = this->model().intensiveQuantities(globalDofIdx, timeIdx);
+        const auto& fsIn = intQuants.fluidState();
+        int faceIndex = -1;
 
         const auto add = [&](const std::size_t slot,
                              const unsigned phaseIdx,
@@ -1646,6 +1649,21 @@ private:
         {
             if (!FluidSystem::phaseIsActive(phaseIdx)) {
                 return;
+            }
+
+            if constexpr (energyModuleType == EnergyModules::FullyImplicitThermal) {
+                // Inflow brings the exterior cell's temperature, outflow this cell's enthalpy.
+                const Scalar massIn = fluxStep->massRates[slot];
+                const auto f = static_cast<std::size_t>(faceIndex);
+                if (massIn > 0.0 && f < fluxStep->temperature.size()) {
+                    auto fs = fsIn;
+                    fs.setTemperature(fluxStep->temperature[f]);
+                    rate[Indices::contiEnergyEqIdx] += massIn / volume
+                        * FluidSystem::enthalpy(fs, phaseIdx, pvtRegionIdx);
+                }
+                else {
+                    rate[Indices::contiEnergyEqIdx] += massIn / volume * fsIn.enthalpy(phaseIdx);
+                }
             }
 
             auto massRate = fluxStep->massRates[slot] / volume;
@@ -1656,9 +1674,23 @@ private:
             rate[FluidSystem::canonicalToActiveCompIdx(compIdx)] += massRate;
         };
 
-        for (const auto faceIndex : faces) {
+        for (const auto face : faces) {
+            faceIndex = face;
             if ((faceIndex < 0) || (static_cast<std::size_t>(faceIndex) >= faceCount)) {
                 continue;
+            }
+
+            if constexpr (energyModuleType == EnergyModules::FullyImplicitThermal) {
+                const auto f = static_cast<std::size_t>(faceIndex);
+                if (this->fluxBoundary_ && f < this->fluxBoundary_->faces().size()
+                    && f < fluxStep->temperature.size())
+                {
+                    const auto alpha = this->fluxBoundary_->faces()[f].thermalTransmissibility;
+                    if (alpha > 0.0) {
+                        rate[Indices::contiEnergyEqIdx] += intQuants.totalThermalConductivity() * alpha
+                            * (fluxStep->temperature[f] - fsIn.temperature(0)) / volume;
+                    }
+                }
             }
 
             const auto base = static_cast<std::size_t>(faceIndex) * phaseCount;
@@ -1693,8 +1725,9 @@ private:
     //!   state, derivatives and all, so the connection is as implicit as the
     //!   rest of the boundary.
     //!
-    //!   Black-oil components only; water-borne gas, solvent, polymer and
-    //!   energy are not carried across.
+    //!   Black-oil components, the enthalpy they carry and conduction through
+    //!   the recorded FLXTHTR; water-borne gas, solvent and polymer are not
+    //!   carried across.
     void addFluxNncPressureSource_(RateVector& rate,
                                    const unsigned globalDofIdx,
                                    const unsigned timeIdx,
@@ -1761,6 +1794,7 @@ private:
             }
 
             std::array<Evaluation, numPhases> surfaceRate{};
+            Evaluation energyRate = 0.0;
             const auto upstreamRates = [&](const unsigned phaseIdx,
                                            const Evaluation& reservoirRate,
                                            const auto& fs)
@@ -1804,13 +1838,30 @@ private:
 
                 if (inflow) {
                     const Scalar mobility = krEx[phaseIdx] / exFs.viscosity(phaseIdx);
-                    upstreamRates(phaseIdx, face.transmissibility * mobility * dp, exFs);
+                    const Evaluation q = face.transmissibility * mobility * dp;
+                    upstreamRates(phaseIdx, q, exFs);
+                    if constexpr (energyModuleType == EnergyModules::FullyImplicitThermal) {
+                        energyRate += q * exFs.density(phaseIdx)
+                            * FluidSystem::enthalpy(exFs, phaseIdx, exFs.pvtRegionIndex());
+                    }
                 }
                 else {
                     const auto trans = face.transmissibility
                         * getValue(intQuants.rockCompTransMultiplier());
-                    upstreamRates(phaseIdx, trans * intQuants.mobility(phaseIdx) * dp, fsIn);
+                    const Evaluation q = trans * intQuants.mobility(phaseIdx) * dp;
+                    upstreamRates(phaseIdx, q, fsIn);
+                    if constexpr (energyModuleType == EnergyModules::FullyImplicitThermal) {
+                        energyRate += q * fsIn.density(phaseIdx) * fsIn.enthalpy(phaseIdx);
+                    }
                 }
+            }
+
+            if constexpr (energyModuleType == EnergyModules::FullyImplicitThermal) {
+                if (face.thermalTransmissibility > 0.0) {
+                    energyRate += intQuants.totalThermalConductivity() * face.thermalTransmissibility
+                        * (exFs.temperature(0) - fsIn.temperature(0));
+                }
+                rate[Indices::contiEnergyEqIdx] += energyRate / volume;
             }
 
             const auto add = [&](const unsigned phaseIdx, const unsigned compIdx)
