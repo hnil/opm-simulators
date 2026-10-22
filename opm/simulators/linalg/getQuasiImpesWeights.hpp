@@ -31,6 +31,7 @@
 #include <opm/models/parallel/threadmanager.hpp>
 #include <algorithm>
 #include <cmath>
+#include <optional>
 #include <stdexcept>
 
 #if HAVE_CUDA
@@ -174,6 +175,12 @@ namespace Amg
         constexpr int numEq = VectorBlockType::size();
         using Evaluation = typename std::decay_t<decltype(model.localLinearizer(ThreadManager::threadId()).localResidual().residual(0))>
             ::block_type;
+        using LocalResidual = std::decay_t<decltype(model.localLinearizer(0).localResidual())>;
+        using IntensiveQuantities = std::decay_t<decltype(*model.cachedIntensiveQuantities(0u, 0u))>;
+        // TPFA residuals compute storage from the cached intensive quantities alone.
+        constexpr bool contextFreeStorage =
+            requires (Dune::FieldVector<Evaluation, numEq>& s, const IntensiveQuantities& iq)
+            { LocalResidual::template computeStorage<Evaluation>(s, iq); };
 
         VectorBlockType rhs(0.0);
         rhs[pressureVarIndex] = 1.0;
@@ -190,17 +197,32 @@ namespace Amg
 #endif
         for (const auto& chunk : element_chunks) {
             const std::size_t thread_id = ThreadManager::threadId();
-            ElementContext localElemCtx(elemCtx.simulator());
+            std::optional<ElementContext> localElemCtx;
 
             for (const auto& elem : chunk) {
-                localElemCtx.updatePrimaryStencil(elem);
-                localElemCtx.updatePrimaryIntensiveQuantities(/*timeIdx=*/0);
+                unsigned index = 0;
+                const IntensiveQuantities* intQuants = nullptr;
+                if constexpr (contextFreeStorage) {
+                    index = model.elementMapper().index(elem);
+                    intQuants = model.cachedIntensiveQuantities(index, /*timeIdx=*/0);
+                }
 
-                model.localLinearizer(thread_id).localResidual().computeStorage(storage, localElemCtx, /*spaceIdx=*/0, /*timeIdx=*/0);
-
-                auto extrusionFactor = localElemCtx.intensiveQuantities(0, /*timeIdx=*/0).extrusionFactor();
-                auto scvVolume = localElemCtx.stencil(/*timeIdx=*/0).subControlVolume(0).volume() * extrusionFactor;
-                auto storage_scale = scvVolume / localElemCtx.simulator().timeStepSize();
+                double scvVolume = 0.0;
+                if (intQuants) {
+                    LocalResidual::template computeStorage<Evaluation>(storage, *intQuants);
+                    scvVolume = model.dofTotalVolume(index) * intQuants->extrusionFactor();
+                } else {
+                    if (!localElemCtx) {
+                        localElemCtx.emplace(elemCtx.simulator());
+                    }
+                    localElemCtx->updatePrimaryStencil(elem);
+                    localElemCtx->updatePrimaryIntensiveQuantities(/*timeIdx=*/0);
+                    model.localLinearizer(thread_id).localResidual().computeStorage(storage, *localElemCtx, /*spaceIdx=*/0, /*timeIdx=*/0);
+                    scvVolume = localElemCtx->stencil(/*timeIdx=*/0).subControlVolume(0).volume()
+                        * localElemCtx->intensiveQuantities(0, /*timeIdx=*/0).extrusionFactor();
+                    index = localElemCtx->globalSpaceIndex(/*spaceIdx=*/0, /*timeIdx=*/0);
+                }
+                const auto storage_scale = scvVolume / elemCtx.simulator().timeStepSize();
                 const double pressure_scale = 50e5;
 
                 // Build the transposed matrix directly to avoid separate transpose step
@@ -227,8 +249,7 @@ namespace Amg
                     // an arbitrary choice that goes on to make the CPR pressure
                     // system itself singular.  Name the cell instead, so the
                     // cause can be found.
-                    const auto globalDofIdx =
-                        localElemCtx.globalSpaceIndex(/*spaceIdx=*/0, /*timeIdx=*/0);
+                    const auto globalDofIdx = index;
 
                     throw std::runtime_error {
                         fmt::format("Singular storage matrix when forming the CPR "
@@ -237,7 +258,7 @@ namespace Amg
                                     "rank deficient, so the pressure equation cannot "
                                     "be formed there.",
                                     globalDofIdx,
-                                    localElemCtx.simulator().vanguard()
+                                    elemCtx.simulator().vanguard()
                                         .cartesianIndex(globalDofIdx))
                     };
                 }
@@ -249,7 +270,6 @@ namespace Amg
                 // probably a scaling which could give approximately total compressibility would be better
                 bweights /=  std::fabs(abs_max); // given normal densities this scales weights to about 1.
 
-                const auto index = localElemCtx.globalSpaceIndex(/*spaceIdx=*/0, /*timeIdx=*/0);
                 weights[index] = bweights;
             }
         }
@@ -290,17 +310,22 @@ namespace Amg
 #pragma omp parallel for private(bweights) if(enable_thread_parallel)
 #endif
         for (const auto& chunk : element_chunks) {
-
-            // Each thread gets a unique copy of elemCtx
-            ElementContext localElemCtx(elemCtx.simulator());
+            // Only needed where the cache is not valid.
+            std::optional<ElementContext> localElemCtx;
 
             for (const auto& elem : chunk) {
-                localElemCtx.updatePrimaryStencil(elem);
-                localElemCtx.updatePrimaryIntensiveQuantities(/*timeIdx=*/0);
-
-                const auto index = localElemCtx.globalSpaceIndex(/*spaceIdx=*/0, /*timeIdx=*/0);
-                const auto& intQuants = localElemCtx.intensiveQuantities(/*spaceIdx=*/0, /*timeIdx=*/0);
-                const auto& fs = intQuants.fluidState();
+                unsigned index = model.elementMapper().index(elem);
+                const auto* intQuants = model.cachedIntensiveQuantities(index, /*timeIdx=*/0);
+                if (!intQuants) {
+                    if (!localElemCtx) {
+                        localElemCtx.emplace(elemCtx.simulator());
+                    }
+                    localElemCtx->updatePrimaryStencil(elem);
+                    localElemCtx->updatePrimaryIntensiveQuantities(/*timeIdx=*/0);
+                    index = localElemCtx->globalSpaceIndex(/*spaceIdx=*/0, /*timeIdx=*/0);
+                    intQuants = &localElemCtx->intensiveQuantities(/*spaceIdx=*/0, /*timeIdx=*/0);
+                }
+                const auto& fs = intQuants->fluidState();
 
                 if (FluidSystem::phaseIsActive(FluidSystem::waterPhaseIdx)) {
                     const unsigned activeCompIdx = FluidSystem::canonicalToActiveCompIdx(
