@@ -37,6 +37,7 @@
 #include <opm/simulators/flow/countGlobalCells.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <filesystem>
 #include <functional>
@@ -619,28 +620,58 @@ localConvergenceData(std::vector<Scalar>& R_sum,
 
     const auto& residual = this->simulator_.model().linearizer().residual();
 
-    ElementContext elemCtx(this->simulator_);
-    const auto& gridView = this->simulator().gridView();
-    IsNumericalAquiferCell isNumericalAquiferCell(gridView.grid());
+    this->updateInteriorCellBlocks();
+    const std::size_t numBlocks = interiorBlockStart_.size() - 1;
+    const std::size_t numComp = B_avg.size();
+
+    struct BlockData {
+        Scalar pvSum = 0.0;
+        Scalar numAquiferPvSum = 0.0;
+        std::vector<Scalar> B_avg, R_sum, maxCoeff;
+        std::vector<int> maxCoeffCell;
+    };
+    std::vector<BlockData> blocks(numBlocks);
+
     OPM_BEGIN_PARALLEL_TRY_CATCH();
-    for (const auto& elem : elements(gridView, Dune::Partitions::interior)) {
-        elemCtx.updatePrimaryStencil(elem);
-        elemCtx.updatePrimaryIntensiveQuantities(/*timeIdx=*/0);
+#ifdef _OPENMP
+#pragma omp parallel for schedule(dynamic, 1)
+#endif
+    for (std::size_t b = 0; b < numBlocks; ++b) {
+        auto& blk = blocks[b];
+        blk.B_avg.assign(numComp, Scalar{0});
+        blk.R_sum.assign(numComp, Scalar{0});
+        blk.maxCoeff.assign(numComp, std::numeric_limits<Scalar>::lowest());
+        blk.maxCoeffCell.assign(numComp, -1);
+        for (std::size_t i = interiorBlockStart_[b]; i < interiorBlockStart_[b + 1]; ++i) {
+            const unsigned cell_idx = interiorCells_[i];
+            const auto& intQuants = model.intensiveQuantities(cell_idx, /*timeIdx=*/0);
+            const auto& fs = intQuants.fluidState();
 
-        const unsigned cell_idx = elemCtx.globalSpaceIndex(/*spaceIdx=*/0, /*timeIdx=*/0);
-        const auto& intQuants = elemCtx.intensiveQuantities(/*spaceIdx=*/0, /*timeIdx=*/0);
-        const auto& fs = intQuants.fluidState();
+            const auto pvValue = problem.referencePorosity(cell_idx, /*timeIdx=*/0) *
+                                 model.dofTotalVolume(cell_idx);
+            blk.pvSum += pvValue;
 
-        const auto pvValue = problem.referencePorosity(cell_idx, /*timeIdx=*/0) *
-                             model.dofTotalVolume(cell_idx);
-        pvSumLocal += pvValue;
+            if (interiorIsNumAquifer_[i]) {
+                blk.numAquiferPvSum += pvValue;
+            }
 
-        if (isNumericalAquiferCell(elem)) {
-            numAquiferPvSumLocal += pvValue;
+            this->getMaxCoeff(cell_idx, intQuants, fs, residual, pvValue,
+                              blk.B_avg, blk.R_sum, blk.maxCoeff, blk.maxCoeffCell);
         }
+    }
 
-        this->getMaxCoeff(cell_idx, intQuants, fs, residual, pvValue,
-                          B_avg, R_sum, maxCoeff, maxCoeffCell);
+    // Combine in block order; strict '>' keeps the first maximising cell as in the serial loop.
+    for (const auto& blk : blocks) {
+        pvSumLocal += blk.pvSum;
+        numAquiferPvSumLocal += blk.numAquiferPvSum;
+        for (std::size_t c = 0; c < numComp; ++c) {
+            B_avg[c] += blk.B_avg[c];
+            R_sum[c] += blk.R_sum[c];
+            if (blk.maxCoeff[c] > maxCoeff[c]) {
+                maxCoeff[c] = blk.maxCoeff[c];
+                maxCoeffCell[c] = blk.maxCoeffCell[c];
+            }
+        }
     }
 
     OPM_END_PARALLEL_TRY_CATCH("NonlinearSystemBlackOilReservoir::localConvergenceData() failed: ", this->grid_.comm());
@@ -689,41 +720,58 @@ characteriseCnvPvSplit(const std::vector<Scalar>& B_avg, const double dt)
     const auto& model = this->simulator().model();
     const auto& problem = this->simulator().problem();
     const auto& residual = model.linearizer().residual();
-    const auto& gridView = this->simulator().gridView();
 
-    const IsNumericalAquiferCell isNumericalAquiferCell(gridView.grid());
+    const bool needCells = this->param_.tolerance_max_dp_ > 0.0 || this->param_.tolerance_max_ds_ > 0.0
+        || this->param_.tolerance_max_drs_ > 0.0 || this->param_.tolerance_max_drv_ > 0.0;
 
-    ElementContext elemCtx(this->simulator());
+    this->updateInteriorCellBlocks();
+    const std::size_t numBlocks = interiorBlockStart_.size() - 1;
 
+    struct BlockData {
+        std::array<double, numPvGroups> pv{};
+        std::array<int, numPvGroups> cnt{};
+        std::vector<unsigned> cells;
+    };
+    std::vector<BlockData> blocks(numBlocks);
     std::vector<unsigned> ixCells;
 
     OPM_BEGIN_PARALLEL_TRY_CATCH();
-    for (const auto& elem : elements(gridView, Dune::Partitions::interior)) {
-        // Skip cells of numerical Aquifer
-        if (isNumericalAquiferCell(elem)) {
-            continue;
+#ifdef _OPENMP
+#pragma omp parallel for schedule(dynamic, 1)
+#endif
+    for (std::size_t b = 0; b < numBlocks; ++b) {
+        auto& blk = blocks[b];
+        for (std::size_t i = interiorBlockStart_[b]; i < interiorBlockStart_[b + 1]; ++i) {
+            // Skip cells of numerical Aquifer
+            if (interiorIsNumAquifer_[i]) {
+                continue;
+            }
+
+            const unsigned cell_idx = interiorCells_[i];
+            const auto pvValue = problem.referencePorosity(cell_idx, /*timeIdx=*/0)
+                * model.dofTotalVolume(cell_idx);
+
+            const auto maxCnv = maxCNV(residual[cell_idx], pvValue);
+
+            const auto ix = (maxCnv > this->param_.tolerance_cnv_)
+                + (maxCnv > this->param_.tolerance_cnv_relaxed_);
+
+            blk.pv[ix] += static_cast<double>(pvValue);
+            ++blk.cnt[ix];
+
+            // For dP and dS check, we need cell indices of [1] violations
+            if (ix > 0 && needCells) {
+                blk.cells.push_back(cell_idx);
+            }
         }
+    }
 
-        elemCtx.updatePrimaryStencil(elem);
-
-        const unsigned cell_idx = elemCtx.globalSpaceIndex(/*spaceIdx=*/0, /*timeIdx=*/0);
-        const auto pvValue = problem.referencePorosity(cell_idx, /*timeIdx=*/0)
-            * model.dofTotalVolume(cell_idx);
-
-        const auto maxCnv = maxCNV(residual[cell_idx], pvValue);
-
-        const auto ix = (maxCnv > this->param_.tolerance_cnv_)
-            + (maxCnv > this->param_.tolerance_cnv_relaxed_);
-
-        splitPV[ix] += static_cast<double>(pvValue);
-        ++cellCntPV[ix];
-
-        // For dP and dS check, we need cell indices of [1] violations
-        if ( ix > 0 &&
-             (this->param_.tolerance_max_dp_ > 0.0 || this->param_.tolerance_max_ds_ > 0.0
-              || this->param_.tolerance_max_drs_ > 0.0 || this->param_.tolerance_max_drv_ > 0.0 ) ) {
-            ixCells.push_back(cell_idx);
+    for (const auto& blk : blocks) {
+        for (std::size_t g = 0; g < numPvGroups; ++g) {
+            splitPV[g] += blk.pv[g];
+            cellCntPV[g] += blk.cnt[g];
         }
+        ixCells.insert(ixCells.end(), blk.cells.begin(), blk.cells.end());
     }
 
     OPM_END_PARALLEL_TRY_CATCH("NonlinearSystemBlackOilReservoir::characteriseCnvPvSplit() failed: ",
@@ -733,6 +781,37 @@ characteriseCnvPvSplit(const std::vector<Scalar>& B_avg, const double dt)
     this->grid_.comm().sum(cellCntPV.data(), cellCntPV.size());
 
     return { cnvPvSplit, ixCells };
+}
+
+template <class TypeTag>
+void
+NonlinearSystemBlackOilReservoir<TypeTag>::
+updateInteriorCellBlocks()
+{
+    const auto& gridView = this->simulator().gridView();
+    // The grid is fixed after load balancing; rebuild only if the element count changes.
+    if (!interiorBlockStart_.empty() &&
+        interiorCellsGridSize_ == static_cast<std::size_t>(gridView.size(0))) {
+        return;
+    }
+
+    const auto& elementMapper = this->simulator().model().elementMapper();
+    const IsNumericalAquiferCell isNumericalAquiferCell(gridView.grid());
+    interiorCells_.clear();
+    interiorIsNumAquifer_.clear();
+    for (const auto& elem : elements(gridView, Dune::Partitions::interior)) {
+        interiorCells_.push_back(elementMapper.index(elem));
+        interiorIsNumAquifer_.push_back(isNumericalAquiferCell(elem));
+    }
+
+    constexpr std::size_t maxBlocks = 64;
+    const std::size_t n = interiorCells_.size();
+    const std::size_t numBlocks = std::max<std::size_t>(1, std::min(maxBlocks, n));
+    interiorBlockStart_.resize(numBlocks + 1);
+    for (std::size_t b = 0; b <= numBlocks; ++b) {
+        interiorBlockStart_[b] = (n * b) / numBlocks;
+    }
+    interiorCellsGridSize_ = gridView.size(0);
 }
 
 template <class TypeTag>
@@ -1010,15 +1089,13 @@ convergencePerCell(const std::vector<Scalar>& B_avg,
     const auto& residual = this->simulator_.model().linearizer().residual();
     const auto& gridView = this->simulator_.gridView();
     const IsNumericalAquiferCell isNumericalAquiferCell(gridView.grid());
-    ElementContext elemCtx(this->simulator());
+    const auto& elementMapper = this->simulator_.model().elementMapper();
     std::vector<int> convNewt(residual.size(), 0);
     OPM_BEGIN_PARALLEL_TRY_CATCH();
     unsigned idx = 0;
     const int numComp = B_avg.size();
     for (const auto& elem : elements(gridView, Dune::Partitions::interior)) {
-        elemCtx.updatePrimaryStencil(elem);
-
-        const unsigned cell_idx = elemCtx.globalSpaceIndex(/*spaceIdx=*/0, /*timeIdx=*/0);
+        const unsigned cell_idx = elementMapper.index(elem);
         const auto pvValue = this->simulator_.problem().referencePorosity(cell_idx, /*timeIdx=*/0) *
                              this->simulator_.model().dofTotalVolume(cell_idx);
         for (int compIdx = 0; compIdx < numComp; ++compIdx) {

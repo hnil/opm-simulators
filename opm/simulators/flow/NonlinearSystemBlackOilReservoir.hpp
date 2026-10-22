@@ -219,6 +219,10 @@ public:
     /// its strict tolerance
     CnvPvSplitData characteriseCnvPvSplit(const std::vector<Scalar>& B_avg, const double dt);
 
+    /// \brief Interior cells and their numerical-aquifer flags, split in a
+    /// fixed number of blocks so threaded reductions do not depend on thread count.
+    void updateInteriorCellBlocks();
+
     /// \brief Compute the number of Newtons required by each cell in order to
     /// satisfy the solution change convergence criteria at the last time step.
     void convergencePerCell(const std::vector<Scalar>& B_avg,
@@ -302,6 +306,11 @@ protected:
     long int global_nc_;
 
     SolutionVector solUpd_;
+
+    std::vector<unsigned> interiorCells_;
+    std::vector<char> interiorIsNumAquifer_;
+    std::vector<std::size_t> interiorBlockStart_;
+    std::size_t interiorCellsGridSize_ = 0;
 
     std::unique_ptr<NonlinearSystemNldd<TypeTag>> nlddSolver_; //!< Non-linear DD solver
     BlackoilModelConvergenceMonitor<Scalar> conv_monitor_;
