@@ -677,6 +677,36 @@ protected:
         }
 
         std::size_t numGridDof = model().numGridDof();
+        // Models whose per-dof update touches only that dof's state may run it threaded.
+        if constexpr (requires { Implementation::threadSafePrimaryVariableUpdate; }) {
+            if (Implementation::threadSafePrimaryVariableUpdate && !enableConstraints_()) {
+                std::exception_ptr failure = nullptr;
+#ifdef _OPENMP
+#pragma omp parallel for
+#endif
+                for (std::size_t dofIdx = 0; dofIdx < numGridDof; ++dofIdx) {
+                    try {
+                        asImp_().updatePrimaryVariables_(dofIdx,
+                                                         nextSolution[dofIdx],
+                                                         currentSolution[dofIdx],
+                                                         solutionUpdate[dofIdx],
+                                                         currentResidual[dofIdx]);
+                    }
+                    catch (...) {
+#ifdef _OPENMP
+#pragma omp critical
+#endif
+                        if (!failure) {
+                            failure = std::current_exception();
+                        }
+                    }
+                }
+                if (failure) {
+                    std::rethrow_exception(failure);
+                }
+                numGridDof = 0; // grid dofs done; skip the serial loop below
+            }
+        }
         for (unsigned dofIdx = 0; dofIdx < numGridDof; ++dofIdx) {
             if (enableConstraints_()) {
                 if (constraintsMap.count(dofIdx) > 0) {
@@ -704,7 +734,7 @@ protected:
 
         // update the DOFs of the auxiliary equations
         std::size_t numDof = model().numTotalDof();
-        for (std::size_t dofIdx = numGridDof; dofIdx < numDof; ++dofIdx) {
+        for (std::size_t dofIdx = model().numGridDof(); dofIdx < numDof; ++dofIdx) {
             nextSolution[dofIdx] = currentSolution[dofIdx];
             nextSolution[dofIdx] -= solutionUpdate[dofIdx];
         }

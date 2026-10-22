@@ -114,6 +114,9 @@ public:
         BlackoilNewtonParams<Scalar>::registerParameters();
     }
 
+    // updatePrimaryVariables_ only writes the given dof's state (the switch count is atomic)
+    static constexpr bool threadSafePrimaryVariableUpdate = true;
+
     /*!
      * \brief Returns the number of degrees of freedom for which the
      *        interpretation has changed for the most recent iteration.
@@ -470,6 +473,9 @@ protected:
         }
 
         if (wasSwitched_[globalDofIdx]) {
+#ifdef _OPENMP
+#pragma omp atomic
+#endif
             ++numPriVarsSwitched_;
         }
         if (bparams_.projectSaturations_) {
