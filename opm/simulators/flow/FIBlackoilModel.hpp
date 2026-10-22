@@ -316,14 +316,14 @@ protected:
     template <class ...Args>
     void updateCachedIntQuantsLoop(const unsigned timeIdx) const
     {
-        const auto& elementMapper = this->simulator_.model().elementMapper();
+        // A flat loop over all dofs (all partitions, as the cache): no grid traversal, and
+        // dynamic chunks balance cells of different cost across threads.
+        const std::size_t numDof = this->intensiveQuantityCache_[timeIdx].size();
 #ifdef _OPENMP
-#pragma omp parallel for
+#pragma omp parallel for schedule(dynamic, 256)
 #endif
-        for (const auto& chunk : element_chunks_) {
-            for (const auto& elem : chunk) {
-                this->template updateSingleCachedIntQuantUnchecked<Args...>(elementMapper.index(elem), timeIdx);
-            }
+        for (std::size_t idx = 0; idx < numDof; ++idx) {
+            this->template updateSingleCachedIntQuantUnchecked<Args...>(idx, timeIdx);
         }
     }
 
