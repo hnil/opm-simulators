@@ -36,6 +36,7 @@
 #include <opm/simulators/linalg/getQuasiImpesWeights.hpp>
 #include <opm/simulators/linalg/matrixblock.hh>
 
+#include <dune/istl/bcrsmatrix.hh>
 #include <dune/common/fmatrix.hh>
 #include <dune/common/fvector.hh>
 #include <dune/common/parallel/mpihelper.hh>
@@ -246,6 +247,8 @@ struct TestLinearizer
 {
     struct MatrixAdapter {
         using MatrixBlock = Opm::MatrixBlock<double, numEq<waterEnabled>, numEq<waterEnabled>>;
+        Dune::BCRSMatrix<MatrixBlock> matrix_;
+        const auto& istlMatrix() const { return matrix_; }
     };
     MatrixAdapter jacobian() const { return {}; }
 };
@@ -257,6 +260,9 @@ struct TestModel
     TestLinearizer<waterEnabled> linearizer_;
     const auto& localLinearizer(std::size_t) const { return local; }
     const auto& linearizer() const { return linearizer_; }
+    // One grid cell and no auxiliary rows; storage goes through the element path.
+    static constexpr bool formsStorageFromIntensiveQuantities = false;
+    std::size_t numGridDof() const { return 1; }
 };
 
 template<bool waterEnabled>
