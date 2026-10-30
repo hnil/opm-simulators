@@ -22,6 +22,7 @@
 #define MPI_SERIALIZER_HPP
 
 #include <opm/common/utility/Serializer.hpp>
+#include <opm/common/utility/MemPacker.hpp>
 #include <opm/simulators/utils/MPIPacker.hpp>
 #include <opm/simulators/utils/ParallelCommunication.hpp>
 
@@ -35,11 +36,11 @@ struct RootRank
 };
 
 //! \brief Class for serializing and broadcasting data using MPI.
-class MpiSerializer : public Serializer<Mpi::Packer> {
+// Ranks share one binary layout, so a memcpy packer replaces per-item MPI_Pack calls.
+class MpiSerializer : public Serializer<Serialization::MemPacker> {
 public:
     explicit MpiSerializer(Parallel::Communication comm)
-        : Serializer<Mpi::Packer>(m_packer)
-        , m_packer(comm)
+        : Serializer<Serialization::MemPacker>(m_packer)
         , m_comm(comm)
     {}
 
@@ -105,7 +106,7 @@ private:
         m_comm.broadcast(m_buffer.data()+pos, static_cast<int>(remainingSize), root);
     }
 
-    const Mpi::Packer m_packer; //!< Packer instance
+    const Serialization::MemPacker m_packer{}; //!< Packer instance
     Parallel::Communication m_comm; //!< Communicator to use
 };
 
