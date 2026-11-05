@@ -27,6 +27,8 @@
 
 #include "RunDeckHelper.hpp"
 
+#include <opm/output/eclipse/WStat.hpp>
+
 #include <cstddef>
 #include <string>
 
@@ -35,8 +37,15 @@ namespace {
 // Two layers without flow between them, at 100 and 60 bar, and a producer
 // at 70 bar connected to both. With crossflow, the producer injects into the
 // lower-pressure layer through its connection there.
-std::string deck(const std::string& crossflow)
+// drain_upper_layer adds a second producer on the 100 bar layer with a 65 bar limit.
+std::string deck(const std::string& crossflow,
+                 const std::string& bhp_limit = "70",
+                 const bool drain_upper_layer = false)
 {
+    const std::string drain_welspecs = drain_upper_layer ? "DRAIN FIELD 1 1 1* GAS /\n" : "";
+    const std::string drain_compdat = drain_upper_layer ? "DRAIN 1 1 1 1 OPEN 2* 0.0151 /\n" : "";
+    const std::string drain_wconprod = drain_upper_layer ? "DRAIN OPEN BHP 2* 100000 2* 65 /\n" : "";
+    const std::string steps = drain_upper_layer ? "20*0.1" : "5*0.1";
     return R"(RUNSPEC
 METRIC
 TABDIMS
@@ -49,7 +58,7 @@ COMPS
 3 /
 FULLIMP
 WELLDIMS
-1 2 1 1 /
+2 2 1 2 /
 START
 1 'JAN' 2016 /
 UNIFOUT
@@ -124,6 +133,10 @@ ZMF
 SUMMARY
 WGPR
 /
+WOPR
+/
+WSTAT
+/
 BPR
 1 1 1 /
 1 1 2 /
@@ -132,21 +145,30 @@ BPR
 SCHEDULE
 WELSPECS
 PROD FIELD 1 1 1* GAS 3* )" + crossflow + R"( /
-/
+)" + drain_welspecs + R"(/
 COMPDAT
 PROD 1 1 1 2 OPEN 2* 0.0151 /
-/
+)" + drain_compdat + R"(/
 WCONPROD
-PROD OPEN BHP 2* 100000 2* 70 /
-/
+PROD OPEN BHP 2* 100000 2* )" + bhp_limit + R"( /
+)" + drain_wconprod + R"(/
 TSTEP
-5*0.1 /
+)" + steps + R"( /
 END
 )";
 }
 
 // The deck has no water phase.
 using TypeTag = Opm::Properties::TTag::FlowCompProblem<3, false>;
+
+void checkStoppedAtEnd(const Opm::EclIO::ESmry& smry)
+{
+    BOOST_CHECK_EQUAL(smry.get("WSTAT:PROD").back(),
+                      static_cast<float>(Opm::WStat::numeric::STOP));
+    BOOST_CHECK_SMALL(smry.get("WGPR:PROD").back(), 1.0e-6f);
+    BOOST_CHECK_SMALL(smry.get("WOPR:PROD").back(), 1.0e-6f);
+    BOOST_CHECK_SMALL(smry.get("BPR:1,1,2").back() - 60.0f, 1.0e-2f);
+}
 
 } // namespace
 
@@ -174,4 +196,26 @@ BOOST_AUTO_TEST_CASE(ProducerConnectionDoesNotInjectWithoutCrossflow)
 
     const auto with = Opm::runDeck<TypeTag>(dir.path(), "WITH_CROSSFLOW", deck("YES"));
     BOOST_CHECK_GT(with.get("BPR:1,1,2").back(), 61.0f);
+}
+
+// Both layers are below the producer's BHP limit, so it stops: no surface rate
+// and, without crossflow, no flow into either layer.
+BOOST_AUTO_TEST_CASE(ProducerStopsWithoutCrossflowWhenAboveAllLayers)
+{
+    const Opm::TemporaryDirectory dir("compwell_crossflow_stop");
+
+    const auto smry = Opm::runDeck<TypeTag>(dir.path(), "ABOVE_ALL_LAYERS", deck("NO", "110"));
+    checkStoppedAtEnd(smry);
+    BOOST_CHECK_SMALL(smry.get("BPR:1,1,1").back() - 100.0f, 1.0e-2f);
+}
+
+// PROD stops once the 100 bar layer, which DRAIN depletes, falls below PROD's 70 bar limit.
+BOOST_AUTO_TEST_CASE(ProducerStopsWithoutCrossflowWhenItsLayerDepletes)
+{
+    const Opm::TemporaryDirectory dir("compwell_crossflow_deplete");
+
+    const auto smry = Opm::runDeck<TypeTag>(dir.path(), "DEPLETING_LAYER", deck("NO", "70", true));
+    BOOST_CHECK_GT(smry.get("WGPR:PROD").front(), 1.0f);
+    BOOST_CHECK_LT(smry.get("BPR:1,1,1").back(), 70.0f);
+    checkStoppedAtEnd(smry);
 }
