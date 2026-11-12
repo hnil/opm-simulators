@@ -120,6 +120,29 @@ void flashAtSurfaceConditions(CompositionalFluidState<T, FluidSystem>& fluid_sta
     fluid_state.setPressure(FluidSystem::oilPhaseIdx, pressure);
     fluid_state.setPressure(FluidSystem::gasPhaseIdx, pressure);
 
+    if constexpr (requires { FluidSystem::blackOilPvtActive(); }) {
+        // Black-oil surface phases are the stock-tank oil and surface gas components.
+        if (FluidSystem::blackOilPvtActive()) {
+            constexpr int oil = FluidSystem::oilPhaseIdx;
+            constexpr int gas = FluidSystem::gasPhaseIdx;
+            const T L = fluid_state.moleFraction(FluidSystem::oilCompIdx);
+            fluid_state.setMoleFraction(oil, FluidSystem::oilCompIdx, 1.0);
+            fluid_state.setMoleFraction(oil, FluidSystem::gasCompIdx, 0.0);
+            fluid_state.setMoleFraction(gas, FluidSystem::oilCompIdx, 0.0);
+            fluid_state.setMoleFraction(gas, FluidSystem::gasCompIdx, 1.0);
+            fluid_state.setLvalue(L);
+            const auto rho_o = FluidSystem::blackOilReferenceDensity(oil, 0);
+            const auto rho_g = FluidSystem::blackOilReferenceDensity(gas, 0);
+            const T vol_o = L * FluidSystem::molarMass(FluidSystem::oilCompIdx) / rho_o;
+            const T vol_g = (1.0 - L) * FluidSystem::molarMass(FluidSystem::gasCompIdx) / rho_g;
+            fluid_state.setSaturation(oil, vol_o / (vol_o + vol_g));
+            fluid_state.setSaturation(gas, vol_g / (vol_o + vol_g));
+            fluid_state.setDensity(oil, T(rho_o));
+            fluid_state.setDensity(gas, T(rho_g));
+            return;
+        }
+    }
+
     for (int i = 0; i < FluidSystem::numComponents; ++i) {
         fluid_state.setKvalue(i, fluid_state.wilsonK_(i));
     }
