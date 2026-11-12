@@ -33,9 +33,6 @@ struct WellIndexFracture
     /// Fracture connection transmissibility factor.
     double ctf{0.0};
 
-    /// Connection pressure at which \c ctf was computed.
-    double pressure{0.0};
-
     /// Fracture pressure at the connection minus the anchor pressure (BHP, or
     /// the pressure of \c segment for multi-segment wells); unset means the
     /// fracture contribution sees the wellbore pressure like the matrix part.
@@ -43,16 +40,6 @@ struct WellIndexFracture
 
     /// Anchor segment number (1-based) for multi-segment wells.
     int segment{0};
-
-    /// Fracture connection factor at the given connection pressure.
-    ///
-    /// The pressure argument is reserved for interpolating the factor
-    /// between solves; until that is validated the stored factor is
-    /// returned unchanged.
-    double wellIndex(const double /* connection_pressure */) const
-    {
-        return this->ctf;
-    }
 };
 
 } // namespace Opm

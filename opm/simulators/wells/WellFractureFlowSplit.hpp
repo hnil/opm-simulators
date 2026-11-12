@@ -39,8 +39,7 @@ template <class FluidSystem, class Scalar, class Simulator,
           class WellContainer, class WellState>
 void updateWellFractureFlowSplit(const Simulator& simulator,
                                  const WellContainer& well_container,
-                                 WellState& well_state,
-                                 const WellState& nupcol_well_state)
+                                 WellState& well_state)
 {
     for (const auto& well : well_container) {
         if (!well->isInjector()) {
@@ -52,7 +51,6 @@ void updateWellFractureFlowSplit(const Simulator& simulator,
             continue; // no fracture crosses this well
         }
 
-        const auto& wellstate_nupcol = nupcol_well_state.well(well->indexOfWell());
         auto& single_wellstate = well_state.well(well->indexOfWell());
         auto& perf_data = single_wellstate.perf_data;
         auto& filtrate_data = perf_data.filtrate_data;
@@ -85,8 +83,7 @@ void updateWellFractureFlowSplit(const Simulator& simulator,
             if (!cake_mult.empty()) {
                 matrix_wi *= cake_mult[perf];
             }
-            const Scalar perf_pressure = wellstate_nupcol.perf_data.pressure[perf];
-            const Scalar fracture_wi = fracture_indices[perf].wellIndex(perf_pressure);
+            const Scalar fracture_wi = fracture_indices[perf].ctf;
             const Scalar effective_wi = matrix_wi + fracture_wi;
 
             auto& fracture_rate = fracture_data.water_rate[perf];

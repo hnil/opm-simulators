@@ -774,7 +774,7 @@ namespace Opm {
                 // for wells with registered fracture contributions.
                 updateWellFractureFlowSplit<FluidSystem, Scalar>(
                     this->simulator_, this->well_container_,
-                    this->wellState(), this->nupcolWellState());
+                    this->wellState());
             }
             this->updateFiltrationModelsPostStep(dt, FluidSystem::waterPhaseIdx, local_deferredLogger);
         }

@@ -812,7 +812,6 @@ addFracturePerforations(const std::vector<RuntimePerforation>& perfs)
             const auto ind = std::distance(this->well_cells_.begin(), it);
             auto& frac = this->well_index_fracture_[ind];
             frac.ctf = perf.ctf;
-            frac.pressure = perf.pressure;
             frac.pressure_offset = perf.fracture_pressure_offset;
             frac.segment = perf.segment;
         }
