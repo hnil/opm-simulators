@@ -44,6 +44,7 @@
 #include <opm/input/eclipse/EclipseState/Grid/LgrCollection.hpp>
 
 #include <opm/simulators/utils/ParallelEclipseState.hpp>
+#include <opm/simulators/utils/DeferredLoggingErrorHelpers.hpp>
 #include <opm/simulators/utils/ParallelSerialization.hpp>
 #include <opm/simulators/utils/PropsDataHandle.hpp>
 #include <opm/simulators/utils/SetupPartitioningParams.hpp>
@@ -491,9 +492,11 @@ distributeGrid(const Dune::EdgeWeightMethod                          edgeWeights
     const auto overlapLayers = numOverlap;
 
     if (loadBalancerSet) {
-        auto parts = isIORank
-            ? (*externalLoadBalancer)(*this->grid_)
-            : std::vector<int>{};
+        std::vector<int> parts;
+        OPM_BEGIN_PARALLEL_TRY_CATCH();
+        if (isIORank)
+            parts = (*externalLoadBalancer)(*this->grid_);
+        OPM_END_PARALLEL_TRY_CATCH("External grid partition failed: ", this->grid_->comm());
 
         // For this case, simple partitioning is selected automatically.
         parallelWells = std::get<1>
